@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .discovery import DiscoveredDataFile, discover_data_files
+from .database_summary import summarize_database_dir
 from .metadata import (
     CalibratedMetadata,
     ColumnMeta,
@@ -37,6 +38,67 @@ class OfflineTableResolution:
     index_child: SysObjectIndexChildCandidate
     storage_index: SysIndexCandidate
     columns: tuple[SysColumnCandidate, ...]
+    control_file_data_files: dict[str, object] | None = None
+
+    def as_manifest(self) -> dict[str, object]:
+        return {
+            "system_file": str(self.system_file),
+            "table": self.table.qualified_name,
+            "table_object_id": self.table_object_id,
+            "storage_index_id": self.index_child.index_id,
+            "storage": {
+                "group_id": self.table.storage.group_id,
+                "file_no": self.table.storage.file_no,
+                "root_page": self.table.storage.root_page,
+                "scan_pages": self.table.storage.scan_pages,
+            },
+            "table_object": {
+                "object_id": self.table_object_id,
+                "name": self.table_object.name,
+                "offset": self.table_object.offset,
+                "page_no": self.table_object.page_no,
+                "page_offset": self.table_object.page_offset,
+                "score": self.table_object.score,
+            },
+            "columns": [
+                {
+                    "name": column.name,
+                    "type_name": column.type_name,
+                    "length": column.length,
+                    "column_id": column.column_id,
+                    "offset": column.offset,
+                    "page_no": column.page_no,
+                    "page_offset": column.page_offset,
+                    "score": column.score,
+                }
+                for column in self.columns
+            ],
+            "segment": {
+                "storage_index_id": self.index_child.index_id,
+                "index_child_name": self.index_child.name,
+                "index_child_offset": self.index_child.offset,
+                "index_child_page_no": self.index_child.page_no,
+                "sysindexes_offset": self.storage_index.offset,
+                "sysindexes_page_no": self.storage_index.page_no,
+                "group_id": self.table.storage.group_id,
+                "root_file": self.table.storage.file_no,
+                "root_page": self.table.storage.root_page,
+                "scan_pages": self.table.storage.scan_pages,
+                "type_name": self.storage_index.type_name,
+                "flag": self.storage_index.flag,
+            },
+            "data_files": [
+                {
+                    "group_id": item.group_id,
+                    "file_no": item.file_no,
+                    "path": str(item.path),
+                    "page_size": item.page_size,
+                }
+                for item in self.metadata.data_files
+            ],
+            "control_file_data_files": self.control_file_data_files,
+            "mode": "dmctl-system-sysdict-segment-root",
+        }
 
 
 def resolve_offline_table_metadata(
@@ -55,11 +117,17 @@ def resolve_offline_table_metadata(
     page-0 headers.
     """
 
+    database_summary = summarize_database_dir(
+        database_dir=database_dir,
+        page_size=page_size,
+        catalog_pages=0,
+    )
     files = discover_data_files(database_dir, page_size=page_size)
     system_file = _select_system_file(files)
+    owner_name, object_name = _split_table_name(table_name, owner=owner)
     table_object = _select_table_object(
-        find_sysobject_candidates(system_file.path, table_name, page_size=page_size),
-        table_name=table_name,
+        find_sysobject_candidates(system_file.path, object_name, page_size=page_size),
+        table_name=object_name,
     )
     table_object_id = _select_table_object_id(table_object)
     columns = _select_columns(
@@ -84,7 +152,6 @@ def resolve_offline_table_metadata(
         group_id=_required_int(storage_index.group_id, "storage group id"),
         file_no=_required_int(storage_index.root_file, "storage root file"),
     )
-    owner_name, object_name = _split_table_name(table_name, owner=owner)
     table = TableMeta(
         owner=owner_name,
         name=object_name,
@@ -123,6 +190,7 @@ def resolve_offline_table_metadata(
         index_child=index_child,
         storage_index=storage_index,
         columns=columns,
+        control_file_data_files=database_summary.get("control_file_data_files"),
     )
 
 

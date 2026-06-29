@@ -283,32 +283,14 @@ def _cmd_resolve_table(args: argparse.Namespace) -> int:
         owner=args.owner,
         scan_pages=args.scan_pages,
     )
-    if args.json:
-        print(
-            json.dumps(
-                {
-                    "system_file": str(resolved.system_file),
-                    "table": resolved.table.qualified_name,
-                    "table_object_id": resolved.table_object_id,
-                    "storage_index_id": resolved.index_child.index_id,
-                    "storage": {
-                        "group_id": resolved.table.storage.group_id,
-                        "file_no": resolved.table.storage.file_no,
-                        "root_page": resolved.table.storage.root_page,
-                        "scan_pages": resolved.table.storage.scan_pages,
-                    },
-                    "columns": [
-                        {
-                            "name": column.name,
-                            "type_name": column.type_name,
-                            "length": column.length,
-                        }
-                        for column in resolved.table.columns
-                    ],
-                },
-                indent=2,
-            )
+    manifest = resolved.as_manifest()
+    if args.output:
+        Path(args.output).write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
         )
+    if args.json:
+        print(json.dumps(manifest, indent=2))
         return 0
     print(f"system_file={resolved.system_file}")
     print(f"table={resolved.table.qualified_name}")
@@ -743,6 +725,10 @@ def build_parser() -> argparse.ArgumentParser:
     resolve_table.add_argument("--owner")
     resolve_table.add_argument("--scan-pages", type=int, default=64)
     resolve_table.add_argument("--json", action="store_true")
+    resolve_table.add_argument(
+        "--output",
+        help="write resolved dictionary and segment metadata JSON",
+    )
     resolve_table.set_defaults(func=_cmd_resolve_table)
 
     discover_files = subparsers.add_parser(

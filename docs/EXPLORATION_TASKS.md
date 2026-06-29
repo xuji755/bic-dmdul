@@ -151,6 +151,9 @@ to explain the underlying database structure.
   `INDEX<storage_id>` SYSOBJECTS candidates.
 - [x] Validate child-index scanner against controlled table object ids
   `33629..33634`.
+- [x] Emit a target-table dictionary and segment manifest that records
+  `dm.ctl` file context, SYSTEM dictionary evidence, columns, storage index id,
+  group/tablespace id, root file, and root page.
 - [ ] Decode enough `SYSOBJECTS` rows offline to recover object name/id/schema/type.
 - [ ] Decode complete `SYSCOLUMNS` row layout offline, including scale,
   nullability, defaults, and exact column id base.

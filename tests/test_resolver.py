@@ -14,6 +14,10 @@ class OfflineResolverTest(unittest.TestCase):
             database_dir = Path(tmp_dir)
             system = database_dir / "SYSTEM.DBF"
             user_file = database_dir / "DMDUL_TS01.DBF"
+            (database_dir / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+            )
             _write_dbf(system, _page0(group_raw=0, kind=0x13) + _system_payload())
             _write_dbf(user_file, _page0(group_raw=6, kind=0x13))
 
@@ -38,6 +42,23 @@ class OfflineResolverTest(unittest.TestCase):
             ],
         )
         self.assertEqual(resolved.metadata.data_files[0].path.name, "DMDUL_TS01.DBF")
+        manifest = resolved.as_manifest()
+        self.assertEqual(manifest["mode"], "dmctl-system-sysdict-segment-root")
+        self.assertEqual(manifest["table"], "SYSDBA.DMDUL_MANY")
+        self.assertEqual(manifest["table_object"]["object_id"], 33629)
+        self.assertEqual(manifest["segment"]["group_id"], 6)
+        self.assertEqual(manifest["segment"]["root_file"], 0)
+        self.assertEqual(manifest["segment"]["root_page"], 80)
+        self.assertEqual(manifest["data_files"][0]["path"], str(user_file))
+        control_files = manifest["control_file_data_files"]
+        self.assertEqual(control_files["entries_total"], 2)
+        self.assertEqual(
+            {
+                item["basename"]
+                for item in control_files["matched_entries"]
+            },
+            {"system.dbf", "dmdul_ts01.dbf"},
+        )
 
 
 def _page0(*, group_raw: int, kind: int) -> bytes:

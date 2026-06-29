@@ -171,6 +171,44 @@ class CliTest(unittest.TestCase):
         self.assertEqual(report["rows_written"], 1)
         self.assertEqual(report["diagnostics"], [])
 
+    def test_resolve_table_writes_segment_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "segment.json"
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(
+                _large_page0(group_raw=0, page_kind=0x13) + _system_payload()
+            )
+            (root / "DMDUL_TS01.DBF").write_bytes(
+                _large_page0(group_raw=6, page_kind=0x13) + b"\0" * 8192
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "resolve-table",
+                    str(root),
+                    "--table",
+                    "SYSDBA.DMDUL_MANY",
+                    "--output",
+                    str(output),
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["mode"], "dmctl-system-sysdict-segment-root")
+        self.assertEqual(manifest["segment"]["group_id"], 6)
+        self.assertEqual(manifest["segment"]["root_file"], 0)
+        self.assertEqual(manifest["segment"]["root_page"], 80)
+        self.assertEqual(manifest["columns"][0]["name"], "ID")
+
 
 def _page0() -> bytes:
     page = bytearray(128)
@@ -178,6 +216,93 @@ def _page0() -> bytes:
     page[4:8] = (0).to_bytes(4, "little")
     page[20:24] = (0x13).to_bytes(4, "little")
     return bytes(page)
+
+
+def _large_page0(*, group_raw: int, page_kind: int) -> bytes:
+    page = bytearray(8192)
+    page[0:4] = group_raw.to_bytes(4, "little")
+    page[4:8] = (0).to_bytes(4, "little")
+    page[20:24] = page_kind.to_bytes(4, "little")
+    return bytes(page)
+
+
+def _system_payload() -> bytes:
+    table_id = 33629
+    index_id = 33595349
+    return (
+        b"\0" * 4096
+        + _sysobject_table_name(table_id)
+        + b"\0" * 256
+        + _syscolumns(table_id)
+        + b"\0" * 256
+        + _sysobject_index_child(parent_id=table_id, index_id=index_id)
+        + b"\0" * 256
+        + _sysindex(index_id=index_id)
+    )
+
+
+def _sysobject_table_name(table_id: int) -> bytes:
+    return (
+        table_id.to_bytes(4, "little")
+        + b"\0" * 16
+        + bytes([0x8A])
+        + b"DMDUL_MANY"
+        + bytes([0x86])
+        + b"SCHOBJ"
+        + bytes([0x84])
+        + b"UTAB"
+    )
+
+
+def _syscolumns(table_id: int) -> bytes:
+    return _syscolumn(table_id, 0, 4, "ID", "INT")
+
+
+def _syscolumn(
+    table_id: int,
+    column_id: int,
+    length: int,
+    name: str,
+    type_name: str,
+) -> bytes:
+    return (
+        table_id.to_bytes(4, "little")
+        + column_id.to_bytes(2, "little")
+        + length.to_bytes(4, "little")
+        + b"\0" * 8
+        + bytes([0x80 + len(name)])
+        + name.encode("ascii")
+        + bytes([0x80 + len(type_name)])
+        + type_name.encode("ascii")
+        + b"\0" * 12
+    )
+
+
+def _sysobject_index_child(*, parent_id: int, index_id: int) -> bytes:
+    name = f"INDEX{index_id}".encode("ascii")
+    return (
+        index_id.to_bytes(4, "little")
+        + b"\0" * 12
+        + parent_id.to_bytes(4, "little")
+        + b"\0" * 8
+        + bytes([0x86])
+        + b"TABOBJ"
+        + bytes([0x80 + len(name)])
+        + name
+    )
+
+
+def _sysindex(*, index_id: int) -> bytes:
+    return (
+        index_id.to_bytes(4, "little")
+        + b"N"
+        + (6).to_bytes(2, "little")
+        + (0).to_bytes(2, "little")
+        + (80).to_bytes(4, "little")
+        + b"BT"
+        + (0).to_bytes(4, "little")
+        + (1).to_bytes(4, "little")
+    )
 
 
 if __name__ == "__main__":
