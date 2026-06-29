@@ -105,6 +105,10 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     print(f"table={report.table}")
     print(f"output={report.output}")
     print(f"rows_written={report.rows_written}")
+    print(f"rows_skipped_deleted={report.rows_skipped_deleted}")
+    print(f"rows_skipped_decode_error={report.rows_skipped_decode_error}")
+    for error in report.decode_errors:
+        print(f"decode_error={error}", file=sys.stderr)
     print(f"mode={report.mode}")
     return 0
 

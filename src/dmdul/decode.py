@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import struct
+
 from .metadata import ColumnMeta
 from .row import ObservedRow, decode_observed_var_length
 
@@ -32,8 +34,26 @@ def decode_observed_row_values(
             _require(data, offset, 8, column.name)
             values.append(int.from_bytes(data[offset : offset + 8], "little", signed=True))
             offset += 8
+        elif type_name in {"DOUBLE", "REAL"}:
+            _require(data, offset, 8, column.name)
+            values.append(struct.unpack("<d", data[offset : offset + 8])[0])
+            offset += 8
+        elif type_name == "FLOAT":
+            if column.length == 4:
+                _require(data, offset, 4, column.name)
+                values.append(struct.unpack("<f", data[offset : offset + 4])[0])
+                offset += 4
+            else:
+                _require(data, offset, 8, column.name)
+                values.append(struct.unpack("<d", data[offset : offset + 8])[0])
+                offset += 8
         elif type_name in {"VARCHAR", "CHAR"}:
-            decoded = decode_observed_var_length(data[offset:])
+            try:
+                decoded = decode_observed_var_length(data[offset:])
+            except ValueError as exc:
+                raise DecodeError(
+                    f"invalid variable-length prefix for column {column.name}: {exc}"
+                ) from exc
             offset += decoded.encoded_size
             _require(data, offset, decoded.length, column.name)
             raw = data[offset : offset + decoded.length]

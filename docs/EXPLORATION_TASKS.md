@@ -98,6 +98,7 @@ extraction from intact DM8 data files.
 - [x] Implement physical row-chain scanner that can see deleted/updated row
   records beyond the page header's active-row count.
 - [x] Observe fixed-width little-endian integer and double encodings.
+- [x] Decode little-endian IEEE-754 `DOUBLE` values in the observed row path.
 - [x] Observe short `VARCHAR` length encoding: one byte `0x80 + len` for 0..127.
 - [x] Observe long `VARCHAR` length encoding: two-byte big-endian length for
   128 and above.
@@ -108,7 +109,7 @@ extraction from intact DM8 data files.
 - [ ] Decode `TIME`.
 - [ ] Decode `TIMESTAMP`.
 - [ ] Decode `DECIMAL/NUMBER`.
-- [ ] Decode `FLOAT` and distinguish DM `FLOAT` from double storage.
+- [ ] Decode `FLOAT` precisely and distinguish DM `FLOAT` from double storage.
 - [ ] Decode update and delete row status flags precisely.
 
 ## F. CSV Extractor
@@ -123,6 +124,8 @@ extraction from intact DM8 data files.
 - [x] Implement row slicer from page body for observed ordinary BTREE data pages.
 - [x] Implement row decoder for initial non-NULL `INT`, `BIGINT`, `VARCHAR`,
   and `CHAR` subset.
+- [x] Surface decode failures in extraction reports instead of silently
+  dropping unreadable rows.
 - [ ] Implement CSV writer with headers and proper escaping.
 - [ ] Add CLI command:
 

@@ -49,6 +49,36 @@ class ObservedRowDecodeTest(unittest.TestCase):
 
         self.assertEqual(values, [9223372036854775807])
 
+    def test_decode_double(self) -> None:
+        data = bytes.fromhex("00 13 00 00 00 00 00 00 00 f8 3f") + b"\0" * 6
+        row = ObservedRow(
+            page_offset=0x62,
+            data=data,
+            header=ObservedRowHeader.from_bytes(data),
+        )
+
+        values = decode_observed_row_values(
+            row,
+            (ColumnMeta(name="D", type_name="DOUBLE"),),
+        )
+
+        self.assertEqual(values, [1.5])
+
+    def test_decode_float_length_4(self) -> None:
+        data = bytes.fromhex("00 0f 00 00 00 c0 3f") + b"\0" * 8
+        row = ObservedRow(
+            page_offset=0x62,
+            data=data,
+            header=ObservedRowHeader.from_bytes(data),
+        )
+
+        values = decode_observed_row_values(
+            row,
+            (ColumnMeta(name="F", type_name="FLOAT", length=4),),
+        )
+
+        self.assertAlmostEqual(values[0], 1.5)
+
 
 if __name__ == "__main__":
     unittest.main()

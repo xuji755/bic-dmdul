@@ -81,6 +81,9 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             )
 
             self.assertEqual(report.rows_written, 2)
+            self.assertEqual(report.rows_skipped_deleted, 1)
+            self.assertEqual(report.rows_skipped_decode_error, 0)
+            self.assertEqual(report.decode_errors, ())
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["1", "ALIVE"], ["3", "AFTER!"]])
@@ -142,9 +145,60 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             )
 
             self.assertEqual(report.rows_written, 2)
+            self.assertEqual(report.rows_skipped_deleted, 0)
+            self.assertEqual(report.rows_skipped_decode_error, 0)
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["10", "PAGE1"], ["20", "PAGE2"]])
+
+    def test_reports_decode_failures_without_writing_bad_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            page = bytearray(b"\0" * 8192)
+            page[0x62:0x6A] = bytes.fromhex("00 08 00") + b"SHORT"
+            data_file.write_bytes(bytes(page))
+            output_path = root / "bad.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_BAD",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                                {"name": "V", "type_name": "VARCHAR"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_BAD",
+                output=output_path,
+            )
+
+            self.assertEqual(report.rows_written, 0)
+            self.assertEqual(report.rows_skipped_decode_error, 1)
+            self.assertIn("page=0 offset=98", report.decode_errors[0])
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+        self.assertEqual(rows, [["ID", "V"]])
 
 
 if __name__ == "__main__":

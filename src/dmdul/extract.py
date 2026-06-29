@@ -15,6 +15,9 @@ class ExtractionReport:
     table: str
     output: Path
     rows_written: int
+    rows_skipped_deleted: int
+    rows_skipped_decode_error: int
+    decode_errors: tuple[str, ...]
     mode: str
 
 
@@ -39,6 +42,9 @@ def extract_csv_with_calibrated_metadata(
     data_file = DataFile(data_file_meta.path, page_size=data_file_meta.page_size)
     output.parent.mkdir(parents=True, exist_ok=True)
     rows_written = 0
+    rows_skipped_deleted = 0
+    rows_skipped_decode_error = 0
+    decode_errors: list[str] = []
     with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([column.name for column in table.columns])
@@ -47,10 +53,16 @@ def extract_csv_with_calibrated_metadata(
             rows = scan_observed_row_chain(page)
             for row in rows:
                 if row.is_deleted:
+                    rows_skipped_deleted += 1
                     continue
                 try:
                     values = decode_observed_row_values(row, table.columns)
-                except DecodeError:
+                except DecodeError as exc:
+                    rows_skipped_decode_error += 1
+                    if len(decode_errors) < 10:
+                        decode_errors.append(
+                            f"page={page_no} offset={row.page_offset}: {exc}"
+                        )
                     continue
                 writer.writerow(values)
                 rows_written += 1
@@ -59,6 +71,9 @@ def extract_csv_with_calibrated_metadata(
         table=table.qualified_name,
         output=output,
         rows_written=rows_written,
+        rows_skipped_deleted=rows_skipped_deleted,
+        rows_skipped_decode_error=rows_skipped_decode_error,
+        decode_errors=tuple(decode_errors),
         mode="calibrated-metadata-page-range-scan",
     )
 
