@@ -1,0 +1,14 @@
+[project]
+name = "dmdul"
+version = "0.1.0"
+description = "Offline DM8 data extraction research tool"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+dmdul = "dmdul.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
