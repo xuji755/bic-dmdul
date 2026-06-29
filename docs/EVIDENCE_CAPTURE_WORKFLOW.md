@@ -143,6 +143,8 @@ If extraction reaches row decoding but any live row cannot be decoded, the
 report emits `diagnostic=row-decode-error` and `ok=false`; treat that CSV as
 partial research output, not a complete recovery result.
 Use `--report-output` to save the extraction report JSON after row scanning.
+Use `--strict-page-plan` with `--segment-json` when scan-range fallback must be
+rejected instead of treated as research output.
 
 For controlled `dm.ctl` layout exploration, capture snapshots before and after
 one storage operation, then compare them:

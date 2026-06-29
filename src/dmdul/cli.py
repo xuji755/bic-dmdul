@@ -205,9 +205,12 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         return 2
     if args.metadata_json is not None:
         metadata = CalibratedMetadata.from_json_file(Path(args.metadata_json))
+        page_plan_fallback_level = None
     elif args.segment_json is not None:
         metadata = CalibratedMetadata.from_segment_manifest_file(Path(args.segment_json))
+        page_plan_fallback_level = "error" if args.strict_page_plan else "warning"
     else:
+        page_plan_fallback_level = None
         if not args.skip_preflight:
             summary = summarize_database_dir(
                 database_dir=Path(args.database_dir),
@@ -241,6 +244,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         metadata=metadata,
         table_name=args.table,
         output=Path(args.output),
+        page_plan_fallback_level=page_plan_fallback_level,
     )
     if args.report_output:
         Path(args.report_output).write_text(
@@ -261,6 +265,8 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     for error in report.decode_errors:
         print(f"decode_error={error}", file=sys.stderr)
     print(f"mode={report.mode}")
+    if args.strict_page_plan and not report.ok:
+        return 1
     return 0
 
 
@@ -715,6 +721,11 @@ def build_parser() -> argparse.ArgumentParser:
     extract_csv.add_argument(
         "--report-output",
         help="write extract-csv report JSON after row scanning",
+    )
+    extract_csv.add_argument(
+        "--strict-page-plan",
+        action="store_true",
+        help="fail if a segment manifest cannot provide a page-reference traversal plan",
     )
     extract_csv.add_argument(
         "--scan-pages",

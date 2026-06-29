@@ -163,7 +163,8 @@ class CliTest(unittest.TestCase):
                 ]
             )
             stdout = io.StringIO()
-            with redirect_stdout(stdout):
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
                 exit_code = args.func(args)
             report = json.loads(report_output.read_text(encoding="utf-8"))
 
@@ -229,6 +230,95 @@ class CliTest(unittest.TestCase):
         self.assertEqual(extract_exit_code, 0)
         self.assertEqual(rows, [["ID"], ["7"]])
 
+    def test_extract_csv_segment_json_reports_scan_range_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            segment_file = root / "segment.json"
+            output = root / "out.csv"
+            report_output = root / "report.json"
+            page = bytearray(8192)
+            page[0x62:0x73] = (
+                bytes.fromhex("00 11 00")
+                + (7).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x11 - 2 - 1 - 4)
+            )
+            data_file.write_bytes(bytes(page))
+            segment_file.write_text(
+                json.dumps(_segment_manifest_without_page_plan(data_file)),
+                encoding="utf-8",
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--segment-json",
+                    str(segment_file),
+                    "--table",
+                    "SYSDBA.DMDUL_ONE",
+                    "--output",
+                    str(output),
+                    "--report-output",
+                    str(report_output),
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+            report = json.loads(report_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["diagnostics"][0]["level"], "warning")
+        self.assertEqual(
+            report["diagnostics"][0]["code"],
+            "page-plan-fallback-scan-range",
+        )
+
+    def test_extract_csv_strict_page_plan_fails_scan_range_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            segment_file = root / "segment.json"
+            output = root / "out.csv"
+            report_output = root / "report.json"
+            data_file.write_bytes(bytes(8192))
+            segment_file.write_text(
+                json.dumps(_segment_manifest_without_page_plan(data_file)),
+                encoding="utf-8",
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--segment-json",
+                    str(segment_file),
+                    "--table",
+                    "SYSDBA.DMDUL_ONE",
+                    "--output",
+                    str(output),
+                    "--report-output",
+                    str(report_output),
+                    "--strict-page-plan",
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+            report = json.loads(report_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["diagnostics"][0]["level"], "error")
+        self.assertEqual(
+            report["diagnostics"][0]["code"],
+            "page-plan-fallback-scan-range",
+        )
+
 
 def _page0() -> bytes:
     page = bytearray(128)
@@ -236,6 +326,27 @@ def _page0() -> bytes:
     page[4:8] = (0).to_bytes(4, "little")
     page[20:24] = (0x13).to_bytes(4, "little")
     return bytes(page)
+
+
+def _segment_manifest_without_page_plan(data_file: Path) -> dict[str, object]:
+    return {
+        "table": "SYSDBA.DMDUL_ONE",
+        "columns": [{"name": "ID", "type_name": "INT"}],
+        "segment": {
+            "group_id": 6,
+            "root_file": 0,
+            "root_page": 0,
+            "scan_pages": 1,
+        },
+        "data_files": [
+            {
+                "group_id": 6,
+                "file_no": 0,
+                "path": str(data_file),
+                "page_size": 8192,
+            }
+        ],
+    }
 
 
 def _large_page0(*, group_raw: int, page_kind: int) -> bytes:

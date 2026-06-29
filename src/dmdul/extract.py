@@ -56,6 +56,7 @@ def extract_csv_with_calibrated_metadata(
     metadata: CalibratedMetadata,
     table_name: str,
     output: Path,
+    page_plan_fallback_level: str | None = None,
 ) -> ExtractionReport:
     """Create a CSV for a table using calibrated metadata.
 
@@ -81,7 +82,11 @@ def extract_csv_with_calibrated_metadata(
     rows_skipped_decode_error = 0
     decode_errors: list[str] = []
     diagnostics: list[dict[str, Any]] = []
-    page_plan = _build_page_plan(table, data_files)
+    page_plan = _build_page_plan(
+        table,
+        data_files,
+        fallback_level=page_plan_fallback_level,
+    )
     diagnostics.extend(page_plan.diagnostics)
     with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
@@ -154,6 +159,8 @@ def describe_table_plan(table: TableMeta) -> list[str]:
 def _build_page_plan(
     table: TableMeta,
     data_files: dict[int, DataFile],
+    *,
+    fallback_level: str | None = None,
 ) -> PagePlan:
     if table.storage.page_refs:
         return _walk_leaf_chain(
@@ -166,12 +173,23 @@ def _build_page_plan(
             file_no=table.storage.file_no,
             start_pages=table.storage.page_numbers,
         )
+    diagnostics: tuple[dict[str, Any], ...] = ()
+    if fallback_level is not None:
+        diagnostics = (
+            {
+                "level": fallback_level,
+                "code": "page-plan-fallback-scan-range",
+                "message": "segment manifest has no page-reference plan; falling back to scan_pages from the root page",
+                "root_page": table.storage.root_page,
+                "scan_pages": table.storage.scan_pages,
+            },
+        )
     return PagePlan(
         pages=tuple(
             StoragePageRef(file_no=table.storage.file_no, page_no=page_no)
             for page_no in _iter_scan_pages(table)
         ),
-        diagnostics=(),
+        diagnostics=diagnostics,
     )
 
 

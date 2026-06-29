@@ -271,6 +271,10 @@ dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
   transaction visibility diagnostics.
 - [x] Allow `extract-csv` to consume the target-table segment manifest produced
   by `resolve-table --output`.
+- [x] Emit scan-range fallback diagnostics for segment manifests that lack a
+  page-reference plan.
+- [x] Add `--strict-page-plan` so `extract-csv --segment-json` fails instead of
+  silently using `scan_pages` fallback.
 
 ## H. Test Corpus
 
