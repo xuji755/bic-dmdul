@@ -67,6 +67,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             output = root / "out.csv"
+            preflight_output = root / "extract_preflight.json"
             (root / "SYSTEM.DBF").write_bytes(_page0() + bytes(128))
 
             parser = build_parser()
@@ -83,16 +84,24 @@ class CliTest(unittest.TestCase):
                     str(output),
                     "--preflight-catalog-pages",
                     "0",
+                    "--preflight-output",
+                    str(preflight_output),
                 ]
             )
             stderr = io.StringIO()
             with redirect_stderr(stderr):
                 exit_code = args.func(args)
+            payload = json.loads(preflight_output.read_text(encoding="utf-8"))
 
         self.assertEqual(exit_code, 1)
         self.assertIn("extract-csv preflight failed", stderr.getvalue())
         self.assertIn("fatal_preflight=control-file-not-found", stderr.getvalue())
         self.assertFalse(output.exists())
+        self.assertFalse(payload["preflight"]["ok"])
+        self.assertEqual(
+            payload["summary"]["diagnostics"]["counts_by_code"]["control-file-not-found"],
+            1,
+        )
 
 
 def _page0() -> bytes:

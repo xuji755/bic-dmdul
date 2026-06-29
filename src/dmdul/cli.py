@@ -210,6 +210,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
                 sample_limit=args.preflight_sample_limit,
             )
             preflight = evaluate_database_summary_preflight(summary)
+            _write_preflight_output(args.preflight_output, summary, preflight)
             if not preflight["ok"]:
                 print(
                     "dmdul: extract-csv preflight failed; "
@@ -244,6 +245,23 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         print(f"decode_error={error}", file=sys.stderr)
     print(f"mode={report.mode}")
     return 0
+
+
+def _write_preflight_output(
+    output: str | None,
+    summary: dict[str, object],
+    preflight: dict[str, object],
+) -> None:
+    if output is None:
+        return
+    payload = json.dumps(
+        {
+            "summary": summary,
+            "preflight": preflight,
+        },
+        indent=2,
+    )
+    Path(output).write_text(payload + "\n", encoding="utf-8")
 
 
 def _cmd_resolve_table(args: argparse.Namespace) -> int:
@@ -686,6 +704,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8,
         help="sample limit during extract-csv preflight",
+    )
+    extract_csv.add_argument(
+        "--preflight-output",
+        help="write extract-csv preflight summary and decision JSON",
     )
     extract_csv.add_argument(
         "--scan-pages",

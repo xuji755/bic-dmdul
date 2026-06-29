@@ -64,6 +64,8 @@ to explain the underlying database structure.
   fatal file-set diagnostics.
 - [x] Run conservative file-set preflight by default for
   `extract-csv --database-dir`.
+- [x] Allow `extract-csv --database-dir` to persist its preflight JSON with
+  `--preflight-output`.
 
 ## B. Page Header And Space Management
 
