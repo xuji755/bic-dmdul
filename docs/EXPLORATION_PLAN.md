@@ -1,11 +1,20 @@
 # DM8 Storage Exploration Plan
 
-This plan tracks the first investigation phase for `dmdul`.
+This plan tracks the database-level investigation needed for `dmdul`. The goal
+is not just to find row bytes in a file; it is to reconstruct enough DM8 storage
+and transaction semantics to export a table correctly when the instance cannot
+start.
+
+See also:
+
+- [Foundational research plan](FOUNDATIONAL_RESEARCH_PLAN.md)
+- [Technical roadmap](TECHNICAL_EXPLORATION_ROADMAP.md)
+- [Implementation checklist](EXPLORATION_TASKS.md)
 
 ## Phase 1: Storage Model Baseline
 
 Goal: understand enough of DM8's physical storage model to build a focused
-offline extractor prototype.
+offline extractor prototype with explicit correctness boundaries.
 
 Topics to document:
 
@@ -18,6 +27,15 @@ Topics to document:
 - Differences between ordinary tables, indexes, partitioned tables, compressed
   tables, and HUGE tables.
 - ASM disk group metadata and logical-to-physical file mapping.
+- File-system and snapshot assumptions: whether the input files are from clean
+  shutdown, crash state, copied live files, storage snapshot, sparse files, or
+  ASM disks.
+- Page checkpoint/LSN/SCN fields, checksums if present, and torn-page signals.
+- MVCC fields in row records: transaction id, undo pointer, row version flags,
+  delete/update flags, and commit visibility.
+- UNDO tablespace, undo segment, undo page, and undo record formats.
+- Transaction status metadata needed to distinguish committed, uncommitted,
+  rolled-back, and in-progress row versions.
 
 Important online metadata views:
 
@@ -94,3 +112,21 @@ Initial extractor scope:
 - decode a small set of common types: integer, bigint, varchar, date, timestamp.
 
 ASM support should be added after ordinary file parsing is understood.
+
+## Phase 6: Database Semantics
+
+Goal: move from page scanning to a database-correct extractor.
+
+Required investigations:
+
+- Determine whether the copied files are cold-consistent or crash-state.
+- Locate checkpoint/SCN/LSN metadata in file and page headers.
+- Decode row MVCC metadata for insert, delete, update, rollback, and concurrent
+  uncommitted transactions.
+- Locate transaction tables and UNDO segment metadata.
+- Decode enough UNDO records to reconstruct or reject row versions whose current
+  page image is not visible.
+- Decide the extraction snapshot rule: latest clean checkpoint, supplied SCN, or
+  best-effort committed state.
+- Add strict extraction mode that exits non-zero when any row or transaction
+  visibility decision is uncertain.

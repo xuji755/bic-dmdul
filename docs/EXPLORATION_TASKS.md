@@ -3,6 +3,11 @@
 This checklist is ordered toward the final goal: offline table-to-CSV
 extraction from intact DM8 data files.
 
+The current priority is foundational storage research, not adding more
+best-effort extraction behavior. A task should be marked complete only when it
+has controlled fixtures, raw-byte evidence, and parser/test coverage sufficient
+to explain the underlying database structure.
+
 ## A. File And Tablespace Discovery
 
 - [x] Confirm page size on the test instance: 8192 bytes.
@@ -20,6 +25,13 @@ extraction from intact DM8 data files.
 - [ ] Determine how `SYS.V$DATAFILE` metadata is persisted on disk.
 - [x] Build local file discovery that scans candidate `.DBF` files and groups
   them by observed group id.
+- [ ] Identify database identity fields that prove all input files belong to the
+  same database.
+- [ ] Identify checkpoint/SCN/LSN fields in file headers and decide how to
+  detect mixed or unsafe file copies.
+- [ ] Determine which rollback/undo files are required for MVCC visibility.
+- [ ] Detect missing files, sparse holes, short reads, and file-size/page-count
+  mismatches before extraction.
 
 ## B. Page Header And Space Management
 
@@ -41,6 +53,10 @@ extraction from intact DM8 data files.
   object/storage id fields.
 - [ ] Decode file or extent bitmap pages enough to distinguish allocated and
   free pages.
+- [ ] Decode page checksum or validation fields if present.
+- [ ] Decode page SCN/LSN/checkpoint fields if present.
+- [ ] Reject pages whose header identity does not match their file/page
+  position.
 
 ## C. Segment And BTREE Structure
 
@@ -53,6 +69,14 @@ extraction from intact DM8 data files.
 - [ ] Decide fallback strategy: full segment scan when root traversal is not yet
   reliable.
 - [ ] Decode how allocated extent lists are represented outside online views.
+- [ ] Decode segment root/header metadata:
+  - segment or storage object id
+  - high-water mark or allocated page boundary
+  - extent map/list roots
+  - leaf chain anchors
+- [ ] Verify traversal completeness and duplicate prevention for multi-page
+  tables.
+- [ ] Validate multi-file tablespace page references.
 
 ## D. SYS Dictionary Bootstrap
 
@@ -90,6 +114,13 @@ extraction from intact DM8 data files.
   `TYPE$`, and `SUBTYPE$` offsets.
 - [ ] Remove hard-coded dictionary root pages by discovering them from file
   metadata or a reliable system bootstrap structure.
+- [ ] Decode schema/user dictionary metadata enough to resolve duplicate table
+  names across schemas.
+- [ ] Decode system data-file/tablespace dictionary metadata that backs
+  `SYS.V$DATAFILE`.
+- [ ] Detect unsupported table classes from dictionary metadata:
+  partitioned, compressed, encrypted, LOB-heavy, HUGE, temporary, external, or
+  non-row-store objects.
 
 ## E. Row Format And Type Decoding
 
@@ -111,8 +142,38 @@ extraction from intact DM8 data files.
 - [ ] Decode `DECIMAL/NUMBER`.
 - [ ] Decode `FLOAT` precisely and distinguish DM `FLOAT` from double storage.
 - [ ] Decode update and delete row status flags precisely.
+- [ ] Decode row transaction/MVCC fields:
+  - inserting/updating transaction id
+  - commit/visibility SCN or equivalent
+  - lock/active transaction marker
+  - undo pointer
+- [ ] Decode row chaining, overflow rows, and LOB locators enough to detect or
+  reject unsupported rows.
 
-## F. CSV Extractor
+## F. MVCC, Transaction State, And UNDO
+
+- [ ] Locate rollback/undo tablespace and files from offline metadata.
+- [ ] Decode undo segment headers.
+- [ ] Decode undo page headers.
+- [ ] Decode undo record headers and before-image payloads.
+- [ ] Decode transaction table/status metadata.
+- [ ] Build visibility rules for:
+  - committed insert
+  - committed delete
+  - committed update
+  - uncommitted insert
+  - uncommitted delete
+  - uncommitted update
+  - rolled-back transaction
+  - crash during transaction
+- [ ] Decide extraction snapshot semantics:
+  - latest clean checkpoint
+  - supplied SCN
+  - best-effort committed state
+- [ ] Detect when redo is required and fail with a diagnostic until redo support
+  exists.
+
+## G. CSV Extractor
 
 - [x] Define internal metadata structures:
   - data files
@@ -140,8 +201,12 @@ dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
   table `DMDUL_MANY` by decoding 80/80 rows from data files.
 - [ ] Validate full CLI CSV output against online `SELECT *` for controlled
   test tables.
+- [ ] Add strict mode that fails if any live row, page, dictionary record, or
+  transaction visibility decision is uncertain.
+- [ ] Emit extraction report with row counts, skipped deleted rows, decode
+  errors, unsupported structures, and consistency diagnostics.
 
-## G. Test Corpus
+## H. Test Corpus
 
 - [x] Create `DMDUL_T1`: mixed basic types, primary key.
 - [x] Create `DMDUL_HEAP`: table without primary key.
@@ -155,3 +220,14 @@ dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
 - [ ] Create one-column tables for each target type.
 - [ ] Create rows around page capacity boundaries.
 - [ ] Create deleted rows followed by insert reuse.
+- [ ] Create multi-extent table.
+- [ ] Create multi-file tablespace table.
+- [ ] Create duplicate table names in different schemas.
+- [ ] Create committed update/delete/insert fixtures.
+- [ ] Create uncommitted insert fixture copied before commit.
+- [ ] Create uncommitted delete fixture copied before commit.
+- [ ] Create uncommitted update fixture copied before commit.
+- [ ] Create rollback fixture after insert/update/delete rollback.
+- [ ] Create crash-state fixture with active transaction.
+- [ ] Capture expected online `SELECT *` CSV for every fixture.
+- [ ] Capture cold-consistent and crash-state file snapshots separately.

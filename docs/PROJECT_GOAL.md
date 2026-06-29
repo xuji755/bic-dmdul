@@ -15,6 +15,41 @@ dmdul extract-csv \
   --output T1.csv
 ```
 
+## Correctness Goal
+
+`dmdul` is a database-level offline reader, not a byte-pattern file dumper. A
+successful extraction must:
+
+- identify the database, tablespaces, files, segments, pages, dictionary rows,
+  table rows, and transaction visibility from on-disk structures;
+- return each logically visible row exactly once;
+- skip deleted or rolled-back row versions;
+- avoid returning uncommitted row versions when their transaction state can be
+  determined from on-disk metadata;
+- fail loudly when a required storage, dictionary, row, MVCC, or UNDO structure
+  is not understood well enough to guarantee correctness.
+
+The implementation should therefore prefer "known incomplete" over silent
+partial output. Transitional research modes may scan pages heuristically, but
+the production path must expose any uncertainty in the extraction report.
+
+## Milestone Semantics
+
+The project has two correctness milestones:
+
+1. **Cold-consistent extraction**: data files come from a clean shutdown,
+   storage snapshot, or otherwise internally consistent checkpoint. The tool can
+   ignore crash recovery but must still understand table storage, page layout,
+   row format, and committed delete/update markers.
+2. **Crash-state extraction**: data files may contain active transaction
+   versions. The tool must understand row MVCC fields, transaction status, and
+   UNDO enough to decide which row version is visible at the chosen extraction
+   point.
+
+Redo log replay is outside the first milestone. If data files require redo to
+reach a consistent committed state, `dmdul` should detect the condition and
+report it rather than fabricating rows.
+
 ## Non-Negotiable Constraint
 
 The final extraction path must not query online views such as:
@@ -88,4 +123,3 @@ The extractor must build enough dictionary metadata from files:
 During development, a temporary "calibrated metadata" mode may accept metadata
 exported from a healthy database. That mode is only a stepping stone for row and
 page decoding; it is not the final DUL-style solution.
-

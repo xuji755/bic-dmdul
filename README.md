@@ -19,7 +19,9 @@ environment notes.
 Research notes:
 
 - [Project goal](docs/PROJECT_GOAL.md)
+- [Foundational research plan](docs/FOUNDATIONAL_RESEARCH_PLAN.md)
 - [Exploration and implementation tasks](docs/EXPLORATION_TASKS.md)
 - [Exploration plan](docs/EXPLORATION_PLAN.md)
+- [Technical exploration roadmap](docs/TECHNICAL_EXPLORATION_ROADMAP.md)
 - [First storage exploration](docs/STORAGE_EXPLORATION_2026-06-29.md)
 - [DM8 storage architecture notes](docs/DM8_STORAGE_ARCHITECTURE_NOTES.md)
