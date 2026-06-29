@@ -14,6 +14,7 @@ from .evidence import (
 from .extract import extract_csv_with_calibrated_metadata
 from .metadata import CalibratedMetadata
 from .page import ObservedPageHeader, format_hex_dump
+from .page_catalog import catalog_data_file_pages
 from .resolver import OfflineResolveError, resolve_offline_table_metadata
 from .row import iter_observed_rows, scan_observed_row_chain
 from .storage import DataFile
@@ -108,6 +109,22 @@ def _cmd_verify_evidence(args: argparse.Namespace) -> int:
     result = verify_evidence_manifest(Path(args.manifest))
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
+
+
+def _cmd_catalog_pages(args: argparse.Namespace) -> int:
+    catalog = catalog_data_file_pages(
+        path=Path(args.file),
+        page_size=args.page_size,
+        start_page=args.start_page,
+        max_pages=args.max_pages,
+        sample_limit=args.sample_limit,
+    )
+    payload = json.dumps(catalog, indent=2)
+    if args.output:
+        Path(args.output).write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
+    return 0
 
 
 def _cmd_extract_csv(args: argparse.Namespace) -> int:
@@ -499,6 +516,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_evidence.add_argument("manifest")
     verify_evidence.set_defaults(func=_cmd_verify_evidence)
+
+    catalog_pages = subparsers.add_parser(
+        "catalog-pages",
+        help="scan a DM data file and summarize observed page headers",
+    )
+    catalog_pages.add_argument("file")
+    catalog_pages.add_argument("--start-page", type=int, default=0)
+    catalog_pages.add_argument("--max-pages", type=int)
+    catalog_pages.add_argument("--sample-limit", type=int, default=32)
+    catalog_pages.add_argument("--output")
+    catalog_pages.set_defaults(func=_cmd_catalog_pages)
 
     extract_csv = subparsers.add_parser(
         "extract-csv",

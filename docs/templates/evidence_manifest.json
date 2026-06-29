@@ -22,7 +22,8 @@
     }
   ],
   "evidence_json": [
-    "path/to/capture-evidence-output.json"
+    "path/to/capture-evidence-output.json",
+    "path/to/catalog-pages-output.json"
   ],
   "notes": [
     "Describe shutdown/snapshot method and any SQL dialect adjustments.",

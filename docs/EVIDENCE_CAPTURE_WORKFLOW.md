@@ -62,6 +62,20 @@ The JSON records:
 - marker offsets and page-relative positions;
 - marker context as hex and formatted dump.
 
+For broader page-layout exploration, build a page catalog for the same file:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli catalog-pages \
+  /dmdata/data/DAMENG/DMDUL_TS01.DBF \
+  --start-page 0 \
+  --max-pages 512 \
+  --output evidence/dmdul_ts01_page_catalog.json
+```
+
+The catalog records page-kind counts, empty pages, page-number mismatches,
+nonzero page samples, and previous/next page-reference samples. It does not
+assign final semantic names to unknown page kinds.
+
 Fill in `docs/templates/evidence_manifest.json` beside the captured DBF files
 so the copy method, reference output, and evidence JSON remain tied together.
 

@@ -57,6 +57,8 @@ to explain the underlying database structure.
 - [ ] Decode page SCN/LSN/checkpoint fields if present.
 - [ ] Reject pages whose header identity does not match their file/page
   position.
+- [x] Add page catalog scanner for page-kind counts, empty pages, page identity
+  mismatches, and page-reference samples.
 
 ## C. Segment And BTREE Structure
 
