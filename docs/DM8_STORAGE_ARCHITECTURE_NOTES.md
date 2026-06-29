@@ -313,6 +313,15 @@ count, physical row count, live row count, or deleted row count. The aggregate
 BTREE/data pages. These relations are intended to identify row count, free-space
 boundary, and slot-directory fields from evidence before assigning final names.
 
+The same probe records a `slot_tail_probe` for the bytes after the observed row
+chain. It counts nonzero bytes in that tail region, scans 2-byte little-endian
+candidate values without assuming alignment, and records whether each value
+points to a row start discovered by the physical row-chain scan. The
+`row_area_summary` aggregates candidate counts and row-start hits for
+BTREE/data pages. This is only a slot-directory candidate detector; real slot
+ordering, deleted-slot handling, and free-space compaction still need controlled
+fixtures.
+
 Observed fixed-width values:
 
 - `INT 1` -> `01 00 00 00`

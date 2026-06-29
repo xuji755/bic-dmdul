@@ -179,6 +179,13 @@ def _row_area_probe(
     live_rows = sum(1 for row in rows if not row.is_deleted)
     deleted_rows = sum(1 for row in rows if row.is_deleted)
     row_chain_end_offset = rows[-1].page_offset + rows[-1].length if rows else start_offset
+    row_start_offsets = {row.page_offset for row in rows}
+    slot_tail_probe = _slot_tail_probe(
+        page=page,
+        search_start_offset=row_chain_end_offset,
+        row_start_offsets=row_start_offsets,
+        sample_limit=sample_limit,
+    )
     field_relations = _header_field_relations(
         header=header,
         start_offset=start_offset,
@@ -197,6 +204,7 @@ def _row_area_probe(
         "count_delta_physical_minus_header": len(rows) - header.observed_row_count,
         "header_field_candidates": _header_field_candidates(header),
         "candidate_field_relations": field_relations,
+        "slot_tail_probe": slot_tail_probe,
         "sampled_rows": [
             {
                 "page_offset": row.page_offset,
@@ -220,10 +228,14 @@ def _new_row_area_summary() -> dict[str, Any]:
         "total_physical_rows_scanned": 0,
         "total_live_rows_scanned": 0,
         "total_deleted_rows_scanned": 0,
+        "pages_with_slot_row_start_hits": 0,
+        "total_slot_candidate_values": 0,
+        "total_slot_row_start_hits": 0,
         "count_delta_histogram": Counter(),
         "header_field_relation_counts": {},
         "count_delta_samples": [],
         "deleted_row_samples": [],
+        "slot_row_start_hit_samples": [],
     }
 
 
@@ -241,12 +253,15 @@ def _accumulate_row_area_summary(
     delta = probe["count_delta_physical_minus_header"]
     deleted_rows = probe["deleted_rows_scanned"]
     physical_rows = probe["physical_rows_scanned"]
+    slot_probe = probe["slot_tail_probe"]
 
     summary["included_pages"] += 1
     summary["total_header_observed_row_count"] += probe["header_observed_row_count"]
     summary["total_physical_rows_scanned"] += physical_rows
     summary["total_live_rows_scanned"] += probe["live_rows_scanned"]
     summary["total_deleted_rows_scanned"] += deleted_rows
+    summary["total_slot_candidate_values"] += slot_probe["candidate_values_scanned"]
+    summary["total_slot_row_start_hits"] += slot_probe["row_start_hits"]
     summary["count_delta_histogram"][str(delta)] += 1
     for field_name, relations in probe["candidate_field_relations"].items():
         for relation in relations["matches"]:
@@ -257,6 +272,12 @@ def _accumulate_row_area_summary(
             )
     if physical_rows:
         summary["pages_with_physical_rows"] += 1
+    if slot_probe["row_start_hits"]:
+        summary["pages_with_slot_row_start_hits"] += 1
+        if len(summary["slot_row_start_hit_samples"]) < sample_limit:
+            summary["slot_row_start_hit_samples"].append(
+                _row_area_page_sample(page_no=page_no, header=header, probe=probe)
+            )
     if deleted_rows:
         summary["pages_with_deleted_rows"] += 1
         if len(summary["deleted_row_samples"]) < sample_limit:
@@ -291,6 +312,7 @@ def _row_area_page_sample(
             "count_delta_physical_minus_header"
         ],
         "candidate_field_relations": probe["candidate_field_relations"],
+        "slot_tail_probe": probe["slot_tail_probe"],
         "sampled_rows": probe["sampled_rows"],
     }
 
@@ -315,6 +337,51 @@ def _header_field_candidates(header: ObservedPageHeader) -> dict[str, int]:
         "field_24_u16le": header.field_24_u16le,
         "field_26_u16le": header.field_26_u16le,
         "field_2c_u16le": header.field_2c_u16le,
+    }
+
+
+def _slot_tail_probe(
+    *,
+    page: bytes,
+    search_start_offset: int,
+    row_start_offsets: set[int],
+    sample_limit: int,
+) -> dict[str, Any]:
+    tail = page[search_start_offset:]
+    nonzero_offsets = [
+        search_start_offset + index
+        for index, byte in enumerate(tail)
+        if byte != 0
+    ]
+    candidate_values: list[dict[str, Any]] = []
+    candidate_values_scanned = 0
+    row_start_hits = 0
+    for offset in range(search_start_offset, len(page) - 1):
+        raw = page[offset : offset + 2]
+        value = int.from_bytes(raw, "little")
+        if value == 0 or value >= len(page):
+            continue
+        candidate_values_scanned += 1
+        points_to_row_start = value in row_start_offsets
+        if points_to_row_start:
+            row_start_hits += 1
+        if len(candidate_values) < sample_limit:
+            candidate_values.append(
+                {
+                    "page_offset": offset,
+                    "raw_hex": raw.hex(),
+                    "value_u16le": value,
+                    "points_to_scanned_row_start": points_to_row_start,
+                }
+            )
+    return {
+        "search_start_offset": search_start_offset,
+        "tail_nonzero_bytes": len(nonzero_offsets),
+        "first_tail_nonzero_offset": nonzero_offsets[0] if nonzero_offsets else None,
+        "last_tail_nonzero_offset": nonzero_offsets[-1] if nonzero_offsets else None,
+        "candidate_values_scanned": candidate_values_scanned,
+        "row_start_hits": row_start_hits,
+        "sampled_candidate_values": candidate_values,
     }
 
 

@@ -117,6 +117,8 @@ to explain the underlying database structure.
 - [x] Record neutral relations between anonymous page-header fields and
   row-chain facts to calibrate row count, free-space, and slot-directory
   candidates from evidence.
+- [x] Add slot-tail candidate probing that scans post-row-chain bytes for
+  2-byte page-offset values pointing to observed row starts.
 
 ## C. Segment And BTREE Structure
 

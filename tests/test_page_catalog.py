@@ -123,6 +123,8 @@ class PageCatalogTest(unittest.TestCase):
             )
             page[0x62:0x66] = bytes.fromhex("00 04 01 02")
             page[0x66:0x6B] = bytes.fromhex("80 05") + b"DEL"
+            page[0x7C:0x7E] = (0x62).to_bytes(2, "little")
+            page[0x7E:0x80] = (0x66).to_bytes(2, "little")
             path.write_bytes(bytes(page))
 
             catalog = catalog_data_file_pages(
@@ -160,6 +162,29 @@ class PageCatalogTest(unittest.TestCase):
             "equals_header_observed_row_count",
             probe["candidate_field_relations"]["field_2c_u16le"]["matches"],
         )
+        slot_probe = probe["slot_tail_probe"]
+        self.assertEqual(slot_probe["search_start_offset"], 0x6B)
+        self.assertEqual(slot_probe["first_tail_nonzero_offset"], 0x7C)
+        self.assertEqual(slot_probe["last_tail_nonzero_offset"], 0x7E)
+        self.assertEqual(slot_probe["candidate_values_scanned"], 2)
+        self.assertEqual(slot_probe["row_start_hits"], 2)
+        self.assertEqual(
+            slot_probe["sampled_candidate_values"][-2:],
+            [
+                {
+                    "page_offset": 0x7C,
+                    "raw_hex": "6200",
+                    "value_u16le": 0x62,
+                    "points_to_scanned_row_start": True,
+                },
+                {
+                    "page_offset": 0x7E,
+                    "raw_hex": "6600",
+                    "value_u16le": 0x66,
+                    "points_to_scanned_row_start": True,
+                },
+            ],
+        )
         row_summary = catalog["row_area_summary"]
         self.assertEqual(
             row_summary["included_page_kind_label"],
@@ -173,6 +198,9 @@ class PageCatalogTest(unittest.TestCase):
         self.assertEqual(row_summary["total_physical_rows_scanned"], 2)
         self.assertEqual(row_summary["total_live_rows_scanned"], 1)
         self.assertEqual(row_summary["total_deleted_rows_scanned"], 1)
+        self.assertEqual(row_summary["pages_with_slot_row_start_hits"], 1)
+        self.assertEqual(row_summary["total_slot_candidate_values"], 2)
+        self.assertEqual(row_summary["total_slot_row_start_hits"], 2)
         self.assertEqual(row_summary["count_delta_histogram"], {"1": 1})
         self.assertEqual(
             row_summary["header_field_relation_counts"]["field_24_u16le"],
@@ -184,6 +212,12 @@ class PageCatalogTest(unittest.TestCase):
         )
         self.assertEqual(row_summary["count_delta_samples"][0]["page_no"], 0)
         self.assertEqual(row_summary["deleted_row_samples"][0]["deleted_rows_scanned"], 1)
+        self.assertEqual(
+            row_summary["slot_row_start_hit_samples"][0]["slot_tail_probe"][
+                "row_start_hits"
+            ],
+            2,
+        )
 
     def test_row_area_summary_ignores_non_btree_data_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

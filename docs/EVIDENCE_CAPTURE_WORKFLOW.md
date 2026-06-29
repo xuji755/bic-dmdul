@@ -236,9 +236,10 @@ top-level `row_area_summary` aggregates these row-area signals for sampled
 BTREE/data pages and keeps capped samples for row-count deltas and deleted-row
 cases. It also records neutral relation counts between anonymous page-header
 fields and observed row-chain facts, such as chain start/end offsets and
-live/deleted row counts. Labels, relation names, and anonymous header-field
-names are for evidence triage only and must not be treated as final page parser
-semantics.
+live/deleted row counts. Slot-tail probes scan the bytes after the observed row
+chain for 2-byte candidate offsets and mark values that point to scanned row
+starts. Labels, relation names, and anonymous header-field names are for
+evidence triage only and must not be treated as final page parser semantics.
 
 Fill in `docs/templates/evidence_manifest.json` beside the captured DBF files
 so the copy method, reference output, and evidence JSON remain tied together.
