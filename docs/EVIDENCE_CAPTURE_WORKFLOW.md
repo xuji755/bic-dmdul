@@ -72,8 +72,9 @@ PYTHONPATH=src python3 -m dmdul.cli compare-control-files \
 ```
 
 The comparison records file identities, changed byte counts, sampled changed
-ranges, and before/after hex windows. Treat the output as byte-level evidence,
-not as decoded control-file semantics.
+ranges, before/after hex windows, and little-endian numeric candidates around
+changed offsets. Treat the output as byte-level evidence, not as decoded
+control-file semantics.
 
 Use deterministic markers from the fixture SQL to locate relevant pages:
 

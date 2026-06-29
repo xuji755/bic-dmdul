@@ -48,6 +48,15 @@ class ControlFileTest(unittest.TestCase):
         self.assertEqual(comparison["changed_ranges"][0]["stop_exclusive"], 6)
         self.assertEqual(comparison["changed_ranges"][0]["before_hex"], b"aabbbb".hex())
         self.assertEqual(comparison["changed_ranges"][0]["after_hex"], b"aaBBbb".hex())
+        numeric_candidates = comparison["changed_ranges"][0]["numeric_candidates"]
+        self.assertTrue(
+            any(
+                item["offset"] == 4
+                and item["size"] == 2
+                and item["endian"] == "little"
+                for item in numeric_candidates
+            )
+        )
         self.assertEqual(comparison["changed_ranges"][1]["start"], 12)
         self.assertEqual(comparison["changed_ranges"][1]["after_hex"], b"ccXX".hex())
 

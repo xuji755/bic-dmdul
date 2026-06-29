@@ -157,7 +157,47 @@ def _range_record(
         "context_stop_exclusive": context_stop,
         "before_hex": before[context_start:min(context_stop, len(before))].hex(),
         "after_hex": after[context_start:min(context_stop, len(after))].hex(),
+        "numeric_candidates": _numeric_diff_candidates(
+            before=before,
+            after=after,
+            start=start,
+            stop=stop,
+        ),
     }
+
+
+def _numeric_diff_candidates(
+    *,
+    before: bytes,
+    after: bytes,
+    start: int,
+    stop: int,
+    max_candidates: int = 32,
+) -> list[dict[str, Any]]:
+    max_len = min(len(before), len(after))
+    window_start = max(0, start - 8)
+    window_stop = min(max_len, stop + 8)
+    candidates: list[dict[str, Any]] = []
+    for offset in range(window_start, window_stop):
+        for size in (2, 4, 8):
+            if len(candidates) >= max_candidates:
+                return candidates
+            if offset + size > max_len:
+                continue
+            before_value = int.from_bytes(before[offset:offset + size], "little")
+            after_value = int.from_bytes(after[offset:offset + size], "little")
+            if before_value == after_value:
+                continue
+            candidates.append(
+                {
+                    "offset": offset,
+                    "size": size,
+                    "endian": "little",
+                    "before_unsigned": before_value,
+                    "after_unsigned": after_value,
+                }
+            )
+    return candidates
 
 
 def _extract_printable_string_records(
