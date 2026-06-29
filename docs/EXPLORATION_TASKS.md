@@ -110,6 +110,8 @@ to explain the underlying database structure.
 - [x] Add `page_type_raw`/`page_kind_raw` cross-counts to page catalogs and
   database summaries so known page classes can calibrate a preliminary
   first-byte PAGE type enum.
+- [x] Add row-area probes to page catalog samples that compare the page-header
+  row-count candidate with the physical row-length chain and deleted-row flags.
 
 ## C. Segment And BTREE Structure
 

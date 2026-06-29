@@ -281,6 +281,21 @@ The current observed row-layout model used by the extractor is:
 Non-zero observed row metadata is rejected with `unsupported-row-metadata` until
 the NULL bitmap, column directory, and transaction/MVCC flags are decoded.
 
+`catalog-pages` now includes a `row_area_probe` object in each nonzero page
+sample. The probe starts at the currently observed row-chain offset `0x62`,
+walks row-length prefixes with the same conservative scanner used by extraction,
+and records:
+
+- `header_observed_row_count` from the page-header field currently exposed as
+  `field_2c_u16le`;
+- physical, live, and deleted row counts found in the row-length chain;
+- `count_delta_physical_minus_header`, which highlights pages where deleted or
+  updated row records remain physically present after the header count changes;
+- sampled row offsets, lengths, and deleted flags.
+
+This is evidence for calibrating the row count, free-space boundary, and slot
+directory fields. It is not yet a complete slot-directory decoder.
+
 Observed fixed-width values:
 
 - `INT 1` -> `01 00 00 00`

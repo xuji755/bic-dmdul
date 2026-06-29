@@ -108,12 +108,42 @@ class PageCatalogTest(unittest.TestCase):
         self.assertTrue(ref["same_file_hint"])
         self.assertEqual(ref["pages_total"], 3)
 
+    def test_catalog_probes_row_area_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "rows.dbf"
+            page = bytearray(_page(group_raw=6, header_page_no=0, kind=0x14, row_count=1))
+            page[0x62:0x66] = bytes.fromhex("00 04 01 02")
+            page[0x66:0x6B] = bytes.fromhex("80 05") + b"DEL"
+            path.write_bytes(bytes(page))
+
+            catalog = catalog_data_file_pages(
+                path=path,
+                page_size=128,
+                sample_limit=8,
+            )
+
+        probe = catalog["nonzero_samples"][0]["row_area_probe"]
+        self.assertEqual(probe["start_offset"], 0x62)
+        self.assertEqual(probe["header_observed_row_count"], 1)
+        self.assertEqual(probe["physical_rows_scanned"], 2)
+        self.assertEqual(probe["live_rows_scanned"], 1)
+        self.assertEqual(probe["deleted_rows_scanned"], 1)
+        self.assertEqual(probe["count_delta_physical_minus_header"], 1)
+        self.assertEqual(
+            probe["sampled_rows"],
+            [
+                {"page_offset": 0x62, "length": 4, "deleted": False},
+                {"page_offset": 0x66, "length": 5, "deleted": True},
+            ],
+        )
+
 
 def _page(
     *,
     group_raw: int,
     header_page_no: int,
     kind: int,
+    row_count: int = 7,
     prev_ref: bytes | None = None,
     next_ref: bytes | None = None,
 ) -> bytes:
@@ -126,7 +156,7 @@ def _page(
     page[32:36] = (0x11223344).to_bytes(4, "little")
     page[36:38] = (0x5566).to_bytes(2, "little")
     page[38:40] = (0x7788).to_bytes(2, "little")
-    page[44:46] = (7).to_bytes(2, "little")
+    page[44:46] = row_count.to_bytes(2, "little")
     page[64] = 1
     return bytes(page)
 

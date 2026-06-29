@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .page import ObservedPageHeader
+from .row import scan_observed_row_chain
 from .storage import DataFile
 
 
@@ -148,6 +149,7 @@ def _page_summary(
         "field_26_u16le": header.field_26_u16le,
         "field_2c_u16le": header.field_2c_u16le,
         "observed_row_count": header.observed_row_count,
+        "row_area_probe": _row_area_probe(header=header, page=page),
         "nonzero_bytes": sum(1 for byte in page if byte != 0),
         "header_hex": page[:64].hex(),
     }
@@ -155,6 +157,34 @@ def _page_summary(
 
 def _is_all_zero(page: bytes) -> bool:
     return all(byte == 0 for byte in page)
+
+
+def _row_area_probe(
+    *,
+    header: ObservedPageHeader,
+    page: bytes,
+    start_offset: int = 0x62,
+    sample_limit: int = 16,
+) -> dict[str, Any]:
+    rows = scan_observed_row_chain(page, start_offset=start_offset)
+    live_rows = sum(1 for row in rows if not row.is_deleted)
+    deleted_rows = sum(1 for row in rows if row.is_deleted)
+    return {
+        "start_offset": start_offset,
+        "header_observed_row_count": header.observed_row_count,
+        "physical_rows_scanned": len(rows),
+        "live_rows_scanned": live_rows,
+        "deleted_rows_scanned": deleted_rows,
+        "count_delta_physical_minus_header": len(rows) - header.observed_row_count,
+        "sampled_rows": [
+            {
+                "page_offset": row.page_offset,
+                "length": row.length,
+                "deleted": row.is_deleted,
+            }
+            for row in rows[:sample_limit]
+        ],
+    }
 
 
 def _increment_nested(
