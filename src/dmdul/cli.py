@@ -6,7 +6,11 @@ import sys
 from pathlib import Path
 
 from .discovery import discover_data_files
-from .evidence import capture_data_file_evidence, parse_page_selection
+from .evidence import (
+    capture_data_file_evidence,
+    parse_page_selection,
+    verify_evidence_manifest,
+)
 from .extract import extract_csv_with_calibrated_metadata
 from .metadata import CalibratedMetadata
 from .page import ObservedPageHeader, format_hex_dump
@@ -98,6 +102,12 @@ def _cmd_capture_evidence(args: argparse.Namespace) -> int:
     else:
         print(payload)
     return 0
+
+
+def _cmd_verify_evidence(args: argparse.Namespace) -> int:
+    result = verify_evidence_manifest(Path(args.manifest))
+    print(json.dumps(result, indent=2))
+    return 0 if result["ok"] else 1
 
 
 def _cmd_extract_csv(args: argparse.Namespace) -> int:
@@ -482,6 +492,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture_evidence.add_argument("--output")
     capture_evidence.set_defaults(func=_cmd_capture_evidence)
+
+    verify_evidence = subparsers.add_parser(
+        "verify-evidence",
+        help="verify an evidence manifest and referenced local files",
+    )
+    verify_evidence.add_argument("manifest")
+    verify_evidence.set_defaults(func=_cmd_verify_evidence)
 
     extract_csv = subparsers.add_parser(
         "extract-csv",

@@ -220,6 +220,8 @@ dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
 - [x] Add foundational fixture SQL covering tablespace/page/row/type/MVCC
   research scenarios.
 - [x] Add raw page and marker evidence capture command for DBF files.
+- [x] Add evidence manifest validation for copied file identity and capture
+  JSON completeness.
 - [ ] Create one-column tables for each target type.
 - [ ] Create rows around page capacity boundaries.
 - [ ] Create deleted rows followed by insert reuse.

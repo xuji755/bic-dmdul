@@ -25,6 +25,7 @@
     "path/to/capture-evidence-output.json"
   ],
   "notes": [
-    "Describe shutdown/snapshot method and any SQL dialect adjustments."
+    "Describe shutdown/snapshot method and any SQL dialect adjustments.",
+    "Run: PYTHONPATH=src python3 -m dmdul.cli verify-evidence evidence_manifest.json"
   ]
 }

@@ -65,7 +65,23 @@ The JSON records:
 Fill in `docs/templates/evidence_manifest.json` beside the captured DBF files
 so the copy method, reference output, and evidence JSON remain tied together.
 
-## 5. Promote Only Proven Fields
+## 5. Verify The Evidence Manifest
+
+Before using a captured sample to justify a parser, verify the manifest:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli verify-evidence evidence/manifest.json
+```
+
+The verifier checks:
+
+- copy-state validity;
+- copied file existence;
+- copied file byte size if recorded;
+- copied file SHA-256 if recorded;
+- referenced evidence JSON existence and required top-level keys.
+
+## 6. Promote Only Proven Fields
 
 A field can be added to a parser only after:
 

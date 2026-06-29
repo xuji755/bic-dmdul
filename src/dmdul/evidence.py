@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
 from .page import ObservedPageHeader, format_hex_dump
 from .storage import DataFile
+
+
+VALID_COPY_STATES = frozenset(
+    {
+        "clean-shutdown",
+        "storage-snapshot",
+        "live-copy",
+        "crash-state",
+        "open-transaction",
+        "unknown",
+    }
+)
 
 
 def capture_data_file_evidence(
@@ -81,6 +94,63 @@ def parse_page_selection(spec: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(pages))
 
 
+def verify_evidence_manifest(path: Path) -> dict[str, Any]:
+    """Verify a captured evidence manifest and referenced local files."""
+
+    root = path.parent
+    with path.open("r", encoding="utf-8") as file:
+        manifest = json.load(file)
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    label = manifest.get("label")
+    if not isinstance(label, str) or not label:
+        errors.append("manifest label is required")
+
+    copy_state = manifest.get("copy_state")
+    if copy_state not in VALID_COPY_STATES:
+        errors.append(f"invalid copy_state: {copy_state!r}")
+    elif copy_state == "unknown":
+        warnings.append("copy_state is unknown; evidence cannot prove consistency")
+
+    copied_files = manifest.get("copied_files")
+    if not isinstance(copied_files, list) or not copied_files:
+        errors.append("copied_files must contain at least one file entry")
+    elif isinstance(copied_files, list):
+        for index, item in enumerate(copied_files):
+            _verify_manifest_file_entry(
+                root=root,
+                item=item,
+                index=index,
+                errors=errors,
+                warnings=warnings,
+            )
+
+    evidence_json = manifest.get("evidence_json")
+    if not isinstance(evidence_json, list) or not evidence_json:
+        errors.append("evidence_json must contain at least one capture file")
+    elif isinstance(evidence_json, list):
+        for index, item in enumerate(evidence_json):
+            _verify_evidence_json_ref(
+                root=root,
+                item=item,
+                index=index,
+                errors=errors,
+            )
+
+    reference_output = manifest.get("reference_output", [])
+    if not reference_output:
+        warnings.append("reference_output is empty; online calibration output is missing")
+
+    return {
+        "manifest": str(path),
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
 def _capture_page(data_file: DataFile, *, page_no: int) -> dict[str, Any]:
     page = data_file.read_page(page_no)
     header = ObservedPageHeader.from_page(page)
@@ -132,3 +202,88 @@ def _capture_marker(
         "encoding": encoding,
         "matches": matches,
     }
+
+
+def _verify_manifest_file_entry(
+    *,
+    root: Path,
+    item: Any,
+    index: int,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    if not isinstance(item, dict):
+        errors.append(f"copied_files[{index}] must be an object")
+        return
+    value = item.get("path")
+    if not isinstance(value, str) or not value:
+        errors.append(f"copied_files[{index}].path is required")
+        return
+    file_path = _manifest_path(root, value)
+    if not file_path.exists():
+        errors.append(f"copied_files[{index}] does not exist: {file_path}")
+        return
+    actual_bytes = file_path.stat().st_size
+    expected_bytes = item.get("bytes")
+    if expected_bytes is None:
+        warnings.append(f"copied_files[{index}].bytes is not recorded")
+    else:
+        try:
+            expected_bytes_int = int(expected_bytes)
+        except (TypeError, ValueError):
+            errors.append(f"copied_files[{index}].bytes must be an integer")
+        else:
+            if expected_bytes_int != actual_bytes:
+                errors.append(
+                    f"copied_files[{index}].bytes mismatch: "
+                    f"expected={expected_bytes}, actual={actual_bytes}"
+                )
+    expected_sha256 = item.get("sha256")
+    if expected_sha256 is None:
+        warnings.append(f"copied_files[{index}].sha256 is not recorded")
+    elif str(expected_sha256).lower() != _sha256_file(file_path):
+        errors.append(f"copied_files[{index}].sha256 mismatch: {file_path}")
+
+
+def _verify_evidence_json_ref(
+    *,
+    root: Path,
+    item: Any,
+    index: int,
+    errors: list[str],
+) -> None:
+    if not isinstance(item, str) or not item:
+        errors.append(f"evidence_json[{index}] must be a path string")
+        return
+    evidence_path = _manifest_path(root, item)
+    if not evidence_path.exists():
+        errors.append(f"evidence_json[{index}] does not exist: {evidence_path}")
+        return
+    try:
+        with evidence_path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except json.JSONDecodeError as exc:
+        errors.append(f"evidence_json[{index}] is invalid JSON: {exc}")
+        return
+    required = ("file", "page_size", "captured_pages", "markers")
+    for key in required:
+        if key not in payload:
+            errors.append(f"evidence_json[{index}] missing key: {key}")
+
+
+def _manifest_path(root: Path, value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return root / path
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while True:
+            chunk = file.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
