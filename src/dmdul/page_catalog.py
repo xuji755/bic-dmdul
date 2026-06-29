@@ -36,6 +36,9 @@ def catalog_data_file_pages(
     stop_page = pages_total if max_pages is None else min(pages_total, start_page + max_pages)
 
     kind_counts: Counter[str] = Counter()
+    type_counts: Counter[str] = Counter()
+    type_kind_counts: dict[str, Counter[str]] = {}
+    kind_type_counts: dict[str, Counter[str]] = {}
     group_counts: Counter[str] = Counter()
     mismatch_pages: list[dict[str, Any]] = []
     nonzero_samples: list[dict[str, Any]] = []
@@ -48,12 +51,19 @@ def catalog_data_file_pages(
         if _is_all_zero(page):
             zero_pages += 1
             kind_counts["zero"] += 1
+            type_counts["zero"] += 1
+            _increment_nested(type_kind_counts, "zero", "zero")
+            _increment_nested(kind_type_counts, "zero", "zero")
             continue
 
         header = ObservedPageHeader.from_page(page)
         kind_key = f"0x{header.page_kind_raw:08x}"
+        type_key = f"0x{header.page_type_raw:02x}"
         group_key = str(header.group_id)
         kind_counts[kind_key] += 1
+        type_counts[type_key] += 1
+        _increment_nested(type_kind_counts, type_key, kind_key)
+        _increment_nested(kind_type_counts, kind_key, type_key)
         group_counts[group_key] += 1
 
         summary = _page_summary(page_no=page_no, header=header, page=page)
@@ -105,6 +115,9 @@ def catalog_data_file_pages(
         "zero_pages": zero_pages,
         "nonzero_pages": scanned_pages - zero_pages,
         "page_kind_counts": dict(sorted(kind_counts.items())),
+        "page_type_counts": dict(sorted(type_counts.items())),
+        "page_type_kind_counts": _sorted_nested_counts(type_kind_counts),
+        "page_kind_type_counts": _sorted_nested_counts(kind_type_counts),
         "group_id_counts": dict(sorted(group_counts.items(), key=lambda item: int(item[0]))),
         "page_no_mismatches": mismatch_pages,
         "reference_out_of_range": out_of_range_refs,
@@ -142,3 +155,20 @@ def _page_summary(
 
 def _is_all_zero(page: bytes) -> bool:
     return all(byte == 0 for byte in page)
+
+
+def _increment_nested(
+    counts: dict[str, Counter[str]],
+    outer_key: str,
+    inner_key: str,
+) -> None:
+    if outer_key not in counts:
+        counts[outer_key] = Counter()
+    counts[outer_key][inner_key] += 1
+
+
+def _sorted_nested_counts(counts: dict[str, Counter[str]]) -> dict[str, dict[str, int]]:
+    return {
+        outer_key: dict(sorted(inner_counts.items()))
+        for outer_key, inner_counts in sorted(counts.items())
+    }

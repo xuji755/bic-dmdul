@@ -145,6 +145,19 @@ group_id = group_raw & 0xffff
 file_no_hint = group_raw >> 16
 ```
 
+`catalog-pages` and database summaries now also emit cross-counts between the
+first byte and the observed role field:
+
+- `page_type_counts`: count by first byte, such as `0x06`;
+- `page_type_kind_counts`: for each first byte, the observed `page_kind_raw`
+  values seen with it;
+- `page_kind_type_counts`: for each observed role field, the first-byte values
+  seen with it.
+
+These matrices are the current evidence path for deriving a preliminary
+first-byte PAGE type enum from known page classes. Zero-filled pages are counted
+as `zero` rather than as `0x00` so they do not pollute real type calibration.
+
 `TEMP.DBF` also starts with low group id 0, but its observed role field at page
 0 was `0x0`, not `0x13`. A SYSTEM-file candidate therefore currently requires
 group id 0, page number 0, and observed role `0x13`.

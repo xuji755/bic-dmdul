@@ -138,6 +138,9 @@ def _file_entry(
             "zero_pages": catalog["zero_pages"],
             "nonzero_pages": catalog["nonzero_pages"],
             "page_kind_counts": catalog["page_kind_counts"],
+            "page_type_counts": catalog["page_type_counts"],
+            "page_type_kind_counts": catalog["page_type_kind_counts"],
+            "page_kind_type_counts": catalog["page_kind_type_counts"],
             "page_no_mismatches": catalog["page_no_mismatches"],
             "reference_out_of_range": catalog["reference_out_of_range"],
         }

@@ -59,7 +59,11 @@ summary also emits `control_file_data_files`, a manifest that matches those
 control-file occurrences to copied DBF basenames and attaches observed page-0
 group/tablespace id, file-number hint, page count, and page kind for matched
 files. The binary tablespace/data-file record layout still requires controlled
-decoding. Sampled catalog diagnostics include page-number mismatches, same-file
+decoding. Sampled catalogs include first-byte `page_type_raw` counts and
+`page_type_raw`/`page_kind_raw` cross-counts so known file-control,
+space-management, BTREE/data, metadata, and empty-page samples can calibrate a
+preliminary PAGE type enum. Sampled catalog diagnostics include page-number
+mismatches, same-file
 page references that point beyond the file, DBF path hints from control files
 that do not match any DBF basename in the copied directory, and DBF path hints
 that match multiple copied files by basename.
@@ -221,7 +225,8 @@ PYTHONPATH=src python3 -m dmdul.cli catalog-pages \
   --output evidence/dmdul_ts01_page_catalog.json
 ```
 
-The catalog records page-kind counts, tentative page-kind labels, empty pages,
+The catalog records page-kind counts, first-byte page-type counts,
+page-type/page-kind cross-counts, tentative page-kind labels, empty pages,
 page-number mismatches, same-file page references that point beyond the file,
 nonzero page samples, selected raw page-header fields, and previous/next
 page-reference samples. Labels and anonymous header-field names are for evidence

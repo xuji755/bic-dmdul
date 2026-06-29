@@ -107,6 +107,9 @@ to explain the underlying database structure.
   preserving raw previous/next page references.
 - [x] Expose selected anonymous page-header fields in page catalog samples for
   later free-space, slot-directory, and SCN/LSN analysis.
+- [x] Add `page_type_raw`/`page_kind_raw` cross-counts to page catalogs and
+  database summaries so known page classes can calibrate a preliminary
+  first-byte PAGE type enum.
 
 ## C. Segment And BTREE Structure
 
