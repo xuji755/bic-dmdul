@@ -38,6 +38,8 @@ to explain the underlying database structure.
   numbers, duplicate group/file hints, and sampled page-number mismatches.
 - [x] Report short or otherwise unparsed `.DBF` files in database summaries
   instead of silently ignoring them.
+- [x] Surface sampled same-file page-reference range diagnostics in database
+  summaries.
 
 ## B. Page Header And Space Management
 

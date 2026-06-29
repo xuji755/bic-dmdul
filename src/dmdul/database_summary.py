@@ -103,6 +103,7 @@ def _file_entry(
             "nonzero_pages": catalog["nonzero_pages"],
             "page_kind_counts": catalog["page_kind_counts"],
             "page_no_mismatches": catalog["page_no_mismatches"],
+            "reference_out_of_range": catalog["reference_out_of_range"],
         }
         if catalog["page_no_mismatches"]:
             diagnostics.append(
@@ -111,6 +112,15 @@ def _file_entry(
                     "code": "catalog-page-number-mismatch",
                     "message": "sampled pages contain header page numbers that differ from physical page numbers",
                     "count": len(catalog["page_no_mismatches"]),
+                }
+            )
+        if catalog["reference_out_of_range"]:
+            diagnostics.append(
+                {
+                    "level": "warning",
+                    "code": "catalog-reference-out-of-range",
+                    "message": "sampled pages contain same-file previous/next references beyond the file page count",
+                    "count": len(catalog["reference_out_of_range"]),
                 }
             )
     return entry

@@ -62,7 +62,12 @@ class DatabaseSummaryTest(unittest.TestCase):
             bad = root / "BAD.DBF"
             bad.write_bytes(
                 _page(group_raw=6, page_no=9, page_kind=0x13)
-                + _page(group_raw=6, page_no=99, page_kind=0x14)
+                + _page(
+                    group_raw=6,
+                    page_no=99,
+                    page_kind=0x14,
+                    next_ref=bytes.fromhex("000063000000"),
+                )
                 + b"tail"
             )
 
@@ -79,10 +84,19 @@ class DatabaseSummaryTest(unittest.TestCase):
         self.assertIn("trailing-bytes", codes)
         self.assertIn("page0-header-page-number", codes)
         self.assertIn("catalog-page-number-mismatch", codes)
+        self.assertIn("catalog-reference-out-of-range", codes)
+        self.assertEqual(
+            summary["files"][0]["catalog_sample"]["reference_out_of_range"][0]["ref_page_no"],
+            99,
+        )
         self.assertEqual(summary["diagnostics"]["files_with_diagnostics"], 1)
         self.assertEqual(summary["diagnostics"]["counts_by_code"]["trailing-bytes"], 1)
         self.assertEqual(
             summary["diagnostics"]["counts_by_code"]["catalog-page-number-mismatch"],
+            1,
+        )
+        self.assertEqual(
+            summary["diagnostics"]["counts_by_code"]["catalog-reference-out-of-range"],
             1,
         )
 
@@ -114,11 +128,19 @@ def _page0(group_raw: int, page_kind: int) -> bytes:
     return _page(group_raw, 0, page_kind)
 
 
-def _page(group_raw: int, page_no: int, page_kind: int) -> bytes:
+def _page(
+    group_raw: int,
+    page_no: int,
+    page_kind: int,
+    *,
+    prev_ref: bytes | None = None,
+    next_ref: bytes | None = None,
+) -> bytes:
     page = bytearray(128)
     page[0:4] = group_raw.to_bytes(4, "little")
     page[4:8] = page_no.to_bytes(4, "little")
-    page[8:20] = b"\xff" * 12
+    page[8:14] = prev_ref or (b"\xff" * 6)
+    page[14:20] = next_ref or (b"\xff" * 6)
     page[20:24] = page_kind.to_bytes(4, "little")
     page[64] = 1
     return bytes(page)

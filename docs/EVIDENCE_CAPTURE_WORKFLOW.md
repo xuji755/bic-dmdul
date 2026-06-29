@@ -51,8 +51,10 @@ PYTHONPATH=src python3 -m dmdul.cli summarize-database \
 
 The summary records DBF files, group ids, file-number hints, SYSTEM candidates,
 duplicate group/file hints, file-size/page0 diagnostics, and a sampled
-page-kind catalog for each file. Short or otherwise unparsed `.DBF` files are
-reported as skipped files instead of being silently ignored.
+page-kind catalog for each file. Sampled catalog diagnostics include page-number
+mismatches and same-file page references that point beyond the file. Short or
+otherwise unparsed `.DBF` files are reported as skipped files instead of being
+silently ignored.
 
 Use deterministic markers from the fixture SQL to locate relevant pages:
 
