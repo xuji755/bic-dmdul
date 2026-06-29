@@ -172,6 +172,8 @@ to explain the underlying database structure.
   group/tablespace id, root file, and root page.
 - [x] Attach matched `dm.ctl` DBF occurrence evidence to each data-file entry in
   the resolved segment manifest.
+- [x] Emit segment-manifest diagnostics when a resolved data file lacks matched
+  `dm.ctl` DBF occurrence evidence.
 - [ ] Decode enough `SYSOBJECTS` rows offline to recover object name/id/schema/type.
 - [ ] Decode complete `SYSCOLUMNS` row layout offline, including scale,
   nullability, defaults, and exact column id base.

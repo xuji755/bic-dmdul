@@ -50,6 +50,7 @@ class OfflineResolverTest(unittest.TestCase):
         )
         manifest = resolved.as_manifest()
         self.assertEqual(manifest["mode"], "dmctl-system-sysdict-segment-root")
+        self.assertEqual(manifest["diagnostics"], [])
         self.assertEqual(manifest["table"], "SYSDBA.DMDUL_MANY")
         self.assertEqual(manifest["table_object"]["object_id"], 33629)
         self.assertEqual(manifest["segment"]["group_id"], 6)
@@ -93,6 +94,39 @@ class OfflineResolverTest(unittest.TestCase):
             },
             {"system.dbf", "dmdul_ts01.dbf", "dmdul_ts02.dbf"},
         )
+
+    def test_manifest_warns_when_data_file_has_no_control_file_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            database_dir = Path(tmp_dir)
+            system = database_dir / "SYSTEM.DBF"
+            user_file = database_dir / "DMDUL_TS01.DBF"
+            (database_dir / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+            )
+            _write_dbf(system, _page0(group_raw=0, kind=0x13) + _system_payload())
+            user_file.write_bytes(_user_data_file_payload())
+
+            resolved = resolve_offline_table_metadata(
+                database_dir=database_dir,
+                table_name="DMDUL_MANY",
+                scan_pages=64,
+            )
+
+        manifest = resolved.as_manifest()
+        self.assertEqual(
+            manifest["diagnostics"][0]["code"],
+            "segment-manifest-data-file-without-control-entry",
+        )
+        self.assertEqual(manifest["diagnostics"][0]["level"], "warning")
+        self.assertEqual(manifest["diagnostics"][0]["count"], 1)
+        self.assertEqual(
+            Path(manifest["diagnostics"][0]["data_files"][0]["path"]).name,
+            "DMDUL_TS01.DBF",
+        )
+        manifest_files = {
+            Path(item["path"]).name: item for item in manifest["data_files"]
+        }
+        self.assertEqual(manifest_files["DMDUL_TS01.DBF"]["control_file_entries"], [])
 
 
 def _page0(*, group_raw: int, kind: int) -> bytes:

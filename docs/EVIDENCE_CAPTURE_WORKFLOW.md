@@ -115,6 +115,10 @@ and sampled 6-byte page-reference candidates found inside the root page.
 Treat this as the handoff file between dictionary
 recovery and page/row extraction; the candidate references are evidence for
 BTREE/extent calibration, not yet decoded traversal semantics.
+If a data-file entry has no matched control-file occurrence, the manifest emits
+`diagnostic=segment-manifest-data-file-without-control-entry`; treat the
+resulting file list as discovered from copied DBF headers rather than fully
+proven from `dm.ctl`.
 
 The extractor can consume that handoff file directly:
 

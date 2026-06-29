@@ -221,6 +221,7 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(manifest["mode"], "dmctl-system-sysdict-segment-root")
+        self.assertEqual(manifest["diagnostics"], [])
         self.assertEqual(manifest["segment"]["group_id"], 6)
         self.assertEqual(manifest["segment"]["root_file"], 0)
         self.assertEqual(manifest["segment"]["root_page"], 80)

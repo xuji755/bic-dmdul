@@ -43,11 +43,25 @@ class OfflineTableResolution:
     segment_root: dict[str, object] | None = None
 
     def as_manifest(self) -> dict[str, object]:
+        data_files = [
+            {
+                "group_id": item.group_id,
+                "file_no": item.file_no,
+                "path": str(item.path),
+                "page_size": item.page_size,
+                "control_file_entries": _control_file_entries_for_path(
+                    control_file_data_files=self.control_file_data_files,
+                    path=item.path,
+                ),
+            }
+            for item in self.metadata.data_files
+        ]
         return {
             "system_file": str(self.system_file),
             "table": self.table.qualified_name,
             "table_object_id": self.table_object_id,
             "storage_index_id": self.index_child.index_id,
+            "diagnostics": _manifest_diagnostics(data_files),
             "storage": {
                 "group_id": self.table.storage.group_id,
                 "file_no": self.table.storage.file_no,
@@ -89,19 +103,7 @@ class OfflineTableResolution:
                 "type_name": self.storage_index.type_name,
                 "flag": self.storage_index.flag,
             },
-            "data_files": [
-                {
-                    "group_id": item.group_id,
-                    "file_no": item.file_no,
-                    "path": str(item.path),
-                    "page_size": item.page_size,
-                    "control_file_entries": _control_file_entries_for_path(
-                        control_file_data_files=self.control_file_data_files,
-                        path=item.path,
-                    ),
-                }
-                for item in self.metadata.data_files
-            ],
+            "data_files": data_files,
             "control_file_data_files": self.control_file_data_files,
             "segment_root": self.segment_root,
             "mode": "dmctl-system-sysdict-segment-root",
@@ -328,6 +330,30 @@ def _control_file_entries_for_path(
             }
         )
     return matches
+
+
+def _manifest_diagnostics(data_files: list[dict[str, object]]) -> list[dict[str, object]]:
+    diagnostics: list[dict[str, object]] = []
+    missing = [
+        {
+            "group_id": item.get("group_id"),
+            "file_no": item.get("file_no"),
+            "path": item.get("path"),
+        }
+        for item in data_files
+        if not item.get("control_file_entries")
+    ]
+    if missing:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "segment-manifest-data-file-without-control-entry",
+                "message": "one or more segment data files have no matched dm.ctl DBF occurrence evidence",
+                "count": len(missing),
+                "data_files": missing,
+            }
+        )
+    return diagnostics
 
 
 def _split_table_name(table_name: str, *, owner: str | None) -> tuple[str, str]:
