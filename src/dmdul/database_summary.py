@@ -53,6 +53,11 @@ def summarize_database_dir(
         control_files=control_files,
         dbf_paths=dbf_paths,
     )
+    summary_level_diagnostics = _summary_level_diagnostics(
+        control_files=control_files,
+        duplicate_file_hints=duplicate_file_hints,
+        control_file_dbf_hints=control_file_dbf_hints,
+    )
 
     return {
         "database_dir": str(database_dir),
@@ -79,7 +84,12 @@ def summarize_database_dir(
             control_files=control_files,
             control_file_dbf_hints=control_file_dbf_hints,
         ),
-        "diagnostics": _summary_diagnostics(file_entries, skipped_files),
+        "diagnostics": _summary_diagnostics(
+            file_entries,
+            skipped_files,
+            summary_level_diagnostics,
+        ),
+        "summary_diagnostics": summary_level_diagnostics,
         "duplicate_file_hints": duplicate_file_hints,
         "control_file_dbf_hints": control_file_dbf_hints,
         "control_files": control_files,
@@ -229,6 +239,43 @@ def _control_file_dbf_hints(
     }
 
 
+def _summary_level_diagnostics(
+    *,
+    control_files: list[dict[str, Any]],
+    duplicate_file_hints: list[dict[str, Any]],
+    control_file_dbf_hints: dict[str, Any],
+) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    if not control_files:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "control-file-not-found",
+                "message": "dm.ctl/control file was not found in the database directory",
+            }
+        )
+    unmatched_hints = control_file_dbf_hints["unmatched_hints"]
+    if unmatched_hints:
+        diagnostics.append(
+            {
+                "level": "error",
+                "code": "control-file-dbf-hint-missing",
+                "message": "one or more DBF path hints from control files were not found in the copied directory",
+                "count": len(unmatched_hints),
+            }
+        )
+    if duplicate_file_hints:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "duplicate-group-file-hint",
+                "message": "multiple DBF files share the same observed group/file hint and page0 kind",
+                "count": len(duplicate_file_hints),
+            }
+        )
+    return diagnostics
+
+
 def _file_diagnostics(item: DiscoveredDataFile) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
     trailing_bytes = item.bytes % item.page_size
@@ -264,9 +311,12 @@ def _file_diagnostics(item: DiscoveredDataFile) -> list[dict[str, Any]]:
 def _summary_diagnostics(
     file_entries: list[dict[str, Any]],
     skipped_files: list[dict[str, Any]],
+    summary_level_diagnostics: list[dict[str, Any]],
 ) -> dict[str, Any]:
     counts: dict[str, int] = defaultdict(int)
     files_with_diagnostics = 0
+    for diagnostic in summary_level_diagnostics:
+        counts[str(diagnostic["code"])] += 1
     for item in file_entries:
         diagnostics = item.get("diagnostics", [])
         if diagnostics:

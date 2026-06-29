@@ -58,6 +58,8 @@ to explain the underlying database structure.
   summaries.
 - [x] Cross-check DBF path hints from control files against copied DBF basenames
   in database summaries.
+- [x] Emit stable summary-level diagnostic codes for missing control files,
+  duplicate file hints, and control-file DBF hints not found in the copy.
 
 ## B. Page Header And Space Management
 

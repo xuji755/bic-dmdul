@@ -78,6 +78,14 @@ class DatabaseSummaryTest(unittest.TestCase):
         self.assertEqual(len(summary["duplicate_file_hints"]), 1)
         self.assertIn("SYSTEM.DBF candidate not found", summary["warnings"])
         self.assertIn("duplicate group/file_no_hint combinations found", summary["warnings"])
+        self.assertEqual(
+            summary["diagnostics"]["counts_by_code"]["control-file-not-found"],
+            1,
+        )
+        self.assertEqual(
+            summary["diagnostics"]["counts_by_code"]["duplicate-group-file-hint"],
+            1,
+        )
 
     def test_reports_file_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -170,6 +178,14 @@ class DatabaseSummaryTest(unittest.TestCase):
         self.assertEqual(
             summary["control_file_dbf_hints"]["unmatched_hints"][0]["basename"],
             "missing01.dbf",
+        )
+        self.assertEqual(
+            summary["diagnostics"]["counts_by_code"]["control-file-dbf-hint-missing"],
+            1,
+        )
+        self.assertEqual(
+            summary["summary_diagnostics"][0]["code"],
+            "control-file-dbf-hint-missing",
         )
 
 

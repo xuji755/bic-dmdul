@@ -59,7 +59,8 @@ catalog diagnostics include page-number mismatches, same-file page references
 that point beyond the file, and DBF path hints from control files that do not
 match any DBF basename in the copied directory.
 Short or otherwise unparsed `.DBF` files are reported as skipped files instead
-of being silently ignored.
+of being silently ignored. Stable diagnostic codes are also summarized in
+`diagnostics.counts_by_code` for automated gates.
 
 To capture one control file without scanning the whole database directory:
 
