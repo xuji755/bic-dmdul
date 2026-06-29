@@ -58,6 +58,8 @@ to explain the underlying database structure.
   summaries.
 - [x] Cross-check DBF path hints from control files against copied DBF basenames
   in database summaries.
+- [x] Emit a `dm.ctl`-derived data-file manifest that attaches matched DBF
+  page-0 group/tablespace id and file-number hints.
 - [x] Emit stable summary-level diagnostic codes for missing control files,
   duplicate file hints, and control-file DBF hints not found in the copy.
 - [x] Add conservative `preflight-database` gate that exits nonzero on current

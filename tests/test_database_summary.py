@@ -51,6 +51,20 @@ class DatabaseSummaryTest(unittest.TestCase):
         self.assertEqual(summary["control_file_dbf_hints"]["hints_total"], 2)
         self.assertEqual(len(summary["control_file_dbf_hints"]["matched_hints"]), 2)
         self.assertEqual(summary["control_file_dbf_hints"]["unmatched_hints"], [])
+        control_manifest = summary["control_file_data_files"]
+        self.assertEqual(control_manifest["entries_total"], 2)
+        self.assertEqual(len(control_manifest["matched_entries"]), 2)
+        self.assertEqual(control_manifest["unmatched_entries"], [])
+        main_entry = {
+            item["basename"]: item for item in control_manifest["entries"]
+        }["main01.dbf"]
+        self.assertEqual(main_entry["matched_paths"], [str(root / "MAIN01.DBF")])
+        self.assertEqual(main_entry["observed_files"][0]["group_id"], 4)
+        self.assertEqual(main_entry["observed_files"][0]["file_no_hint"], 0)
+        self.assertEqual(
+            main_entry["observed_files"][0]["page0_kind_label"],
+            "tentative-file-control",
+        )
         groups = {item["group_id"]: item for item in summary["groups"]}
         self.assertEqual(groups[0]["files"], 2)
         self.assertEqual(groups[4]["file_no_hints"], [0, 1])
@@ -180,12 +194,50 @@ class DatabaseSummaryTest(unittest.TestCase):
             "missing01.dbf",
         )
         self.assertEqual(
+            summary["control_file_data_files"]["unmatched_entries"][0]["basename"],
+            "missing01.dbf",
+        )
+        self.assertEqual(
             summary["diagnostics"]["counts_by_code"]["control-file-dbf-hint-missing"],
             1,
         )
         self.assertEqual(
             summary["summary_diagnostics"][0]["code"],
             "control-file-dbf-hint-missing",
+        )
+
+    def test_reports_ambiguous_control_file_dbf_hints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            nested = root / "copy"
+            nested.mkdir()
+            (root / "dm.ctl").write_bytes(
+                b"\x00DATAFILE=/dmdata/data/DAMENG/MAIN01.DBF\x00"
+            )
+            (root / "MAIN01.DBF").write_bytes(_page0(4, 0x13))
+            (nested / "MAIN01.DBF").write_bytes(_page0(0x00010004, 0x13))
+
+            summary = summarize_database_dir(
+                database_dir=root,
+                page_size=128,
+                catalog_pages=0,
+            )
+
+        self.assertIn(
+            "one or more DBF path hints from control files matched multiple files",
+            summary["warnings"],
+        )
+        self.assertEqual(
+            summary["control_file_data_files"]["ambiguous_entries"][0]["basename"],
+            "main01.dbf",
+        )
+        self.assertEqual(
+            len(summary["control_file_data_files"]["ambiguous_entries"][0]["observed_files"]),
+            2,
+        )
+        self.assertEqual(
+            summary["diagnostics"]["counts_by_code"]["control-file-dbf-hint-ambiguous"],
+            1,
         )
 
 

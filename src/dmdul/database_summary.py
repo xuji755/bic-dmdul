@@ -49,9 +49,13 @@ def summarize_database_dir(
         str(item.path) for item in files if item.is_system_candidate
     ]
     duplicate_file_hints = _duplicate_file_hints(groups)
-    control_file_dbf_hints = _control_file_dbf_hints(
+    control_file_data_files = _control_file_data_file_manifest(
         control_files=control_files,
         dbf_paths=dbf_paths,
+        discovered_files=files,
+    )
+    control_file_dbf_hints = _control_file_dbf_hints(
+        control_file_data_files=control_file_data_files,
     )
     summary_level_diagnostics = _summary_level_diagnostics(
         control_files=control_files,
@@ -91,6 +95,7 @@ def summarize_database_dir(
         ),
         "summary_diagnostics": summary_level_diagnostics,
         "duplicate_file_hints": duplicate_file_hints,
+        "control_file_data_files": control_file_data_files,
         "control_file_dbf_hints": control_file_dbf_hints,
         "control_files": control_files,
         "skipped_files": skipped_files,
@@ -192,6 +197,8 @@ def _summary_warnings(
         warnings.append("dm.ctl/control file not found")
     elif control_file_dbf_hints["unmatched_hints"]:
         warnings.append("one or more DBF path hints from control files were not found")
+    elif control_file_dbf_hints["ambiguous_hints"]:
+        warnings.append("one or more DBF path hints from control files matched multiple files")
     if not system_candidates:
         warnings.append("SYSTEM.DBF candidate not found")
     elif len(system_candidates) > 1:
@@ -205,16 +212,19 @@ def _summary_warnings(
     return warnings
 
 
-def _control_file_dbf_hints(
+def _control_file_data_file_manifest(
     *,
     control_files: list[dict[str, Any]],
     dbf_paths: list[Path],
+    discovered_files: list[DiscoveredDataFile],
 ) -> dict[str, Any]:
     by_basename: dict[str, list[Path]] = defaultdict(list)
     for path in dbf_paths:
         by_basename[path.name.lower()].append(path)
 
-    hints: list[dict[str, Any]] = []
+    discovered_by_path = {item.path: item for item in discovered_files}
+
+    entries: list[dict[str, Any]] = []
     for control_file in control_files:
         for record in control_file.get("dbf_path_hint_records", []):
             if not isinstance(record, dict):
@@ -222,7 +232,7 @@ def _control_file_dbf_hints(
             text = str(record.get("text", ""))
             basename = Path(text.replace("\\", "/")).name.lower()
             matches = by_basename.get(basename, [])
-            hints.append(
+            entries.append(
                 {
                     "control_file": control_file.get("path"),
                     "text": text,
@@ -230,12 +240,49 @@ def _control_file_dbf_hints(
                     "offset": record.get("offset"),
                     "matched_paths": [str(path) for path in matches],
                     "matched": bool(matches),
+                    "observed_files": [
+                        _control_file_observed_file_entry(discovered_by_path[path])
+                        for path in matches
+                        if path in discovered_by_path
+                    ],
                 }
             )
     return {
-        "hints_total": len(hints),
-        "matched_hints": [item for item in hints if item["matched"]],
-        "unmatched_hints": [item for item in hints if not item["matched"]],
+        "entries_total": len(entries),
+        "entries": entries,
+        "matched_entries": [item for item in entries if item["matched"]],
+        "unmatched_entries": [item for item in entries if not item["matched"]],
+        "ambiguous_entries": [
+            item for item in entries if len(item["matched_paths"]) > 1
+        ],
+    }
+
+
+def _control_file_dbf_hints(
+    *,
+    control_file_data_files: dict[str, Any],
+) -> dict[str, Any]:
+    """Backward-compatible view of control-file DBF path matches."""
+
+    return {
+        "hints_total": control_file_data_files["entries_total"],
+        "matched_hints": control_file_data_files["matched_entries"],
+        "unmatched_hints": control_file_data_files["unmatched_entries"],
+        "ambiguous_hints": control_file_data_files["ambiguous_entries"],
+    }
+
+
+def _control_file_observed_file_entry(item: DiscoveredDataFile) -> dict[str, Any]:
+    return {
+        "path": str(item.path),
+        "bytes": item.bytes,
+        "page_size": item.page_size,
+        "pages": item.pages,
+        "group_raw": item.group_raw,
+        "group_id": item.group_id,
+        "file_no_hint": item.file_no_hint,
+        "page0_kind_raw": item.page_kind_raw,
+        "page0_kind_label": observed_page_kind_label(item.page_kind_raw),
     }
 
 
@@ -262,6 +309,16 @@ def _summary_level_diagnostics(
                 "code": "control-file-dbf-hint-missing",
                 "message": "one or more DBF path hints from control files were not found in the copied directory",
                 "count": len(unmatched_hints),
+            }
+        )
+    ambiguous_hints = control_file_dbf_hints["ambiguous_hints"]
+    if ambiguous_hints:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "control-file-dbf-hint-ambiguous",
+                "message": "one or more DBF path hints from control files matched multiple copied files",
+                "count": len(ambiguous_hints),
             }
         )
     if duplicate_file_hints:
