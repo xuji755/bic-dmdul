@@ -49,6 +49,10 @@ def summarize_database_dir(
         str(item.path) for item in files if item.is_system_candidate
     ]
     duplicate_file_hints = _duplicate_file_hints(groups)
+    control_file_dbf_hints = _control_file_dbf_hints(
+        control_files=control_files,
+        dbf_paths=dbf_paths,
+    )
 
     return {
         "database_dir": str(database_dir),
@@ -73,9 +77,11 @@ def summarize_database_dir(
             file_entries=file_entries,
             skipped_files=skipped_files,
             control_files=control_files,
+            control_file_dbf_hints=control_file_dbf_hints,
         ),
         "diagnostics": _summary_diagnostics(file_entries, skipped_files),
         "duplicate_file_hints": duplicate_file_hints,
+        "control_file_dbf_hints": control_file_dbf_hints,
         "control_files": control_files,
         "skipped_files": skipped_files,
         "files": file_entries,
@@ -169,10 +175,13 @@ def _summary_warnings(
     file_entries: list[dict[str, Any]],
     skipped_files: list[dict[str, Any]],
     control_files: list[dict[str, Any]],
+    control_file_dbf_hints: dict[str, Any],
 ) -> list[str]:
     warnings: list[str] = []
     if not control_files:
         warnings.append("dm.ctl/control file not found")
+    elif control_file_dbf_hints["unmatched_hints"]:
+        warnings.append("one or more DBF path hints from control files were not found")
     if not system_candidates:
         warnings.append("SYSTEM.DBF candidate not found")
     elif len(system_candidates) > 1:
@@ -184,6 +193,40 @@ def _summary_warnings(
     if skipped_files:
         warnings.append("one or more DBF files were skipped")
     return warnings
+
+
+def _control_file_dbf_hints(
+    *,
+    control_files: list[dict[str, Any]],
+    dbf_paths: list[Path],
+) -> dict[str, Any]:
+    by_basename: dict[str, list[Path]] = defaultdict(list)
+    for path in dbf_paths:
+        by_basename[path.name.lower()].append(path)
+
+    hints: list[dict[str, Any]] = []
+    for control_file in control_files:
+        for record in control_file.get("dbf_path_hint_records", []):
+            if not isinstance(record, dict):
+                continue
+            text = str(record.get("text", ""))
+            basename = Path(text.replace("\\", "/")).name.lower()
+            matches = by_basename.get(basename, [])
+            hints.append(
+                {
+                    "control_file": control_file.get("path"),
+                    "text": text,
+                    "basename": basename,
+                    "offset": record.get("offset"),
+                    "matched_paths": [str(path) for path in matches],
+                    "matched": bool(matches),
+                }
+            )
+    return {
+        "hints_total": len(hints),
+        "matched_hints": [item for item in hints if item["matched"]],
+        "unmatched_hints": [item for item in hints if not item["matched"]],
+    }
 
 
 def _file_diagnostics(item: DiscoveredDataFile) -> list[dict[str, Any]]:

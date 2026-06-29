@@ -48,6 +48,9 @@ class DatabaseSummaryTest(unittest.TestCase):
             summary["control_files"][0]["printable_string_records"][0]["offset"],
             1,
         )
+        self.assertEqual(summary["control_file_dbf_hints"]["hints_total"], 2)
+        self.assertEqual(len(summary["control_file_dbf_hints"]["matched_hints"]), 2)
+        self.assertEqual(summary["control_file_dbf_hints"]["unmatched_hints"], [])
         groups = {item["group_id"]: item for item in summary["groups"]}
         self.assertEqual(groups[0]["files"], 2)
         self.assertEqual(groups[4]["file_no_hints"], [0, 1])
@@ -141,6 +144,32 @@ class DatabaseSummaryTest(unittest.TestCase):
         self.assertEqual(
             summary["diagnostics"]["counts_by_code"]["short-dbf-file"],
             1,
+        )
+
+    def test_reports_control_file_dbf_hints_missing_from_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "dm.ctl").write_bytes(
+                b"\x00DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\x00"
+                b"MISSING=/dmdata/data/DAMENG/MISSING01.DBF\x00"
+            )
+            (root / "SYSTEM.DBF").write_bytes(_page0(0, 0x13))
+
+            summary = summarize_database_dir(
+                database_dir=root,
+                page_size=128,
+                catalog_pages=0,
+            )
+
+        self.assertIn(
+            "one or more DBF path hints from control files were not found",
+            summary["warnings"],
+        )
+        self.assertEqual(summary["control_file_dbf_hints"]["hints_total"], 2)
+        self.assertEqual(len(summary["control_file_dbf_hints"]["matched_hints"]), 1)
+        self.assertEqual(
+            summary["control_file_dbf_hints"]["unmatched_hints"][0]["basename"],
+            "missing01.dbf",
         )
 
 

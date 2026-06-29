@@ -56,6 +56,8 @@ to explain the underlying database structure.
   instead of silently ignoring them.
 - [x] Surface sampled same-file page-reference range diagnostics in database
   summaries.
+- [x] Cross-check DBF path hints from control files against copied DBF basenames
+  in database summaries.
 
 ## B. Page Header And Space Management
 

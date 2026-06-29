@@ -55,8 +55,9 @@ file-size/page0 diagnostics, and a sampled page-kind catalog for each file.
 Control-file evidence currently includes file identity, SHA-256, printable
 string samples with offsets, and DBF path hints with offsets; the binary
 tablespace/data-file record layout still requires controlled decoding. Sampled
-catalog diagnostics include page-number mismatches and same-file page references
-that point beyond the file.
+catalog diagnostics include page-number mismatches, same-file page references
+that point beyond the file, and DBF path hints from control files that do not
+match any DBF basename in the copied directory.
 Short or otherwise unparsed `.DBF` files are reported as skipped files instead
 of being silently ignored.
 
