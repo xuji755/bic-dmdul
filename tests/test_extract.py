@@ -261,7 +261,7 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 "page-plan-identity-mismatch",
             )
 
-    def test_reports_cross_file_leaf_stop(self) -> None:
+    def test_reports_missing_cross_file_leaf_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             data_file = root / "DMDUL_TS01.DBF"
@@ -304,9 +304,73 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 output=output_path,
             )
 
-            self.assertTrue(report.ok)
+            self.assertFalse(report.ok)
             self.assertEqual(report.rows_written, 1)
-            self.assertEqual(report.diagnostics[0]["code"], "page-plan-cross-file-stop")
+            self.assertEqual(report.diagnostics[0]["code"], "page-plan-file-missing")
+
+    def test_walks_cross_file_leaf_next_chain_when_file_is_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file0 = root / "DMDUL_TS01.DBF"
+            data_file1 = root / "DMDUL_TS02.DBF"
+            page0 = _row_page(page_no=0, next_page=None, value=1, text="ONE")
+            page0[14:20] = (1).to_bytes(2, "little") + (0).to_bytes(4, "little")
+            data_file0.write_bytes(bytes(page0))
+            page1 = _row_page(page_no=0, next_page=None, value=2, text="TWO")
+            page1[0:4] = (0x00010006).to_bytes(4, "little")
+            data_file1.write_bytes(bytes(page1))
+            output_path = root / "cross-ok.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file0),
+                            "page_size": 8192,
+                        },
+                        {
+                            "group_id": 6,
+                            "file_no": 1,
+                            "path": str(data_file1),
+                            "page_size": 8192,
+                        },
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_CROSS_OK",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "page_refs": [{"file_no": 0, "page_no": 0}],
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                                {"name": "V", "type_name": "VARCHAR"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_CROSS_OK",
+                output=output_path,
+            )
+
+            self.assertTrue(report.ok)
+            self.assertEqual(report.rows_written, 2)
+            self.assertEqual(report.scanned_pages, (0, 0))
+            self.assertEqual(
+                report.as_dict()["scanned_page_refs"],
+                [{"file_no": 0, "page_no": 0}, {"file_no": 1, "page_no": 0}],
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+        self.assertEqual(rows, [["ID", "V"], ["1", "ONE"], ["2", "TWO"]])
 
     def test_reports_decode_failures_without_writing_bad_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

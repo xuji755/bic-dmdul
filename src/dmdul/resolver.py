@@ -186,14 +186,20 @@ def resolve_offline_table_metadata(
             scan_pages=scan_pages,
         ),
     )
+    group_data_files = tuple(
+        item
+        for item in files
+        if item.group_id == _required_int(storage_index.group_id, "storage group id")
+    )
     metadata = CalibratedMetadata(
-        data_files=(
+        data_files=tuple(
             DataFileMeta(
-                group_id=data_file.group_id,
-                file_no=data_file.file_no_hint,
-                path=data_file.path,
-                page_size=data_file.page_size,
-            ),
+                group_id=item.group_id,
+                file_no=item.file_no_hint,
+                path=item.path,
+                page_size=item.page_size,
+            )
+            for item in group_data_files
         ),
         tables=(table,),
     )

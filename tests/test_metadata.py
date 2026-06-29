@@ -44,6 +44,10 @@ class MetadataTest(unittest.TestCase):
         self.assertEqual(table.storage.root_page, 80)
         self.assertEqual(table.storage.scan_pages, 64)
         self.assertEqual(table.storage.page_numbers, (80, 96))
+        self.assertEqual(
+            [(item.file_no, item.page_no) for item in table.storage.page_refs],
+            [(0, 80), (0, 96)],
+        )
         self.assertEqual(table.columns[0].name, "ID")
         self.assertEqual(metadata.data_files[0].path, Path("/tmp/DMDUL_TS01.DBF"))
 

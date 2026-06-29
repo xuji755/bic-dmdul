@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .decode import DecodeError, decode_observed_row_values
-from .metadata import CalibratedMetadata, TableMeta
+from .metadata import CalibratedMetadata, StoragePageRef, TableMeta
 from .page import ObservedPageHeader
 from .row import scan_observed_row_chain
 from .storage import DataFile
@@ -14,7 +14,7 @@ from .storage import DataFile
 
 @dataclass(frozen=True)
 class PagePlan:
-    pages: tuple[int, ...]
+    pages: tuple[StoragePageRef, ...]
     diagnostics: tuple[dict[str, Any], ...]
 
 
@@ -28,6 +28,7 @@ class ExtractionReport:
     decode_errors: tuple[str, ...]
     diagnostics: tuple[dict[str, Any], ...]
     scanned_pages: tuple[int, ...]
+    scanned_page_refs: tuple[dict[str, int], ...]
     mode: str
 
     @property
@@ -45,6 +46,7 @@ class ExtractionReport:
             "decode_errors": list(self.decode_errors),
             "diagnostics": list(self.diagnostics),
             "scanned_pages": list(self.scanned_pages),
+            "scanned_page_refs": list(self.scanned_page_refs),
             "mode": self.mode,
         }
 
@@ -67,6 +69,11 @@ def extract_csv_with_calibrated_metadata(
         table.storage.group_id,
         table.storage.file_no,
     )
+    data_files = {
+        item.file_no: DataFile(item.path, page_size=item.page_size)
+        for item in metadata.data_files
+        if item.group_id == table.storage.group_id
+    }
     data_file = DataFile(data_file_meta.path, page_size=data_file_meta.page_size)
     output.parent.mkdir(parents=True, exist_ok=True)
     rows_written = 0
@@ -74,13 +81,15 @@ def extract_csv_with_calibrated_metadata(
     rows_skipped_decode_error = 0
     decode_errors: list[str] = []
     diagnostics: list[dict[str, Any]] = []
-    page_plan = _build_page_plan(table, data_file)
+    page_plan = _build_page_plan(table, data_files)
     diagnostics.extend(page_plan.diagnostics)
     with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([column.name for column in table.columns])
-        for page_no in page_plan.pages:
-            page = data_file.read_page(page_no)
+        for page_ref in page_plan.pages:
+            page_no = page_ref.page_no
+            page_file = data_files[page_ref.file_no]
+            page = page_file.read_page(page_no)
             rows = scan_observed_row_chain(page)
             for row in rows:
                 if row.is_deleted:
@@ -114,10 +123,14 @@ def extract_csv_with_calibrated_metadata(
         rows_skipped_decode_error=rows_skipped_decode_error,
         decode_errors=tuple(decode_errors),
         diagnostics=tuple(diagnostics),
-        scanned_pages=page_plan.pages,
+        scanned_pages=tuple(page_ref.page_no for page_ref in page_plan.pages),
+        scanned_page_refs=tuple(
+            {"file_no": page_ref.file_no, "page_no": page_ref.page_no}
+            for page_ref in page_plan.pages
+        ),
         mode=(
             "segment-manifest-page-ref-walk"
-            if table.storage.page_numbers
+            if table.storage.page_numbers or table.storage.page_refs
             else "calibrated-metadata-page-range-scan"
         ),
     )
@@ -138,14 +151,28 @@ def describe_table_plan(table: TableMeta) -> list[str]:
     ]
 
 
-def _build_page_plan(table: TableMeta, data_file: DataFile) -> PagePlan:
+def _build_page_plan(
+    table: TableMeta,
+    data_files: dict[int, DataFile],
+) -> PagePlan:
+    if table.storage.page_refs:
+        return _walk_leaf_chain(
+            data_files=data_files,
+            start_pages=table.storage.page_refs,
+        )
     if table.storage.page_numbers:
         return _walk_same_file_leaf_chain(
-            data_file=data_file,
+            data_file=data_files[table.storage.file_no],
             file_no=table.storage.file_no,
             start_pages=table.storage.page_numbers,
         )
-    return PagePlan(pages=tuple(_iter_scan_pages(table)), diagnostics=())
+    return PagePlan(
+        pages=tuple(
+            StoragePageRef(file_no=table.storage.file_no, page_no=page_no)
+            for page_no in _iter_scan_pages(table)
+        ),
+        diagnostics=(),
+    )
 
 
 def _iter_scan_pages(table: TableMeta) -> range:
@@ -161,30 +188,66 @@ def _walk_same_file_leaf_chain(
     file_no: int,
     start_pages: tuple[int, ...],
 ) -> PagePlan:
-    pages_total = data_file.path.stat().st_size // data_file.page_size
-    result: list[int] = []
+    return _walk_leaf_chain(
+        data_files={file_no: data_file},
+        start_pages=tuple(
+            StoragePageRef(file_no=file_no, page_no=page_no)
+            for page_no in start_pages
+        ),
+    )
+
+
+def _walk_leaf_chain(
+    *,
+    data_files: dict[int, DataFile],
+    start_pages: tuple[StoragePageRef, ...],
+) -> PagePlan:
+    pages_total_by_file = {
+        file_no: data_file.path.stat().st_size // data_file.page_size
+        for file_no, data_file in data_files.items()
+    }
+    result: list[StoragePageRef] = []
     diagnostics: list[dict[str, Any]] = []
-    seen: set[int] = set()
+    seen: set[tuple[int, int]] = set()
+    start_keys = {(item.file_no, item.page_no) for item in start_pages}
     for start_page in start_pages:
-        page_no: int | None = start_page
-        while page_no is not None:
+        page_ref: StoragePageRef | None = start_page
+        while page_ref is not None:
+            file_no = page_ref.file_no
+            page_no = page_ref.page_no
+            data_file = data_files.get(file_no)
+            if data_file is None:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "page-plan-file-missing",
+                        "message": "planned page references a file not present in metadata",
+                        "file_no": file_no,
+                        "page_no": page_no,
+                    }
+                )
+                break
+            pages_total = pages_total_by_file[file_no]
             if page_no < 0 or page_no >= pages_total:
                 diagnostics.append(
                     {
                         "level": "error",
                         "code": "page-plan-out-of-range",
                         "message": "planned page is outside the data file",
+                        "file_no": file_no,
                         "page_no": page_no,
                         "pages_total": pages_total,
                     }
                 )
                 break
-            if page_no in seen:
+            key = (file_no, page_no)
+            if key in seen:
                 diagnostics.append(
                     {
                         "level": "warning",
                         "code": "page-plan-cycle",
                         "message": "page traversal stopped after reaching an already scanned page",
+                        "file_no": file_no,
                         "page_no": page_no,
                     }
                 )
@@ -204,15 +267,16 @@ def _walk_same_file_leaf_chain(
                     }
                 )
                 break
-            seen.add(page_no)
-            result.append(page_no)
+            seen.add(key)
+            result.append(page_ref)
             if header.page_kind_label != "tentative-btree-data":
-                if page_no not in start_pages:
+                if key not in start_keys:
                     diagnostics.append(
                         {
                             "level": "warning",
                             "code": "page-plan-non-leaf-stop",
                             "message": "page traversal stopped at a non-BTREE/data page",
+                            "file_no": file_no,
                             "page_no": page_no,
                             "page_kind_raw": header.page_kind_raw,
                             "page_kind_label": header.page_kind_label,
@@ -221,17 +285,8 @@ def _walk_same_file_leaf_chain(
                 break
             if header.next_page.is_null:
                 break
-            if header.next_page.file_no != file_no:
-                diagnostics.append(
-                    {
-                        "level": "warning",
-                        "code": "page-plan-cross-file-stop",
-                        "message": "same-file leaf traversal stopped at a cross-file next_page reference",
-                        "page_no": page_no,
-                        "next_file_no": header.next_page.file_no,
-                        "next_page_no": header.next_page.page_no,
-                    }
-                )
-                break
-            page_no = header.next_page.page_no
+            page_ref = StoragePageRef(
+                file_no=header.next_page.file_no,
+                page_no=header.next_page.page_no,
+            )
     return PagePlan(pages=tuple(result), diagnostics=tuple(diagnostics))

@@ -115,11 +115,15 @@ to explain the underlying database structure.
 - [x] Use segment manifest page-reference candidates plus same-file leaf
   `next_page` links as a conservative extraction page plan.
 - [x] Emit extraction diagnostics for page-plan identity mismatches, out-of-range
-  pages, cycles, and cross-file stops.
+  pages, cycles, and missing files referenced by page links.
 - [ ] Decode root page child/leaf pointers.
 - [x] Traverse same-file linked leaf pages from a validated manifest leaf
   candidate without scanning the whole file.
-- [ ] Decode and traverse cross-file or multi-level BTREE leaf chains.
+- [x] Include all discovered files for the table's group/tablespace in the
+  target-table segment manifest.
+- [x] Traverse cross-file leaf `next_page` links when the referenced file is
+  present in the segment manifest.
+- [ ] Decode and traverse multi-level BTREE leaf chains.
 - [ ] Decide fallback strategy: full segment scan when root traversal is not yet
   reliable.
 - [ ] Decode how allocated extent lists are represented outside online views.

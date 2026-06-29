@@ -133,9 +133,11 @@ transitional `scan_pages` window from the root page. Replacing candidate
 matching with fully decoded root/leaf pointer semantics remains required before
 claiming complete table extraction.
 Page-plan anomalies such as out-of-range pages, page header identity mismatch,
-cycles, or cross-file `next_page` stops are emitted as extraction diagnostics;
-errors make `ok=false`, while warnings identify unsupported traversal branches
-that require further parser work.
+cycles, or `next_page` references to missing files are emitted as extraction
+diagnostics; errors make `ok=false`, while warnings identify traversal branches
+that require further parser work. When the referenced file is present in the
+segment manifest, `next_page` traversal can continue across files in the same
+tablespace/group.
 
 If extraction reaches row decoding but any live row cannot be decoded, the
 report emits `diagnostic=row-decode-error` and `ok=false`; treat that CSV as

@@ -14,12 +14,15 @@ class OfflineResolverTest(unittest.TestCase):
             database_dir = Path(tmp_dir)
             system = database_dir / "SYSTEM.DBF"
             user_file = database_dir / "DMDUL_TS01.DBF"
+            user_file2 = database_dir / "DMDUL_TS02.DBF"
             (database_dir / "dm.ctl").write_bytes(
                 b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
                 b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS02.DBF\0"
             )
             _write_dbf(system, _page0(group_raw=0, kind=0x13) + _system_payload())
             user_file.write_bytes(_user_data_file_payload())
+            user_file2.write_bytes(_page0(group_raw=0x00010006, kind=0x13))
 
             resolved = resolve_offline_table_metadata(
                 database_dir=database_dir,
@@ -41,7 +44,10 @@ class OfflineResolverTest(unittest.TestCase):
                 ("PAD", "VARCHAR", 3000),
             ],
         )
-        self.assertEqual(resolved.metadata.data_files[0].path.name, "DMDUL_TS01.DBF")
+        self.assertEqual(
+            sorted(item.path.name for item in resolved.metadata.data_files),
+            ["DMDUL_TS01.DBF", "DMDUL_TS02.DBF"],
+        )
         manifest = resolved.as_manifest()
         self.assertEqual(manifest["mode"], "dmctl-system-sysdict-segment-root")
         self.assertEqual(manifest["table"], "SYSDBA.DMDUL_MANY")
@@ -55,15 +61,18 @@ class OfflineResolverTest(unittest.TestCase):
             manifest["segment_root"]["candidate_page_refs"][0]["page_no"],
             96,
         )
-        self.assertEqual(manifest["data_files"][0]["path"], str(user_file))
+        self.assertEqual(
+            sorted(Path(item["path"]).name for item in manifest["data_files"]),
+            ["DMDUL_TS01.DBF", "DMDUL_TS02.DBF"],
+        )
         control_files = manifest["control_file_data_files"]
-        self.assertEqual(control_files["entries_total"], 2)
+        self.assertEqual(control_files["entries_total"], 3)
         self.assertEqual(
             {
                 item["basename"]
                 for item in control_files["matched_entries"]
             },
-            {"system.dbf", "dmdul_ts01.dbf"},
+            {"system.dbf", "dmdul_ts01.dbf", "dmdul_ts02.dbf"},
         )
 
 

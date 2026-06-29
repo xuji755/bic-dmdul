@@ -16,12 +16,19 @@ class ColumnMeta:
 
 
 @dataclass(frozen=True)
+class StoragePageRef:
+    file_no: int
+    page_no: int
+
+
+@dataclass(frozen=True)
 class StorageRoot:
     group_id: int
     file_no: int
     root_page: int
     scan_pages: int = 1
     page_numbers: tuple[int, ...] = ()
+    page_refs: tuple[StoragePageRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,7 @@ class CalibratedMetadata:
                 root_page=int(segment["root_page"]),
                 scan_pages=int(segment.get("scan_pages", 1)),
                 page_numbers=_segment_manifest_page_numbers(payload),
+                page_refs=_segment_manifest_page_refs(payload),
             ),
         )
         return cls(data_files=data_files, tables=(table,))
@@ -148,6 +156,7 @@ def _table_from_dict(item: dict[str, Any]) -> TableMeta:
             root_page=int(storage["root_page"]),
             scan_pages=int(storage.get("scan_pages", 1)),
             page_numbers=tuple(int(value) for value in storage.get("page_numbers", ())),
+            page_refs=_storage_page_refs(storage),
         ),
     )
 
@@ -182,3 +191,41 @@ def _segment_manifest_page_numbers(payload: dict[str, Any]) -> tuple[int, ...]:
             continue
         pages.append(int(item["page_no"]))
     return tuple(dict.fromkeys(pages))
+
+
+def _segment_manifest_page_refs(payload: dict[str, Any]) -> tuple[StoragePageRef, ...]:
+    segment = payload["segment"]
+    root_file = int(segment["root_file"])
+    root_page = int(segment["root_page"])
+    segment_root = payload.get("segment_root")
+    if not isinstance(segment_root, dict):
+        return ()
+    refs = [StoragePageRef(file_no=root_file, page_no=root_page)]
+    for item in segment_root.get("candidate_page_refs", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("target_page_kind_label") != "tentative-btree-data":
+            continue
+        refs.append(
+            StoragePageRef(
+                file_no=int(item["file_no"]),
+                page_no=int(item["page_no"]),
+            )
+        )
+    return tuple(dict.fromkeys(refs))
+
+
+def _storage_page_refs(storage: dict[str, Any]) -> tuple[StoragePageRef, ...]:
+    if "page_refs" in storage:
+        return tuple(
+            StoragePageRef(
+                file_no=int(item["file_no"]),
+                page_no=int(item["page_no"]),
+            )
+            for item in storage["page_refs"]
+        )
+    file_no = int(storage["file_no"])
+    return tuple(
+        StoragePageRef(file_no=file_no, page_no=int(page_no))
+        for page_no in storage.get("page_numbers", ())
+    )
