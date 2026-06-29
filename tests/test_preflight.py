@@ -33,7 +33,7 @@ class PreflightTest(unittest.TestCase):
             {
                 "diagnostics": {
                     "counts_by_code": {
-                        "catalog-reference-out-of-range": 1,
+                        "future-nonfatal-observation": 1,
                     }
                 }
             }
@@ -41,6 +41,23 @@ class PreflightTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["fatal_codes"], [])
+
+    def test_rejects_same_file_reference_out_of_range(self) -> None:
+        result = evaluate_database_summary_preflight(
+            {
+                "diagnostics": {
+                    "counts_by_code": {
+                        "catalog-reference-out-of-range": 1,
+                    }
+                }
+            }
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["fatal_codes"],
+            [{"code": "catalog-reference-out-of-range", "count": 1}],
+        )
 
     def test_rejects_sampled_page_identity_mismatch(self) -> None:
         result = evaluate_database_summary_preflight(

@@ -91,6 +91,8 @@ to explain the underlying database structure.
 - [ ] Decode page SCN/LSN/checkpoint fields if present.
 - [x] Reject sampled pages whose header identity does not match their file/page
   position in preflight.
+- [x] Reject sampled same-file page references that point beyond the file page
+  count in preflight.
 - [x] Add page catalog scanner for page-kind counts, empty pages, page identity
   mismatches, and page-reference samples.
 - [x] Add tentative page-kind labels to evidence output while preserving raw
