@@ -114,6 +114,8 @@ to explain the underlying database structure.
   page references in the target-table segment manifest.
 - [x] Use segment manifest page-reference candidates plus same-file leaf
   `next_page` links as a conservative extraction page plan.
+- [x] Emit extraction diagnostics for page-plan identity mismatches, out-of-range
+  pages, cycles, and cross-file stops.
 - [ ] Decode root page child/leaf pointers.
 - [x] Traverse same-file linked leaf pages from a validated manifest leaf
   candidate without scanning the whole file.

@@ -211,6 +211,103 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"], ["50", "LEAF5"]])
 
+    def test_reports_page_plan_identity_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [_page(page_no=index, kind=0x14) for index in range(3)]
+            pages[2][4:8] = (99).to_bytes(4, "little")
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "mismatch.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_BAD_PLAN",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "page_numbers": [0, 2],
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_BAD_PLAN",
+                output=output_path,
+            )
+
+            self.assertFalse(report.ok)
+            self.assertEqual(report.scanned_pages, (0,))
+            self.assertEqual(report.diagnostics[0]["code"], "page-plan-identity-mismatch")
+            self.assertEqual(
+                report.as_dict()["diagnostics"][0]["code"],
+                "page-plan-identity-mismatch",
+            )
+
+    def test_reports_cross_file_leaf_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            page = _row_page(page_no=0, next_page=None, value=1, text="ONE")
+            page[14:20] = (1).to_bytes(2, "little") + (7).to_bytes(4, "little")
+            data_file.write_bytes(bytes(page))
+            output_path = root / "cross.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_CROSS",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "page_numbers": [0],
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                                {"name": "V", "type_name": "VARCHAR"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_CROSS",
+                output=output_path,
+            )
+
+            self.assertTrue(report.ok)
+            self.assertEqual(report.rows_written, 1)
+            self.assertEqual(report.diagnostics[0]["code"], "page-plan-cross-file-stop")
+
     def test_reports_decode_failures_without_writing_bad_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

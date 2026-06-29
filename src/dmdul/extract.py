@@ -13,6 +13,12 @@ from .storage import DataFile
 
 
 @dataclass(frozen=True)
+class PagePlan:
+    pages: tuple[int, ...]
+    diagnostics: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
 class ExtractionReport:
     table: str
     output: Path
@@ -68,11 +74,12 @@ def extract_csv_with_calibrated_metadata(
     rows_skipped_decode_error = 0
     decode_errors: list[str] = []
     diagnostics: list[dict[str, Any]] = []
-    page_numbers = _iter_table_pages(table, data_file)
+    page_plan = _build_page_plan(table, data_file)
+    diagnostics.extend(page_plan.diagnostics)
     with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([column.name for column in table.columns])
-        for page_no in page_numbers:
+        for page_no in page_plan.pages:
             page = data_file.read_page(page_no)
             rows = scan_observed_row_chain(page)
             for row in rows:
@@ -107,7 +114,7 @@ def extract_csv_with_calibrated_metadata(
         rows_skipped_decode_error=rows_skipped_decode_error,
         decode_errors=tuple(decode_errors),
         diagnostics=tuple(diagnostics),
-        scanned_pages=tuple(page_numbers),
+        scanned_pages=page_plan.pages,
         mode=(
             "segment-manifest-page-ref-walk"
             if table.storage.page_numbers
@@ -131,14 +138,14 @@ def describe_table_plan(table: TableMeta) -> list[str]:
     ]
 
 
-def _iter_table_pages(table: TableMeta, data_file: DataFile) -> tuple[int, ...]:
+def _build_page_plan(table: TableMeta, data_file: DataFile) -> PagePlan:
     if table.storage.page_numbers:
         return _walk_same_file_leaf_chain(
             data_file=data_file,
             file_no=table.storage.file_no,
             start_pages=table.storage.page_numbers,
         )
-    return tuple(_iter_scan_pages(table))
+    return PagePlan(pages=tuple(_iter_scan_pages(table)), diagnostics=())
 
 
 def _iter_scan_pages(table: TableMeta) -> range:
@@ -153,26 +160,78 @@ def _walk_same_file_leaf_chain(
     data_file: DataFile,
     file_no: int,
     start_pages: tuple[int, ...],
-) -> tuple[int, ...]:
+) -> PagePlan:
     pages_total = data_file.path.stat().st_size // data_file.page_size
     result: list[int] = []
+    diagnostics: list[dict[str, Any]] = []
     seen: set[int] = set()
     for start_page in start_pages:
         page_no: int | None = start_page
         while page_no is not None:
-            if page_no < 0 or page_no >= pages_total or page_no in seen:
+            if page_no < 0 or page_no >= pages_total:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "page-plan-out-of-range",
+                        "message": "planned page is outside the data file",
+                        "page_no": page_no,
+                        "pages_total": pages_total,
+                    }
+                )
+                break
+            if page_no in seen:
+                diagnostics.append(
+                    {
+                        "level": "warning",
+                        "code": "page-plan-cycle",
+                        "message": "page traversal stopped after reaching an already scanned page",
+                        "page_no": page_no,
+                    }
+                )
                 break
             page = data_file.read_page(page_no)
             header = ObservedPageHeader.from_page(page)
             if header.file_no_hint != file_no or header.page_no != page_no:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "page-plan-identity-mismatch",
+                        "message": "planned page header identity does not match expected file/page",
+                        "expected_file_no": file_no,
+                        "expected_page_no": page_no,
+                        "observed_file_no": header.file_no_hint,
+                        "observed_page_no": header.page_no,
+                    }
+                )
                 break
             seen.add(page_no)
             result.append(page_no)
-            if (
-                header.page_kind_label != "tentative-btree-data"
-                or header.next_page.is_null
-                or header.next_page.file_no != file_no
-            ):
+            if header.page_kind_label != "tentative-btree-data":
+                if page_no not in start_pages:
+                    diagnostics.append(
+                        {
+                            "level": "warning",
+                            "code": "page-plan-non-leaf-stop",
+                            "message": "page traversal stopped at a non-BTREE/data page",
+                            "page_no": page_no,
+                            "page_kind_raw": header.page_kind_raw,
+                            "page_kind_label": header.page_kind_label,
+                        }
+                    )
+                break
+            if header.next_page.is_null:
+                break
+            if header.next_page.file_no != file_no:
+                diagnostics.append(
+                    {
+                        "level": "warning",
+                        "code": "page-plan-cross-file-stop",
+                        "message": "same-file leaf traversal stopped at a cross-file next_page reference",
+                        "page_no": page_no,
+                        "next_file_no": header.next_page.file_no,
+                        "next_page_no": header.next_page.page_no,
+                    }
+                )
                 break
             page_no = header.next_page.page_no
-    return tuple(result)
+    return PagePlan(pages=tuple(result), diagnostics=tuple(diagnostics))
