@@ -95,6 +95,10 @@ class OfflineTableResolution:
                     "file_no": item.file_no,
                     "path": str(item.path),
                     "page_size": item.page_size,
+                    "control_file_entries": _control_file_entries_for_path(
+                        control_file_data_files=self.control_file_data_files,
+                        path=item.path,
+                    ),
                 }
                 for item in self.metadata.data_files
             ],
@@ -293,6 +297,37 @@ def _required_int(value: int | None, name: str) -> int:
     if value is None:
         raise OfflineResolveError(f"missing {name}")
     return value
+
+
+def _control_file_entries_for_path(
+    *,
+    control_file_data_files: dict[str, object] | None,
+    path: Path,
+) -> list[dict[str, object]]:
+    if not control_file_data_files:
+        return []
+    entries = control_file_data_files.get("entries", [])
+    if not isinstance(entries, list):
+        return []
+    target = str(path)
+    matches: list[dict[str, object]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        matched_paths = entry.get("matched_paths", [])
+        if not isinstance(matched_paths, list) or target not in matched_paths:
+            continue
+        matches.append(
+            {
+                "control_file": entry.get("control_file"),
+                "control_file_ordinal": entry.get("control_file_ordinal"),
+                "text": entry.get("text"),
+                "normalized_path": entry.get("normalized_path"),
+                "basename": entry.get("basename"),
+                "offset": entry.get("offset"),
+            }
+        )
+    return matches
 
 
 def _split_table_name(table_name: str, *, owner: str | None) -> tuple[str, str]:

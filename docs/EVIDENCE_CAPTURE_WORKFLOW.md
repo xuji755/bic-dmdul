@@ -108,10 +108,11 @@ PYTHONPATH=src python3 -m dmdul.cli resolve-table \
 
 The segment manifest is derived from the copied `dm.ctl` file list and
 `SYSTEM.DBF` dictionary evidence. It records the matched control-file DBF
-manifest, target table object id, recovered columns, `SYSOBJECTS` child index,
-`SYSINDEXES` storage root, group/tablespace id, root file, root page, segment
-root page-header identity, and sampled 6-byte page-reference candidates found
-inside the root page. Treat this as the handoff file between dictionary
+manifest, per-data-file `control_file_entries`, target table object id,
+recovered columns, `SYSOBJECTS` child index, `SYSINDEXES` storage root,
+group/tablespace id, root file, root page, segment root page-header identity,
+and sampled 6-byte page-reference candidates found inside the root page.
+Treat this as the handoff file between dictionary
 recovery and page/row extraction; the candidate references are evidence for
 BTREE/extent calibration, not yet decoded traversal semantics.
 

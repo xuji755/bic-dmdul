@@ -226,6 +226,16 @@ class CliTest(unittest.TestCase):
         self.assertEqual(manifest["segment"]["root_page"], 80)
         self.assertTrue(manifest["segment_root"]["identity_ok"])
         self.assertEqual(manifest["segment_root"]["candidate_page_refs"][0]["page_no"], 96)
+        self.assertEqual(
+            manifest["data_files"][0]["control_file_entries"][0]["basename"],
+            "dmdul_ts01.dbf",
+        )
+        self.assertEqual(
+            manifest["data_files"][0]["control_file_entries"][0][
+                "control_file_ordinal"
+            ],
+            1,
+        )
         self.assertEqual(manifest["columns"][0]["name"], "ID")
         self.assertEqual(extract_exit_code, 0)
         self.assertEqual(rows, [["ID"], ["7"]])

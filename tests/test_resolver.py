@@ -65,6 +65,25 @@ class OfflineResolverTest(unittest.TestCase):
             sorted(Path(item["path"]).name for item in manifest["data_files"]),
             ["DMDUL_TS01.DBF", "DMDUL_TS02.DBF"],
         )
+        manifest_files = {
+            Path(item["path"]).name: item for item in manifest["data_files"]
+        }
+        self.assertEqual(
+            manifest_files["DMDUL_TS01.DBF"]["control_file_entries"][0][
+                "control_file_ordinal"
+            ],
+            1,
+        )
+        self.assertEqual(
+            manifest_files["DMDUL_TS01.DBF"]["control_file_entries"][0]["basename"],
+            "dmdul_ts01.dbf",
+        )
+        self.assertEqual(
+            manifest_files["DMDUL_TS02.DBF"]["control_file_entries"][0][
+                "control_file_ordinal"
+            ],
+            2,
+        )
         control_files = manifest["control_file_data_files"]
         self.assertEqual(control_files["entries_total"], 3)
         self.assertEqual(

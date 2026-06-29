@@ -170,6 +170,8 @@ to explain the underlying database structure.
 - [x] Emit a target-table dictionary and segment manifest that records
   `dm.ctl` file context, SYSTEM dictionary evidence, columns, storage index id,
   group/tablespace id, root file, and root page.
+- [x] Attach matched `dm.ctl` DBF occurrence evidence to each data-file entry in
+  the resolved segment manifest.
 - [ ] Decode enough `SYSOBJECTS` rows offline to recover object name/id/schema/type.
 - [ ] Decode complete `SYSCOLUMNS` row layout offline, including scale,
   nullability, defaults, and exact column id base.
