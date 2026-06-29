@@ -40,6 +40,7 @@ def catalog_data_file_pages(
     mismatch_pages: list[dict[str, Any]] = []
     nonzero_samples: list[dict[str, Any]] = []
     ref_samples: list[dict[str, Any]] = []
+    out_of_range_refs: list[dict[str, Any]] = []
     zero_pages = 0
 
     for page_no in range(start_page, stop_page):
@@ -61,6 +62,30 @@ def catalog_data_file_pages(
         if not header.prev_page.is_null or not header.next_page.is_null:
             if len(ref_samples) < sample_limit:
                 ref_samples.append(summary)
+            for direction, page_ref in (
+                ("prev", header.prev_page),
+                ("next", header.next_page),
+            ):
+                if len(out_of_range_refs) >= sample_limit:
+                    break
+                if page_ref.page_no is None:
+                    continue
+                same_file_hint = page_ref.file_no == header.file_no_hint
+                if same_file_hint and page_ref.page_no >= pages_total:
+                    out_of_range_refs.append(
+                        {
+                            "source_page_no": page_no,
+                            "source_header_page_no": header.page_no,
+                            "source_file_no_hint": header.file_no_hint,
+                            "direction": direction,
+                            "ref_file_no": page_ref.file_no,
+                            "ref_page_no": page_ref.page_no,
+                            "same_file_hint": same_file_hint,
+                            "pages_total": pages_total,
+                            "page_kind_raw": header.page_kind_raw,
+                            "page_kind_label": header.page_kind_label,
+                        }
+                    )
         if header.page_no != page_no and len(mismatch_pages) < sample_limit:
             mismatch_pages.append(summary)
 
@@ -82,6 +107,7 @@ def catalog_data_file_pages(
         "page_kind_counts": dict(sorted(kind_counts.items())),
         "group_id_counts": dict(sorted(group_counts.items(), key=lambda item: int(item[0]))),
         "page_no_mismatches": mismatch_pages,
+        "reference_out_of_range": out_of_range_refs,
         "nonzero_samples": nonzero_samples,
         "reference_samples": ref_samples,
     }

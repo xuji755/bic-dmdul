@@ -66,6 +66,37 @@ class PageCatalogTest(unittest.TestCase):
         self.assertEqual(catalog["zero_pages"], 1)
         self.assertEqual(catalog["nonzero_pages"], 0)
 
+    def test_catalog_reports_same_file_reference_out_of_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "sample.dbf"
+            pages = [
+                _page(group_raw=0, header_page_no=0, kind=0x13),
+                _page(
+                    group_raw=0,
+                    header_page_no=1,
+                    kind=0x14,
+                    next_ref=bytes.fromhex("000063000000"),
+                ),
+                bytes(128),
+            ]
+            path.write_bytes(b"".join(pages))
+
+            catalog = catalog_data_file_pages(
+                path=path,
+                page_size=128,
+                sample_limit=8,
+            )
+
+        self.assertEqual(len(catalog["reference_out_of_range"]), 1)
+        ref = catalog["reference_out_of_range"][0]
+        self.assertEqual(ref["source_page_no"], 1)
+        self.assertEqual(ref["source_header_page_no"], 1)
+        self.assertEqual(ref["direction"], "next")
+        self.assertEqual(ref["ref_file_no"], 0)
+        self.assertEqual(ref["ref_page_no"], 99)
+        self.assertTrue(ref["same_file_hint"])
+        self.assertEqual(ref["pages_total"], 3)
+
 
 def _page(
     *,

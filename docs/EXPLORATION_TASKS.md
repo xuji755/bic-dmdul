@@ -67,6 +67,8 @@ to explain the underlying database structure.
   mismatches, and page-reference samples.
 - [x] Add tentative page-kind labels to evidence output while preserving raw
   page kind values.
+- [x] Add conservative same-file page-reference range diagnostics while
+  preserving raw previous/next page references.
 
 ## C. Segment And BTREE Structure
 
