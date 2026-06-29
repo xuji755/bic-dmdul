@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct
 
 from .metadata import ColumnMeta
-from .row import ObservedRow, decode_observed_var_length
+from .row import ObservedRow, decode_observed_var_length, describe_observed_row_layout
 
 
 class DecodeError(ValueError):
@@ -36,8 +36,12 @@ def decode_observed_row_values(
     exploration.
     """
 
-    offset = _observed_column_start_offset(columns)
-    _require_supported_row_metadata(row.data, offset)
+    try:
+        layout = describe_observed_row_layout(row, column_count=len(columns))
+    except ValueError as exc:
+        raise DecodeError(str(exc)) from exc
+    _require_supported_row_metadata(layout.metadata)
+    offset = layout.column_payload_offset
     values: list[object] = []
     data = row.data
     for column in columns:
@@ -81,20 +85,7 @@ def decode_observed_row_values(
     return values
 
 
-def _observed_column_start_offset(columns: tuple[ColumnMeta, ...]) -> int:
-    # Controlled samples show one prefix byte after the row length for <=4
-    # columns and two bytes for 5 columns. This is likely NULL metadata and will
-    # be replaced once the bitmap/directory is fully decoded.
-    return 4 if len(columns) >= 5 else 3
-
-
-def _require_supported_row_metadata(data: bytes, column_start_offset: int) -> None:
-    if len(data) < column_start_offset:
-        raise DecodeError(
-            "row is too short while decoding row metadata: "
-            f"metadata_end={column_start_offset}, row_length={len(data)}"
-        )
-    metadata = data[2:column_start_offset]
+def _require_supported_row_metadata(metadata: bytes) -> None:
     if any(metadata):
         raise DecodeError(
             "unsupported row metadata before column payload; possible NULL bitmap, "

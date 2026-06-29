@@ -254,6 +254,17 @@ The first two bytes of a row appear to store row length and status bits:
 - deleted row example: `80 27` => deleted flag plus length `0x27`;
 - working rule: `length = u16be & 0x7fff`, `deleted = (u16be & 0x8000) != 0`.
 
+The current observed row-layout model used by the extractor is:
+
+| Region | Size | Status |
+| --- | ---: | --- |
+| row length/status | 2 bytes | decoded as above |
+| observed row metadata | 1 byte for <=4 columns, 2 bytes for >=5 columns | must be all zero for supported non-NULL rows |
+| user column payload | variable | decoded by column type |
+
+Non-zero observed row metadata is rejected with `unsupported-row-metadata` until
+the NULL bitmap, column directory, and transaction/MVCC flags are decoded.
+
 Observed fixed-width values:
 
 - `INT 1` -> `01 00 00 00`

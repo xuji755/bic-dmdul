@@ -196,6 +196,8 @@ to explain the underlying database structure.
 - [x] Observe short `VARCHAR` length encoding: one byte `0x80 + len` for 0..127.
 - [x] Observe long `VARCHAR` length encoding: two-byte big-endian length for
   128 and above.
+- [x] Model the currently observed row prefix as row length/status plus explicit
+  metadata bytes and column payload offset.
 - [ ] Decode row column directory, if present.
 - [ ] Decode NULL bitmap/NULL column handling.
 - [x] Reject non-zero observed row metadata bytes before column payload until

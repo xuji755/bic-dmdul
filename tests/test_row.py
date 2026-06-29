@@ -1,8 +1,10 @@
 import unittest
 
 from dmdul.row import (
+    ObservedRow,
     ObservedRowHeader,
     decode_observed_var_length,
+    describe_observed_row_layout,
     iter_observed_rows,
     scan_observed_row_chain,
 )
@@ -20,6 +22,42 @@ class ObservedRowHeaderTest(unittest.TestCase):
 
         self.assertTrue(header.is_deleted)
         self.assertEqual(header.length, 0x27)
+
+
+class ObservedRowLayoutTest(unittest.TestCase):
+    def test_describes_one_byte_metadata_for_up_to_four_columns(self) -> None:
+        row = _observed_row(bytes.fromhex("00 0f 00 07 00 00 00"))
+
+        layout = describe_observed_row_layout(row, column_count=4)
+
+        self.assertEqual(layout.header_size, 2)
+        self.assertEqual(layout.metadata, bytes.fromhex("00"))
+        self.assertEqual(layout.metadata_size, 1)
+        self.assertEqual(layout.column_payload_offset, 3)
+        self.assertFalse(layout.has_unsupported_metadata)
+
+    def test_describes_two_byte_metadata_for_five_or_more_columns(self) -> None:
+        row = _observed_row(bytes.fromhex("00 10 00 00 07 00 00 00"))
+
+        layout = describe_observed_row_layout(row, column_count=5)
+
+        self.assertEqual(layout.metadata, bytes.fromhex("00 00"))
+        self.assertEqual(layout.metadata_size, 2)
+        self.assertEqual(layout.column_payload_offset, 4)
+
+    def test_marks_nonzero_metadata_as_unsupported_for_now(self) -> None:
+        row = _observed_row(bytes.fromhex("00 0f 01 07 00 00 00"))
+
+        layout = describe_observed_row_layout(row, column_count=1)
+
+        self.assertEqual(layout.metadata, bytes.fromhex("01"))
+        self.assertTrue(layout.has_unsupported_metadata)
+
+    def test_rejects_rows_shorter_than_layout_prefix(self) -> None:
+        row = _observed_row(bytes.fromhex("00 02"))
+
+        with self.assertRaises(ValueError):
+            describe_observed_row_layout(row, column_count=1)
 
 
 class ObservedVarLengthTest(unittest.TestCase):
@@ -90,6 +128,14 @@ class ObservedRowIteratorTest(unittest.TestCase):
             [0x62, 0x87, 0xAE],
         )
         self.assertEqual([row.is_deleted for row in scanned_rows], [False, True, False])
+
+
+def _observed_row(data: bytes) -> ObservedRow:
+    return ObservedRow(
+        page_offset=0x62,
+        data=data,
+        header=ObservedRowHeader.from_bytes(data),
+    )
 
 
 if __name__ == "__main__":

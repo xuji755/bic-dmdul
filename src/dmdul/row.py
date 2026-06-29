@@ -50,6 +50,46 @@ class ObservedRow:
         return self.header.length
 
 
+@dataclass(frozen=True)
+class ObservedRowLayout:
+    header_size: int
+    metadata: bytes
+    column_payload_offset: int
+
+    @property
+    def metadata_size(self) -> int:
+        return len(self.metadata)
+
+    @property
+    def has_unsupported_metadata(self) -> bool:
+        return any(self.metadata)
+
+
+def describe_observed_row_layout(row: ObservedRow, *, column_count: int) -> ObservedRowLayout:
+    """Describe the currently observed row prefix before user column payload.
+
+    Controlled samples show a two-byte row length/status prefix, followed by
+    one metadata byte for <=4 columns and two metadata bytes for 5 columns. The
+    metadata bytes are zero in the supported non-NULL samples. Non-zero bytes
+    are kept visible for future NULL bitmap, column-directory, and MVCC work.
+    """
+
+    if column_count < 0:
+        raise ValueError("column_count must be non-negative")
+    metadata_size = 2 if column_count >= 5 else 1
+    column_payload_offset = 2 + metadata_size
+    if len(row.data) < column_payload_offset:
+        raise ValueError(
+            "row is too short while describing observed row layout: "
+            f"payload_offset={column_payload_offset}, row_length={len(row.data)}"
+        )
+    return ObservedRowLayout(
+        header_size=2,
+        metadata=row.data[2:column_payload_offset],
+        column_payload_offset=column_payload_offset,
+    )
+
+
 def decode_observed_var_length(data: bytes) -> ObservedVarLength:
     """Decode the observed DM inline variable-length prefix.
 
