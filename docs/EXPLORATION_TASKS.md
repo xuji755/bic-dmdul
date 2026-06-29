@@ -14,6 +14,16 @@ to explain the underlying database structure.
 - [x] Confirm logical storage hierarchy: database -> tablespace -> data file ->
   segment -> extent/cluster -> page.
 - [x] Confirm extent/cluster default: 16 pages.
+- [x] Treat `dm.ctl`/control files as first-class offline evidence because they
+  store database file and tablespace structure when the instance cannot start.
+- [x] Discover `dm.ctl`/`*.ctl` files and record conservative control-file
+  evidence, including SHA-256 and DBF path hints.
+- [ ] Decode the `dm.ctl` binary layout for:
+  - database identity
+  - tablespace entries
+  - data-file entries
+  - file numbers and paths
+  - status/checkpoint fields
 - [x] Observe file header/control pages in ordinary data files.
 - [x] Decode file page 0 enough to identify:
   - group/tablespace id from low 16 bits of the first page-header field

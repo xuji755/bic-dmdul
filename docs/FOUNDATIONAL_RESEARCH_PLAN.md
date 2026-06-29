@@ -51,10 +51,15 @@ Questions to answer:
 - Which page 0 fields are database id, file id, page size, status,
   checkpoint/SCN/LSN, total pages, and free-space metadata?
 - How are reserved pages, bitmap pages, and user-allocatable pages identified?
-- How does `SYS.V$DATAFILE` map to physical dictionary or control structures?
+- How does `dm.ctl` encode database identity, tablespaces, data files, file
+  numbers, paths, and status/checkpoint fields?
+- How does `SYS.V$DATAFILE` map to `dm.ctl`, physical dictionary records, and
+  data-file headers?
 
 Experiments:
 
+- Capture `dm.ctl` before and after create/resize/add/drop data-file operations
+  and compare byte-level changes.
 - Create one-file and multi-file tablespaces with distinct sizes.
 - Resize/add data files and compare page 0 plus early control pages before and
   after.

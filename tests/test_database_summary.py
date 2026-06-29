@@ -9,6 +9,10 @@ class DatabaseSummaryTest(unittest.TestCase):
     def test_summarizes_groups_system_candidate_and_catalog_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
+            (root / "dm.ctl").write_bytes(
+                b"\x00DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\x00"
+                b"MAIN=/dmdata/data/DAMENG/MAIN01.DBF\x00"
+            )
             (root / "SYSTEM.DBF").write_bytes(_page0(0, 0x13) + _page(0, 1, 0x14))
             (root / "TEMP.DBF").write_bytes(_page0(0, 0x0) + bytes(128))
             (root / "MAIN01.DBF").write_bytes(_page0(4, 0x13) + _page(4, 1, 0x11))
@@ -25,9 +29,17 @@ class DatabaseSummaryTest(unittest.TestCase):
 
         self.assertEqual(summary["files_total"], 4)
         self.assertEqual(summary["dbf_files_total"], 4)
+        self.assertEqual(summary["control_files_total"], 1)
         self.assertEqual(summary["skipped_files_total"], 0)
         self.assertEqual(summary["system_candidates"], [str(root / "SYSTEM.DBF")])
         self.assertEqual(summary["warnings"], [])
+        self.assertEqual(
+            summary["control_files"][0]["dbf_path_hints"],
+            [
+                "/dmdata/data/DAMENG/SYSTEM.DBF",
+                "/dmdata/data/DAMENG/MAIN01.DBF",
+            ],
+        )
         groups = {item["group_id"]: item for item in summary["groups"]}
         self.assertEqual(groups[0]["files"], 2)
         self.assertEqual(groups[4]["file_no_hints"], [0, 1])

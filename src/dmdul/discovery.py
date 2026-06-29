@@ -60,3 +60,10 @@ def find_dbf_files(database_dir: Path) -> list[Path]:
     for pattern in ("*.DBF", "*.dbf"):
         candidates.extend(path for path in database_dir.rglob(pattern) if path.is_file())
     return sorted(set(candidates))
+
+
+def find_control_files(database_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for pattern in ("dm.ctl", "DM.CTL", "*.ctl", "*.CTL"):
+        candidates.extend(path for path in database_dir.rglob(pattern) if path.is_file())
+    return sorted(set(candidates))

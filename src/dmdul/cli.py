@@ -546,7 +546,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     summarize_database = subparsers.add_parser(
         "summarize-database",
-        help="summarize DBF files, groups, and sampled page kinds in a database directory",
+        help="summarize control files, DBF files, groups, and sampled page kinds",
     )
     summarize_database.add_argument("database_dir")
     summarize_database.add_argument(

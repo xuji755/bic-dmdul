@@ -4,7 +4,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from .discovery import DiscoveredDataFile, discover_data_files, find_dbf_files
+from .control_file import summarize_control_file
+from .discovery import (
+    DiscoveredDataFile,
+    discover_data_files,
+    find_control_files,
+    find_dbf_files,
+)
 from .page import observed_page_kind_label
 from .page_catalog import catalog_data_file_pages
 
@@ -19,6 +25,11 @@ def summarize_database_dir(
     """Summarize a DM database directory for storage exploration."""
 
     dbf_paths = find_dbf_files(database_dir)
+    control_paths = find_control_files(database_dir)
+    control_files = [
+        summarize_control_file(path, sample_limit=sample_limit)
+        for path in control_paths
+    ]
     files = discover_data_files(database_dir, page_size=page_size)
     discovered_paths = {item.path for item in files}
     skipped_files = [
@@ -43,6 +54,7 @@ def summarize_database_dir(
         "database_dir": str(database_dir),
         "page_size": page_size,
         "dbf_files_total": len(dbf_paths),
+        "control_files_total": len(control_files),
         "files_total": len(files),
         "skipped_files_total": len(skipped_files),
         "groups": [
@@ -60,9 +72,11 @@ def summarize_database_dir(
             duplicate_file_hints=duplicate_file_hints,
             file_entries=file_entries,
             skipped_files=skipped_files,
+            control_files=control_files,
         ),
         "diagnostics": _summary_diagnostics(file_entries, skipped_files),
         "duplicate_file_hints": duplicate_file_hints,
+        "control_files": control_files,
         "skipped_files": skipped_files,
         "files": file_entries,
     }
@@ -154,8 +168,11 @@ def _summary_warnings(
     duplicate_file_hints: list[dict[str, Any]],
     file_entries: list[dict[str, Any]],
     skipped_files: list[dict[str, Any]],
+    control_files: list[dict[str, Any]],
 ) -> list[str]:
     warnings: list[str] = []
+    if not control_files:
+        warnings.append("dm.ctl/control file not found")
     if not system_candidates:
         warnings.append("SYSTEM.DBF candidate not found")
     elif len(system_candidates) > 1:
