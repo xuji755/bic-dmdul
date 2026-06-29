@@ -328,6 +328,18 @@ def _classify_evidence_payload(payload: Any) -> tuple[str | None, tuple[str, ...
                 "changed_ranges",
             ),
         )
+    if "dbf_path_hint_records" in payload or "printable_string_records" in payload:
+        return (
+            "summarize-control-file",
+            (
+                "path",
+                "bytes",
+                "sha256",
+                "dbf_path_hints",
+                "dbf_path_hint_records",
+                "printable_string_records",
+            ),
+        )
     return None, ()
 
 

@@ -238,6 +238,50 @@ class EvidenceCaptureTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["evidence_files"][0]["type"], "compare-control-files")
 
+    def test_verify_evidence_manifest_accepts_control_file_summary_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            control_file = root / "dm.ctl"
+            control_file.write_bytes(b"abc")
+            summary_json = root / "dmctl_summary.json"
+            summary_json.write_text(
+                json.dumps(
+                    {
+                        "path": str(control_file),
+                        "bytes": 3,
+                        "sha256": hashlib.sha256(b"abc").hexdigest(),
+                        "dbf_path_hints": [],
+                        "dbf_path_hint_records": [],
+                        "printable_string_records": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "label": "unit",
+                        "copy_state": "clean-shutdown",
+                        "reference_output": ["reference.out"],
+                        "copied_files": [
+                            {
+                                "path": control_file.name,
+                                "bytes": 3,
+                                "sha256": hashlib.sha256(b"abc").hexdigest(),
+                            }
+                        ],
+                        "evidence_json": [summary_json.name],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = verify_evidence_manifest(manifest)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["evidence_files"][0]["type"], "summarize-control-file")
+
     def test_verify_evidence_manifest_rejects_unknown_evidence_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

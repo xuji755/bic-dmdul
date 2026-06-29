@@ -18,6 +18,8 @@ to explain the underlying database structure.
   store database file and tablespace structure when the instance cannot start.
 - [x] Discover `dm.ctl`/`*.ctl` files and record conservative control-file
   evidence, including SHA-256 and DBF path hints.
+- [x] Add standalone `dm.ctl` summary output for control-file-only evidence
+  capture.
 - [x] Add byte-level `dm.ctl` snapshot comparison output for controlled
   create/resize/add/drop data-file experiments.
 - [ ] Decode the `dm.ctl` binary layout for:

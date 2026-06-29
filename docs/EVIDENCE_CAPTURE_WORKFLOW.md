@@ -60,6 +60,14 @@ that point beyond the file.
 Short or otherwise unparsed `.DBF` files are reported as skipped files instead
 of being silently ignored.
 
+To capture one control file without scanning the whole database directory:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli summarize-control-file \
+  /dmdata/data/DAMENG/dm.ctl \
+  --output evidence/dmctl_summary.json
+```
+
 For controlled `dm.ctl` layout exploration, capture snapshots before and after
 one storage operation, then compare them:
 
@@ -133,7 +141,8 @@ The verifier checks:
 - copied file SHA-256 if recorded;
 - referenced evidence JSON existence;
 - whether each evidence JSON is a recognized `capture-evidence` or
-  `catalog-pages`, `summarize-database`, or `compare-control-files` output;
+  `catalog-pages`, `summarize-control-file`, `summarize-database`, or
+  `compare-control-files` output;
 - required top-level keys for the detected evidence type.
 
 ## 6. Promote Only Proven Fields

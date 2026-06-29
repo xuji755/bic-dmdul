@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from .control_file import compare_control_files
+from .control_file import compare_control_files, summarize_control_file
 from .database_summary import summarize_database_dir
 from .discovery import discover_data_files
 from .evidence import (
@@ -134,6 +134,19 @@ def _cmd_summarize_database(args: argparse.Namespace) -> int:
         database_dir=Path(args.database_dir),
         page_size=args.page_size,
         catalog_pages=args.catalog_pages,
+        sample_limit=args.sample_limit,
+    )
+    payload = json.dumps(summary, indent=2)
+    if args.output:
+        Path(args.output).write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
+    return 0
+
+
+def _cmd_summarize_control_file(args: argparse.Namespace) -> int:
+    summary = summarize_control_file(
+        Path(args.file),
         sample_limit=args.sample_limit,
     )
     payload = json.dumps(summary, indent=2)
@@ -574,6 +587,15 @@ def build_parser() -> argparse.ArgumentParser:
     summarize_database.add_argument("--sample-limit", type=int, default=8)
     summarize_database.add_argument("--output")
     summarize_database.set_defaults(func=_cmd_summarize_database)
+
+    summarize_control = subparsers.add_parser(
+        "summarize-control-file",
+        help="summarize one dm.ctl/control file for byte-level structure research",
+    )
+    summarize_control.add_argument("file")
+    summarize_control.add_argument("--sample-limit", type=int, default=32)
+    summarize_control.add_argument("--output")
+    summarize_control.set_defaults(func=_cmd_summarize_control_file)
 
     compare_control_files_parser = subparsers.add_parser(
         "compare-control-files",
