@@ -95,6 +95,10 @@ class DatabaseSummaryTest(unittest.TestCase):
             by_name["MAIN01.DBF"]["catalog_sample"]["page_kind_type_counts"]["0x00000011"],
             {"0x04": 1},
         )
+        self.assertEqual(
+            by_name["MAIN01.DBF"]["catalog_sample"]["row_area_summary"]["included_pages"],
+            0,
+        )
 
     def test_reports_duplicate_group_file_hints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -45,6 +45,7 @@ def catalog_data_file_pages(
     nonzero_samples: list[dict[str, Any]] = []
     ref_samples: list[dict[str, Any]] = []
     out_of_range_refs: list[dict[str, Any]] = []
+    row_area_summary = _new_row_area_summary()
     zero_pages = 0
 
     for page_no in range(start_page, stop_page):
@@ -68,6 +69,13 @@ def catalog_data_file_pages(
         group_counts[group_key] += 1
 
         summary = _page_summary(page_no=page_no, header=header, page=page)
+        _accumulate_row_area_summary(
+            row_area_summary,
+            page_no=page_no,
+            header=header,
+            probe=summary["row_area_probe"],
+            sample_limit=sample_limit,
+        )
         if len(nonzero_samples) < sample_limit:
             nonzero_samples.append(summary)
         if not header.prev_page.is_null or not header.next_page.is_null:
@@ -119,6 +127,7 @@ def catalog_data_file_pages(
         "page_type_counts": dict(sorted(type_counts.items())),
         "page_type_kind_counts": _sorted_nested_counts(type_kind_counts),
         "page_kind_type_counts": _sorted_nested_counts(kind_type_counts),
+        "row_area_summary": _finalize_row_area_summary(row_area_summary),
         "group_id_counts": dict(sorted(group_counts.items(), key=lambda item: int(item[0]))),
         "page_no_mismatches": mismatch_pages,
         "reference_out_of_range": out_of_range_refs,
@@ -185,6 +194,95 @@ def _row_area_probe(
             for row in rows[:sample_limit]
         ],
     }
+
+
+def _new_row_area_summary() -> dict[str, Any]:
+    return {
+        "start_offset": 0x62,
+        "included_page_kind_label": "tentative-btree-data",
+        "included_pages": 0,
+        "pages_with_physical_rows": 0,
+        "pages_with_deleted_rows": 0,
+        "pages_with_count_delta": 0,
+        "total_header_observed_row_count": 0,
+        "total_physical_rows_scanned": 0,
+        "total_live_rows_scanned": 0,
+        "total_deleted_rows_scanned": 0,
+        "count_delta_histogram": Counter(),
+        "count_delta_samples": [],
+        "deleted_row_samples": [],
+    }
+
+
+def _accumulate_row_area_summary(
+    summary: dict[str, Any],
+    *,
+    page_no: int,
+    header: ObservedPageHeader,
+    probe: dict[str, Any],
+    sample_limit: int,
+) -> None:
+    if header.page_kind_label != summary["included_page_kind_label"]:
+        return
+
+    delta = probe["count_delta_physical_minus_header"]
+    deleted_rows = probe["deleted_rows_scanned"]
+    physical_rows = probe["physical_rows_scanned"]
+
+    summary["included_pages"] += 1
+    summary["total_header_observed_row_count"] += probe["header_observed_row_count"]
+    summary["total_physical_rows_scanned"] += physical_rows
+    summary["total_live_rows_scanned"] += probe["live_rows_scanned"]
+    summary["total_deleted_rows_scanned"] += deleted_rows
+    summary["count_delta_histogram"][str(delta)] += 1
+    if physical_rows:
+        summary["pages_with_physical_rows"] += 1
+    if deleted_rows:
+        summary["pages_with_deleted_rows"] += 1
+        if len(summary["deleted_row_samples"]) < sample_limit:
+            summary["deleted_row_samples"].append(
+                _row_area_page_sample(page_no=page_no, header=header, probe=probe)
+            )
+    if delta:
+        summary["pages_with_count_delta"] += 1
+        if len(summary["count_delta_samples"]) < sample_limit:
+            summary["count_delta_samples"].append(
+                _row_area_page_sample(page_no=page_no, header=header, probe=probe)
+            )
+
+
+def _row_area_page_sample(
+    *,
+    page_no: int,
+    header: ObservedPageHeader,
+    probe: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "page_no": page_no,
+        "header_page_no": header.page_no,
+        "page_type_raw": header.page_type_raw,
+        "page_kind_raw": header.page_kind_raw,
+        "page_kind_label": header.page_kind_label,
+        "header_observed_row_count": probe["header_observed_row_count"],
+        "physical_rows_scanned": probe["physical_rows_scanned"],
+        "live_rows_scanned": probe["live_rows_scanned"],
+        "deleted_rows_scanned": probe["deleted_rows_scanned"],
+        "count_delta_physical_minus_header": probe[
+            "count_delta_physical_minus_header"
+        ],
+        "sampled_rows": probe["sampled_rows"],
+    }
+
+
+def _finalize_row_area_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    finalized = dict(summary)
+    finalized["count_delta_histogram"] = dict(
+        sorted(
+            summary["count_delta_histogram"].items(),
+            key=lambda item: int(item[0]),
+        )
+    )
+    return finalized
 
 
 def _increment_nested(

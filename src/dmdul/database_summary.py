@@ -141,6 +141,7 @@ def _file_entry(
             "page_type_counts": catalog["page_type_counts"],
             "page_type_kind_counts": catalog["page_type_kind_counts"],
             "page_kind_type_counts": catalog["page_kind_type_counts"],
+            "row_area_summary": catalog["row_area_summary"],
             "page_no_mismatches": catalog["page_no_mismatches"],
             "reference_out_of_range": catalog["reference_out_of_range"],
         }

@@ -231,9 +231,11 @@ page-number mismatches, same-file page references that point beyond the file,
 nonzero page samples, selected raw page-header fields, row-area probes, and
 previous/next page-reference samples. Row-area probes compare the observed page
 header row-count candidate with a physical row-length-chain scan so delete,
-update, and slot/free-space behavior can be calibrated from evidence. Labels and
-anonymous header-field names are for evidence triage only and must not be
-treated as final page parser semantics.
+update, and slot/free-space behavior can be calibrated from evidence. The
+top-level `row_area_summary` aggregates these row-area signals for sampled
+BTREE/data pages and keeps capped samples for row-count deltas and deleted-row
+cases. Labels and anonymous header-field names are for evidence triage only and
+must not be treated as final page parser semantics.
 
 Fill in `docs/templates/evidence_manifest.json` beside the captured DBF files
 so the copy method, reference output, and evidence JSON remain tied together.

@@ -296,6 +296,14 @@ and records:
 This is evidence for calibrating the row count, free-space boundary, and slot
 directory fields. It is not yet a complete slot-directory decoder.
 
+The catalog also includes a top-level `row_area_summary` that currently
+aggregates only pages labeled `tentative-btree-data`. It reports how many such
+pages had physical rows, deleted rows, and row-count deltas, plus a histogram
+and capped page samples for count-delta and deleted-row cases. Non-data pages
+still keep their per-page probe in `nonzero_samples`, but they are excluded from
+the aggregate so file-control and space-management pages do not pollute row
+format calibration.
+
 Observed fixed-width values:
 
 - `INT 1` -> `01 00 00 00`

@@ -136,6 +136,44 @@ class PageCatalogTest(unittest.TestCase):
                 {"page_offset": 0x66, "length": 5, "deleted": True},
             ],
         )
+        row_summary = catalog["row_area_summary"]
+        self.assertEqual(
+            row_summary["included_page_kind_label"],
+            "tentative-btree-data",
+        )
+        self.assertEqual(row_summary["included_pages"], 1)
+        self.assertEqual(row_summary["pages_with_physical_rows"], 1)
+        self.assertEqual(row_summary["pages_with_deleted_rows"], 1)
+        self.assertEqual(row_summary["pages_with_count_delta"], 1)
+        self.assertEqual(row_summary["total_header_observed_row_count"], 1)
+        self.assertEqual(row_summary["total_physical_rows_scanned"], 2)
+        self.assertEqual(row_summary["total_live_rows_scanned"], 1)
+        self.assertEqual(row_summary["total_deleted_rows_scanned"], 1)
+        self.assertEqual(row_summary["count_delta_histogram"], {"1": 1})
+        self.assertEqual(row_summary["count_delta_samples"][0]["page_no"], 0)
+        self.assertEqual(row_summary["deleted_row_samples"][0]["deleted_rows_scanned"], 1)
+
+    def test_row_area_summary_ignores_non_btree_data_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "control.dbf"
+            page = bytearray(_page(group_raw=6, header_page_no=0, kind=0x13, row_count=1))
+            page[0x62:0x66] = bytes.fromhex("00 04 01 02")
+            path.write_bytes(bytes(page))
+
+            catalog = catalog_data_file_pages(
+                path=path,
+                page_size=128,
+                sample_limit=8,
+            )
+
+        self.assertEqual(
+            catalog["nonzero_samples"][0]["row_area_probe"]["physical_rows_scanned"],
+            1,
+        )
+        row_summary = catalog["row_area_summary"]
+        self.assertEqual(row_summary["included_pages"], 0)
+        self.assertEqual(row_summary["total_physical_rows_scanned"], 0)
+        self.assertEqual(row_summary["count_delta_histogram"], {})
 
 
 def _page(

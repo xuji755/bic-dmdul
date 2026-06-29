@@ -112,6 +112,8 @@ to explain the underlying database structure.
   first-byte PAGE type enum.
 - [x] Add row-area probes to page catalog samples that compare the page-header
   row-count candidate with the physical row-length chain and deleted-row flags.
+- [x] Aggregate row-area probe signals for sampled BTREE/data pages so count
+  deltas and deleted-row pages are visible without inspecting every page sample.
 
 ## C. Segment And BTREE Structure
 
