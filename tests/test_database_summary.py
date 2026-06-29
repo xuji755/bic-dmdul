@@ -40,6 +40,14 @@ class DatabaseSummaryTest(unittest.TestCase):
                 "/dmdata/data/DAMENG/MAIN01.DBF",
             ],
         )
+        first_hint = summary["control_files"][0]["dbf_path_hint_records"][0]
+        self.assertEqual(first_hint["text"], "/dmdata/data/DAMENG/SYSTEM.DBF")
+        self.assertEqual(first_hint["offset"], 10)
+        self.assertEqual(first_hint["string_offset"], 1)
+        self.assertEqual(
+            summary["control_files"][0]["printable_string_records"][0]["offset"],
+            1,
+        )
         groups = {item["group_id"]: item for item in summary["groups"]}
         self.assertEqual(groups[0]["files"], 2)
         self.assertEqual(groups[4]["file_no_hints"], [0, 1])
