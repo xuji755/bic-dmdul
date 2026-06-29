@@ -231,6 +231,7 @@ to explain the underlying database structure.
   and `CHAR` subset.
 - [x] Surface decode failures in extraction reports instead of silently
   dropping unreadable rows.
+- [x] Add stable extraction diagnostic code for live row decode failures.
 - [ ] Implement CSV writer with headers and proper escaping.
 - [ ] Add CLI command:
 
@@ -247,8 +248,8 @@ dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
   test tables.
 - [ ] Add strict mode that fails if any live row, page, dictionary record, or
   transaction visibility decision is uncertain.
-- [ ] Emit extraction report with row counts, skipped deleted rows, decode
-  errors, unsupported structures, and consistency diagnostics.
+- [ ] Emit extraction report artifact with row counts, skipped deleted rows,
+  decode errors, unsupported structures, and consistency diagnostics.
 
 ## H. Test Corpus
 

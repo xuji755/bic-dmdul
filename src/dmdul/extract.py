@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .decode import DecodeError, decode_observed_row_values
 from .metadata import CalibratedMetadata, TableMeta
@@ -18,7 +19,12 @@ class ExtractionReport:
     rows_skipped_deleted: int
     rows_skipped_decode_error: int
     decode_errors: tuple[str, ...]
+    diagnostics: tuple[dict[str, Any], ...]
     mode: str
+
+    @property
+    def ok(self) -> bool:
+        return not any(item.get("level") == "error" for item in self.diagnostics)
 
 
 def extract_csv_with_calibrated_metadata(
@@ -45,6 +51,7 @@ def extract_csv_with_calibrated_metadata(
     rows_skipped_deleted = 0
     rows_skipped_decode_error = 0
     decode_errors: list[str] = []
+    diagnostics: list[dict[str, Any]] = []
     with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([column.name for column in table.columns])
@@ -59,6 +66,14 @@ def extract_csv_with_calibrated_metadata(
                     values = decode_observed_row_values(row, table.columns)
                 except DecodeError as exc:
                     rows_skipped_decode_error += 1
+                    if not any(item["code"] == "row-decode-error" for item in diagnostics):
+                        diagnostics.append(
+                            {
+                                "level": "error",
+                                "code": "row-decode-error",
+                                "message": "one or more live rows could not be decoded",
+                            }
+                        )
                     if len(decode_errors) < 10:
                         decode_errors.append(
                             f"page={page_no} offset={row.page_offset}: {exc}"
@@ -74,6 +89,7 @@ def extract_csv_with_calibrated_metadata(
         rows_skipped_deleted=rows_skipped_deleted,
         rows_skipped_decode_error=rows_skipped_decode_error,
         decode_errors=tuple(decode_errors),
+        diagnostics=tuple(diagnostics),
         mode="calibrated-metadata-page-range-scan",
     )
 

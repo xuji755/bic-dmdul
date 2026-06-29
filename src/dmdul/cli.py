@@ -241,6 +241,12 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     print(f"rows_written={report.rows_written}")
     print(f"rows_skipped_deleted={report.rows_skipped_deleted}")
     print(f"rows_skipped_decode_error={report.rows_skipped_decode_error}")
+    print(f"ok={str(report.ok).lower()}")
+    for diagnostic in report.diagnostics:
+        print(
+            f"diagnostic={diagnostic['code']} level={diagnostic['level']}",
+            file=sys.stderr,
+        )
     for error in report.decode_errors:
         print(f"decode_error={error}", file=sys.stderr)
     print(f"mode={report.mode}")
