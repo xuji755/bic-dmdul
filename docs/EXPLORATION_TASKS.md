@@ -71,6 +71,8 @@ to explain the underlying database structure.
   page kind values.
 - [x] Add conservative same-file page-reference range diagnostics while
   preserving raw previous/next page references.
+- [x] Expose selected anonymous page-header fields in page catalog samples for
+  later free-space, slot-directory, and SCN/LSN analysis.
 
 ## C. Segment And BTREE Structure
 

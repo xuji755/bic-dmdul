@@ -44,6 +44,10 @@ class PageCatalogTest(unittest.TestCase):
         )
         self.assertEqual(catalog["reference_samples"][0]["page_no"], 2)
         self.assertEqual(catalog["nonzero_samples"][2]["file_no_hint"], 1)
+        self.assertEqual(catalog["nonzero_samples"][0]["field_20_u32le"], 0x11223344)
+        self.assertEqual(catalog["nonzero_samples"][0]["field_24_u16le"], 0x5566)
+        self.assertEqual(catalog["nonzero_samples"][0]["field_26_u16le"], 0x7788)
+        self.assertEqual(catalog["nonzero_samples"][0]["field_2c_u16le"], 7)
 
     def test_catalog_respects_scan_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -112,6 +116,9 @@ def _page(
     page[8:14] = prev_ref or (b"\xff" * 6)
     page[14:20] = next_ref or (b"\xff" * 6)
     page[20:24] = kind.to_bytes(4, "little")
+    page[32:36] = (0x11223344).to_bytes(4, "little")
+    page[36:38] = (0x5566).to_bytes(2, "little")
+    page[38:40] = (0x7788).to_bytes(2, "little")
     page[44:46] = (7).to_bytes(2, "little")
     page[64] = 1
     return bytes(page)
