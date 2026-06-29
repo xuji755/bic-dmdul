@@ -56,6 +56,110 @@ def summarize_control_file(
     }
 
 
+def compare_control_files(
+    before_path: Path,
+    after_path: Path,
+    *,
+    context_bytes: int = 16,
+    sample_limit: int = 64,
+) -> dict[str, Any]:
+    """Compare two control-file snapshots for byte-level structure research."""
+
+    if context_bytes < 0:
+        raise ValueError("context_bytes must be non-negative")
+    if sample_limit < 0:
+        raise ValueError("sample_limit must be non-negative")
+
+    before = before_path.read_bytes()
+    after = after_path.read_bytes()
+    changed_ranges = _changed_ranges(before, after, sample_limit=sample_limit)
+    return {
+        "before": _file_identity(before_path, before),
+        "after": _file_identity(after_path, after),
+        "same_size": len(before) == len(after),
+        "changed_bytes": _changed_byte_count(before, after),
+        "changed_ranges_total": len(_changed_ranges(before, after, sample_limit=None)),
+        "changed_ranges": [
+            _range_record(
+                start=start,
+                stop=stop,
+                before=before,
+                after=after,
+                context_bytes=context_bytes,
+            )
+            for start, stop in changed_ranges
+        ],
+    }
+
+
+def _file_identity(path: Path, data: bytes) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def _changed_ranges(
+    before: bytes,
+    after: bytes,
+    *,
+    sample_limit: int | None,
+) -> list[tuple[int, int]]:
+    if sample_limit == 0:
+        return []
+    max_len = max(len(before), len(after))
+    ranges: list[tuple[int, int]] = []
+    start: int | None = None
+    for offset in range(max_len):
+        before_byte = before[offset] if offset < len(before) else None
+        after_byte = after[offset] if offset < len(after) else None
+        if before_byte == after_byte:
+            if start is not None:
+                ranges.append((start, offset))
+                if sample_limit is not None and len(ranges) >= sample_limit:
+                    return ranges
+                start = None
+            continue
+        if start is None:
+            start = offset
+    if start is not None and (sample_limit is None or len(ranges) < sample_limit):
+        ranges.append((start, max_len))
+    return ranges
+
+
+def _changed_byte_count(before: bytes, after: bytes) -> int:
+    max_len = max(len(before), len(after))
+    changed = 0
+    for offset in range(max_len):
+        before_byte = before[offset] if offset < len(before) else None
+        after_byte = after[offset] if offset < len(after) else None
+        if before_byte != after_byte:
+            changed += 1
+    return changed
+
+
+def _range_record(
+    *,
+    start: int,
+    stop: int,
+    before: bytes,
+    after: bytes,
+    context_bytes: int,
+) -> dict[str, Any]:
+    context_start = max(0, start - context_bytes)
+    context_stop = min(max(len(before), len(after)), stop + context_bytes)
+    return {
+        "start": start,
+        "stop_exclusive": stop,
+        "length": stop - start,
+        "context_start": context_start,
+        "context_stop_exclusive": context_stop,
+        "before_hex": before[context_start:min(context_stop, len(before))].hex(),
+        "after_hex": after[context_start:min(context_stop, len(after))].hex(),
+    }
+
+
 def _extract_printable_string_records(
     data: bytes,
     *,

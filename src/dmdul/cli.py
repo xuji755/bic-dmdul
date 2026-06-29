@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .control_file import compare_control_files
 from .database_summary import summarize_database_dir
 from .discovery import discover_data_files
 from .evidence import (
@@ -136,6 +137,21 @@ def _cmd_summarize_database(args: argparse.Namespace) -> int:
         sample_limit=args.sample_limit,
     )
     payload = json.dumps(summary, indent=2)
+    if args.output:
+        Path(args.output).write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
+    return 0
+
+
+def _cmd_compare_control_files(args: argparse.Namespace) -> int:
+    comparison = compare_control_files(
+        Path(args.before),
+        Path(args.after),
+        context_bytes=args.context_bytes,
+        sample_limit=args.sample_limit,
+    )
+    payload = json.dumps(comparison, indent=2)
     if args.output:
         Path(args.output).write_text(payload + "\n", encoding="utf-8")
     else:
@@ -558,6 +574,17 @@ def build_parser() -> argparse.ArgumentParser:
     summarize_database.add_argument("--sample-limit", type=int, default=8)
     summarize_database.add_argument("--output")
     summarize_database.set_defaults(func=_cmd_summarize_database)
+
+    compare_control_files_parser = subparsers.add_parser(
+        "compare-control-files",
+        help="compare two dm.ctl snapshots for byte-level structure research",
+    )
+    compare_control_files_parser.add_argument("before")
+    compare_control_files_parser.add_argument("after")
+    compare_control_files_parser.add_argument("--context-bytes", type=int, default=16)
+    compare_control_files_parser.add_argument("--sample-limit", type=int, default=64)
+    compare_control_files_parser.add_argument("--output")
+    compare_control_files_parser.set_defaults(func=_cmd_compare_control_files)
 
     extract_csv = subparsers.add_parser(
         "extract-csv",

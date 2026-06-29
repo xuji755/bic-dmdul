@@ -60,6 +60,21 @@ that point beyond the file.
 Short or otherwise unparsed `.DBF` files are reported as skipped files instead
 of being silently ignored.
 
+For controlled `dm.ctl` layout exploration, capture snapshots before and after
+one storage operation, then compare them:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli compare-control-files \
+  evidence/before/dm.ctl \
+  evidence/after_add_datafile/dm.ctl \
+  --context-bytes 32 \
+  --output evidence/dmctl_after_add_datafile_diff.json
+```
+
+The comparison records file identities, changed byte counts, sampled changed
+ranges, and before/after hex windows. Treat the output as byte-level evidence,
+not as decoded control-file semantics.
+
 Use deterministic markers from the fixture SQL to locate relevant pages:
 
 ```sh
@@ -117,7 +132,7 @@ The verifier checks:
 - copied file SHA-256 if recorded;
 - referenced evidence JSON existence;
 - whether each evidence JSON is a recognized `capture-evidence` or
-  `catalog-pages` output;
+  `catalog-pages`, `summarize-database`, or `compare-control-files` output;
 - required top-level keys for the detected evidence type.
 
 ## 6. Promote Only Proven Fields

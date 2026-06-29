@@ -194,6 +194,50 @@ class EvidenceCaptureTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["evidence_files"][0]["type"], "summarize-database")
 
+    def test_verify_evidence_manifest_accepts_control_file_comparison_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            control_file = root / "dm.ctl"
+            control_file.write_bytes(b"abc")
+            comparison_json = root / "ctl_compare.json"
+            comparison_json.write_text(
+                json.dumps(
+                    {
+                        "before": {"path": "before.ctl", "bytes": 3, "sha256": "x"},
+                        "after": {"path": "after.ctl", "bytes": 3, "sha256": "y"},
+                        "same_size": True,
+                        "changed_bytes": 1,
+                        "changed_ranges_total": 1,
+                        "changed_ranges": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "label": "unit",
+                        "copy_state": "clean-shutdown",
+                        "reference_output": ["reference.out"],
+                        "copied_files": [
+                            {
+                                "path": control_file.name,
+                                "bytes": 3,
+                                "sha256": hashlib.sha256(b"abc").hexdigest(),
+                            }
+                        ],
+                        "evidence_json": [comparison_json.name],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = verify_evidence_manifest(manifest)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["evidence_files"][0]["type"], "compare-control-files")
+
     def test_verify_evidence_manifest_rejects_unknown_evidence_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

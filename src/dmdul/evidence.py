@@ -316,6 +316,18 @@ def _classify_evidence_payload(payload: Any) -> tuple[str | None, tuple[str, ...
                 "files",
             ),
         )
+    if "changed_ranges" in payload or "changed_ranges_total" in payload:
+        return (
+            "compare-control-files",
+            (
+                "before",
+                "after",
+                "same_size",
+                "changed_bytes",
+                "changed_ranges_total",
+                "changed_ranges",
+            ),
+        )
     return None, ()
 
 
