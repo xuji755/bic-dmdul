@@ -114,6 +114,8 @@ to explain the underlying database structure.
 - [x] Confirm larger tables move rows to linked leaf pages.
 - [x] Capture segment root page-header identity and sampled candidate 6-byte
   page references in the target-table segment manifest.
+- [x] Emit segment-root diagnostics for sampled candidate references that point
+  to pages not currently classified as BTREE data pages.
 - [x] Use segment manifest page-reference candidates plus same-file leaf
   `next_page` links as a conservative extraction page plan.
 - [x] Emit extraction diagnostics for page-plan identity mismatches, out-of-range

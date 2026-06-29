@@ -50,6 +50,32 @@ class SegmentRootTest(unittest.TestCase):
             "segment-root-out-of-range",
         )
 
+    def test_warns_when_candidate_ref_points_to_non_data_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "DMDUL_TS01.DBF"
+            path.write_bytes(_dbf_with_root_leaf_and_control_ref())
+
+            segment = analyze_segment_root(
+                path=path,
+                page_size=128,
+                group_id=6,
+                file_no=0,
+                root_page=4,
+                known_file_nos={0},
+                sample_limit=8,
+            )
+
+        self.assertEqual(segment["candidate_page_refs_total"], 2)
+        self.assertEqual(
+            segment["diagnostics"][0]["code"],
+            "segment-root-candidate-ref-non-data-page",
+        )
+        self.assertEqual(segment["diagnostics"][0]["count"], 1)
+        self.assertEqual(
+            segment["diagnostics"][0]["refs"][0]["target_page_kind_label"],
+            "tentative-file-control",
+        )
+
 
 def _dbf_with_root_and_leaf() -> bytes:
     pages = [
@@ -64,9 +90,28 @@ def _dbf_with_root_and_leaf() -> bytes:
     return b"".join(pages)
 
 
+def _dbf_with_root_leaf_and_control_ref() -> bytes:
+    pages = [
+        _page(group_raw=6, page_no=0, kind=0x13),
+        bytes(128),
+        _page(group_raw=6, page_no=2, kind=0x13),
+        bytes(128),
+        _root_page_with_two_refs(),
+        bytes(128),
+        _page(group_raw=6, page_no=6, kind=0x14),
+    ]
+    return b"".join(pages)
+
+
 def _root_page() -> bytes:
     page = bytearray(_page(group_raw=6, page_no=4, kind=0x15))
     page[80:86] = (0).to_bytes(2, "little") + (6).to_bytes(4, "little")
+    return bytes(page)
+
+
+def _root_page_with_two_refs() -> bytes:
+    page = bytearray(_root_page())
+    page[90:96] = (0).to_bytes(2, "little") + (2).to_bytes(4, "little")
     return bytes(page)
 
 

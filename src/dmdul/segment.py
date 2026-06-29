@@ -114,6 +114,7 @@ def analyze_segment_root(
         known_file_nos=known_file_nos or {file_no},
         sample_limit=sample_limit,
     )
+    diagnostics.extend(candidate_refs["diagnostics"])
     return {
         "data_file": str(path),
         "page_size": page_size,
@@ -171,7 +172,11 @@ def _candidate_page_refs(
                     current_file_no=current_file_no,
                 )
             )
-    return {"total": total, "samples": samples}
+    return {
+        "total": total,
+        "samples": samples,
+        "diagnostics": _candidate_ref_diagnostics(samples),
+    }
 
 
 def _candidate_ref_record(
@@ -198,6 +203,53 @@ def _candidate_ref_record(
             record["target_page_kind_label"] = target_header.page_kind_label
             record["target_header_page_no"] = target_header.page_no
     return record
+
+
+def _candidate_ref_diagnostics(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    non_data_refs = [
+        _candidate_ref_summary(item)
+        for item in samples
+        if item.get("target_page_kind_label") is not None
+        and item.get("target_page_kind_label") != "tentative-btree-data"
+    ]
+    if non_data_refs:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "segment-root-candidate-ref-non-data-page",
+                "message": "one or more sampled segment-root page references point to pages not currently classified as BTREE data pages",
+                "count": len(non_data_refs),
+                "refs": non_data_refs,
+            }
+        )
+    unread_refs = [
+        _candidate_ref_summary(item)
+        for item in samples
+        if item.get("target_page_kind_label") is None
+    ]
+    if unread_refs:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "segment-root-candidate-ref-target-unread",
+                "message": "one or more sampled segment-root page references point to files that were not read during root analysis",
+                "count": len(unread_refs),
+                "refs": unread_refs,
+            }
+        )
+    return diagnostics
+
+
+def _candidate_ref_summary(item: dict[str, Any]) -> dict[str, Any]:
+    summary = {
+        "offset": item.get("offset"),
+        "file_no": item.get("file_no"),
+        "page_no": item.get("page_no"),
+    }
+    if "target_page_kind_label" in item:
+        summary["target_page_kind_label"] = item.get("target_page_kind_label")
+    return summary
 
 
 def _is_all_zero(page: bytes) -> bool:
