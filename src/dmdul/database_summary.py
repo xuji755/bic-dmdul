@@ -226,16 +226,24 @@ def _control_file_data_file_manifest(
 
     entries: list[dict[str, Any]] = []
     for control_file in control_files:
-        for record in control_file.get("dbf_path_hint_records", []):
+        records = control_file.get("dbf_path_occurrences") or control_file.get(
+            "dbf_path_hint_records",
+            [],
+        )
+        for record in records:
             if not isinstance(record, dict):
                 continue
             text = str(record.get("text", ""))
-            basename = Path(text.replace("\\", "/")).name.lower()
+            basename = str(
+                record.get("basename") or Path(text.replace("\\", "/")).name.lower()
+            )
             matches = by_basename.get(basename, [])
             entries.append(
                 {
                     "control_file": control_file.get("path"),
+                    "control_file_ordinal": record.get("ordinal"),
                     "text": text,
+                    "normalized_path": record.get("normalized_path"),
                     "basename": basename,
                     "offset": record.get("offset"),
                     "matched_paths": [str(path) for path in matches],

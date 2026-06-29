@@ -53,9 +53,10 @@ The summary records `dm.ctl`/control-file evidence, DBF files, group ids,
 file-number hints, SYSTEM candidates, duplicate group/file hints,
 file-size/page0 diagnostics, and a sampled page-kind catalog for each file.
 Control-file evidence currently includes file identity, SHA-256, printable
-string samples with offsets, and DBF path hints with offsets. The database
+string samples with offsets, DBF path hints with offsets, and every observed DBF
+path occurrence with ordinal, normalized path, and basename. The database
 summary also emits `control_file_data_files`, a manifest that matches those
-control-file hints to copied DBF basenames and attaches observed page-0
+control-file occurrences to copied DBF basenames and attaches observed page-0
 group/tablespace id, file-number hint, page count, and page kind for matched
 files. The binary tablespace/data-file record layout still requires controlled
 decoding. Sampled catalog diagnostics include page-number mismatches, same-file

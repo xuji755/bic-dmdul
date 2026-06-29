@@ -25,7 +25,53 @@ class ControlFileTest(unittest.TestCase):
         )
         self.assertEqual(summary["dbf_path_hint_records"][0]["offset"], 10)
         self.assertEqual(summary["dbf_path_hint_records"][0]["length"], 30)
+        self.assertEqual(summary["dbf_path_hint_records"][0]["basename"], "system.dbf")
+        self.assertEqual(
+            summary["dbf_path_hint_records"][0]["normalized_path"],
+            "/dmdata/data/dameng/system.dbf",
+        )
+        self.assertEqual(
+            [item["ordinal"] for item in summary["dbf_path_occurrences"]],
+            [0, 1],
+        )
         self.assertEqual(summary["printable_string_records"][0]["offset"], 1)
+
+    def test_summarize_control_file_keeps_duplicate_dbf_occurrences(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "dm.ctl"
+            path.write_bytes(
+                b"\x00A=C:\\DM\\DATA\\MAIN01.DBF\x00"
+                b"B=/dm/data/main01.dbf\x00"
+                b"C=C:\\DM\\DATA\\MAIN01.DBF\x00"
+            )
+
+            summary = summarize_control_file(path, sample_limit=8)
+
+        self.assertEqual(
+            summary["dbf_path_hints"],
+            ["C:\\DM\\DATA\\MAIN01.DBF", "/dm/data/main01.dbf"],
+        )
+        self.assertEqual(len(summary["dbf_path_occurrences"]), 3)
+        self.assertEqual(
+            [item["basename"] for item in summary["dbf_path_occurrences"]],
+            ["main01.dbf", "main01.dbf", "main01.dbf"],
+        )
+        self.assertEqual(
+            [item["ordinal"] for item in summary["dbf_path_occurrences"]],
+            [0, 1, 2],
+        )
+
+    def test_summarize_control_file_respects_zero_sample_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "dm.ctl"
+            path.write_bytes(b"\x00DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\x00")
+
+            summary = summarize_control_file(path, sample_limit=0)
+
+        self.assertEqual(summary["dbf_path_hints"], [])
+        self.assertEqual(summary["dbf_path_hint_records"], [])
+        self.assertEqual(summary["dbf_path_occurrences"], [])
+        self.assertEqual(summary["printable_string_records"], [])
 
     def test_compare_control_files_reports_changed_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

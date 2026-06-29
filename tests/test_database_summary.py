@@ -58,6 +58,11 @@ class DatabaseSummaryTest(unittest.TestCase):
         main_entry = {
             item["basename"]: item for item in control_manifest["entries"]
         }["main01.dbf"]
+        self.assertEqual(main_entry["control_file_ordinal"], 1)
+        self.assertEqual(
+            main_entry["normalized_path"],
+            "/dmdata/data/dameng/main01.dbf",
+        )
         self.assertEqual(main_entry["matched_paths"], [str(root / "MAIN01.DBF")])
         self.assertEqual(main_entry["observed_files"][0]["group_id"], 4)
         self.assertEqual(main_entry["observed_files"][0]["file_no_hint"], 0)
@@ -205,6 +210,28 @@ class DatabaseSummaryTest(unittest.TestCase):
             summary["summary_diagnostics"][0]["code"],
             "control-file-dbf-hint-missing",
         )
+
+    def test_control_file_manifest_preserves_duplicate_occurrences(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "dm.ctl").write_bytes(
+                b"\x00A=/dmdata/data/DAMENG/MAIN01.DBF\x00"
+                b"B=/dmdata/data/DAMENG/MAIN01.DBF\x00"
+            )
+            (root / "MAIN01.DBF").write_bytes(_page0(4, 0x13))
+
+            summary = summarize_database_dir(
+                database_dir=root,
+                page_size=128,
+                catalog_pages=0,
+            )
+
+        entries = summary["control_file_data_files"]["entries"]
+        self.assertEqual(len(entries), 2)
+        self.assertEqual([item["control_file_ordinal"] for item in entries], [0, 1])
+        self.assertEqual([item["basename"] for item in entries], ["main01.dbf"] * 2)
+        self.assertEqual(summary["control_file_data_files"]["entries_total"], 2)
+        self.assertEqual(len(summary["control_file_data_files"]["matched_entries"]), 2)
 
     def test_reports_ambiguous_control_file_dbf_hints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

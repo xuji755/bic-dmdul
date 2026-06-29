@@ -21,28 +21,30 @@ def summarize_control_file(
 
     data = path.read_bytes()
     string_records = _extract_printable_string_records(data)
+    dbf_occurrences: list[dict[str, Any]] = []
     dbf_hints: list[str] = []
     dbf_hint_records: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for record in string_records:
-        text = str(record["text"])
-        for match in _DBF_HINT_RE.finditer(text):
-            hint = match.group(0)
-            if hint not in seen:
-                seen.add(hint)
-                dbf_hints.append(hint)
-                dbf_hint_records.append(
-                    {
-                        "text": hint,
-                        "offset": int(record["offset"]) + match.start(),
-                        "length": len(hint),
-                        "string_offset": record["offset"],
-                    }
+    if sample_limit > 0:
+        for record in string_records:
+            text = str(record["text"])
+            for match in _DBF_HINT_RE.finditer(text):
+                hint = match.group(0)
+                occurrence = _dbf_path_occurrence(
+                    text=hint,
+                    offset=int(record["offset"]) + match.start(),
+                    string_offset=int(record["offset"]),
+                    ordinal=len(dbf_occurrences),
                 )
+                dbf_occurrences.append(occurrence)
+                if hint not in seen:
+                    seen.add(hint)
+                    dbf_hints.append(hint)
+                    dbf_hint_records.append(occurrence)
+                if len(dbf_hints) >= sample_limit:
+                    break
             if len(dbf_hints) >= sample_limit:
                 break
-        if len(dbf_hints) >= sample_limit:
-            break
     sampled_strings = string_records[:sample_limit]
 
     return {
@@ -51,6 +53,7 @@ def summarize_control_file(
         "sha256": hashlib.sha256(data).hexdigest(),
         "dbf_path_hints": dbf_hints,
         "dbf_path_hint_records": dbf_hint_records,
+        "dbf_path_occurrences": dbf_occurrences,
         "printable_string_samples": [str(record["text"]) for record in sampled_strings],
         "printable_string_records": sampled_strings,
     }
@@ -97,6 +100,25 @@ def _file_identity(path: Path, data: bytes) -> dict[str, Any]:
         "path": str(path),
         "bytes": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def _dbf_path_occurrence(
+    *,
+    text: str,
+    offset: int,
+    string_offset: int,
+    ordinal: int,
+) -> dict[str, Any]:
+    normalized = text.replace("\\", "/")
+    return {
+        "ordinal": ordinal,
+        "text": text,
+        "normalized_path": normalized.lower(),
+        "basename": Path(normalized).name.lower(),
+        "offset": offset,
+        "length": len(text),
+        "string_offset": string_offset,
     }
 
 

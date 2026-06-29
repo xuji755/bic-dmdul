@@ -60,6 +60,8 @@ to explain the underlying database structure.
   in database summaries.
 - [x] Emit a `dm.ctl`-derived data-file manifest that attaches matched DBF
   page-0 group/tablespace id and file-number hints.
+- [x] Preserve every observed `dm.ctl` DBF path occurrence with ordinal, offset,
+  normalized path, and basename for offline data-file manifest reconstruction.
 - [x] Emit stable summary-level diagnostic codes for missing control files,
   duplicate file hints, and control-file DBF hints not found in the copy.
 - [x] Add conservative `preflight-database` gate that exits nonzero on current
