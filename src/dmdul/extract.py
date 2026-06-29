@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .decode import DecodeError, decode_observed_row_values
-from .metadata import CalibratedMetadata, StoragePageRef, TableMeta
+from .decode import DecodeError, SUPPORTED_OBSERVED_TYPE_NAMES, decode_observed_row_values
+from .metadata import CalibratedMetadata, ColumnMeta, StoragePageRef, TableMeta
 from .page import ObservedPageHeader
 from .row import scan_observed_row_chain
 from .storage import DataFile
@@ -88,9 +88,24 @@ def extract_csv_with_calibrated_metadata(
         fallback_level=page_plan_fallback_level,
     )
     diagnostics.extend(page_plan.diagnostics)
+    unsupported_types = _unsupported_column_types(table)
+    if unsupported_types:
+        diagnostics.append(
+            {
+                "level": "error",
+                "code": "unsupported-column-type",
+                "message": "one or more table columns use types unsupported by the observed row decoder",
+                "columns": [
+                    {"name": column.name, "type_name": column.type_name}
+                    for column in unsupported_types
+                ],
+            }
+        )
     with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([column.name for column in table.columns])
+        if unsupported_types:
+            page_plan = PagePlan(pages=(), diagnostics=page_plan.diagnostics)
         for page_ref in page_plan.pages:
             page_no = page_ref.page_no
             page_file = data_files[page_ref.file_no]
@@ -138,6 +153,14 @@ def extract_csv_with_calibrated_metadata(
             if table.storage.page_numbers or table.storage.page_refs
             else "calibrated-metadata-page-range-scan"
         ),
+    )
+
+
+def _unsupported_column_types(table: TableMeta) -> tuple[ColumnMeta, ...]:
+    return tuple(
+        column
+        for column in table.columns
+        if column.type_name.upper() not in SUPPORTED_OBSERVED_TYPE_NAMES
     )
 
 

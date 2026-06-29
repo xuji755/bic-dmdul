@@ -142,6 +142,9 @@ tablespace/group.
 If extraction reaches row decoding but any live row cannot be decoded, the
 report emits `diagnostic=row-decode-error` and `ok=false`; treat that CSV as
 partial research output, not a complete recovery result.
+If any column type is not supported by the current observed row decoder,
+extraction emits `diagnostic=unsupported-column-type`, writes only the CSV
+header, and reports `ok=false`.
 Use `--report-output` to save the extraction report JSON after row scanning.
 Use `--strict-page-plan` with `--segment-json` when scan-range fallback must be
 rejected instead of treated as research output.

@@ -10,6 +10,19 @@ class DecodeError(ValueError):
     pass
 
 
+SUPPORTED_OBSERVED_TYPE_NAMES = frozenset(
+    {
+        "BIGINT",
+        "CHAR",
+        "DOUBLE",
+        "FLOAT",
+        "INT",
+        "REAL",
+        "VARCHAR",
+    }
+)
+
+
 def decode_observed_row_values(
     row: ObservedRow,
     columns: tuple[ColumnMeta, ...],

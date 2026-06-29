@@ -116,6 +116,8 @@ to explain the underlying database structure.
   `next_page` links as a conservative extraction page plan.
 - [x] Emit extraction diagnostics for page-plan identity mismatches, out-of-range
   pages, cycles, and missing files referenced by page links.
+- [x] Emit extraction diagnostics for unsupported column types before row
+  scanning.
 - [ ] Decode root page child/leaf pointers.
 - [x] Traverse same-file linked leaf pages from a validated manifest leaf
   candidate without scanning the whole file.

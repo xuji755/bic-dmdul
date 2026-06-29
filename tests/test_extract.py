@@ -424,6 +424,63 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"]])
 
+    def test_reports_unsupported_column_types_before_scanning_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            page = bytearray(b"\0" * 8192)
+            page[0x62:0x73] = (
+                bytes.fromhex("00 11 00")
+                + (7).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x11 - 2 - 1 - 4)
+            )
+            data_file.write_bytes(bytes(page))
+            output_path = root / "unsupported.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_UNSUPPORTED",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                            },
+                            "columns": [
+                                {"name": "N", "type_name": "DECIMAL"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_UNSUPPORTED",
+                output=output_path,
+            )
+
+            self.assertFalse(report.ok)
+            self.assertEqual(report.rows_written, 0)
+            self.assertEqual(report.scanned_pages, ())
+            self.assertEqual(report.diagnostics[0]["code"], "unsupported-column-type")
+            self.assertEqual(
+                report.diagnostics[0]["columns"],
+                [{"name": "N", "type_name": "DECIMAL"}],
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+        self.assertEqual(rows, [["N"]])
+
 
 def _row_page(
     *,
