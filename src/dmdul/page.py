@@ -56,6 +56,10 @@ class ObservedPageHeader:
         return cls(page[:64])
 
     @property
+    def page_type_raw(self) -> int:
+        return self.raw[0]
+
+    @property
     def group_raw(self) -> int:
         return int.from_bytes(self.raw[0:4], "little")
 
@@ -110,6 +114,7 @@ class ObservedPageHeader:
     def as_dict(self) -> dict[str, str | int]:
         return {
             "group_raw": self.group_raw,
+            "page_type_raw": self.page_type_raw,
             "group_id": self.group_id,
             "file_no_hint": self.file_no_hint,
             "page_no": self.page_no,

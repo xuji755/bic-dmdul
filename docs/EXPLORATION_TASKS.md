@@ -31,6 +31,8 @@ to explain the underlying database structure.
   - file numbers and paths
   - status/checkpoint fields
 - [x] Observe file header/control pages in ordinary data files.
+- [x] Record the first page byte separately as `page_type_raw` because DM page
+  type is commonly stored at the beginning of the page.
 - [x] Decode file page 0 enough to identify:
   - group/tablespace id from low 16 bits of the first page-header field
   - file-number hint from high 16 bits of the first page-header field
@@ -122,6 +124,8 @@ to explain the underlying database structure.
   `next_page` links as a conservative extraction page plan.
 - [x] Exclude non-BTREE/data segment root/header pages from row scanning when
   BTREE/data leaf candidates are present in the manifest.
+- [x] Emit page-plan diagnostics and avoid scanning planned or linked pages that
+  are not classified as BTREE/data pages.
 - [x] Emit extraction diagnostics for page-plan identity mismatches, out-of-range
   pages, cycles, and missing files referenced by page links.
 - [x] Emit extraction diagnostics for unsupported column types before row

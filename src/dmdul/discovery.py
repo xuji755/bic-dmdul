@@ -13,6 +13,7 @@ class DiscoveredDataFile:
     page_size: int
     pages: int
     group_raw: int
+    page_type_raw: int
     group_id: int
     file_no_hint: int
     page_no: int
@@ -46,6 +47,7 @@ def discover_data_files(
                 page_size=page_size,
                 pages=stat.st_size // page_size,
                 group_raw=header.group_raw,
+                page_type_raw=header.page_type_raw,
                 group_id=header.group_id,
                 file_no_hint=header.file_no_hint,
                 page_no=header.page_no,

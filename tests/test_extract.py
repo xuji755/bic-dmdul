@@ -205,8 +205,9 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
 
             self.assertEqual(report.mode, "segment-manifest-page-ref-walk")
             self.assertEqual(report.rows_written, 2)
-            self.assertEqual(report.scanned_pages, (0, 2, 5))
-            self.assertEqual(report.as_dict()["scanned_pages"], [0, 2, 5])
+            self.assertEqual(report.scanned_pages, (2, 5))
+            self.assertEqual(report.as_dict()["scanned_pages"], [2, 5])
+            self.assertEqual(report.diagnostics[0]["code"], "page-plan-start-non-data")
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"], ["50", "LEAF5"]])
@@ -268,6 +269,57 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"], ["50", "LEAF5"]])
+
+    def test_leaf_walk_stops_before_scanning_non_data_next_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [_page(page_no=index, kind=0x14) for index in range(5)]
+            pages[2] = _row_page(page_no=2, next_page=4, value=10, text="LEAF2")
+            pages[4] = _page(page_no=4, kind=0x13)
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "walk-stop.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_WALK_STOP",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "page_numbers": [2],
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                                {"name": "V", "type_name": "VARCHAR"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_WALK_STOP",
+                output=output_path,
+            )
+
+            self.assertEqual(report.rows_written, 1)
+            self.assertEqual(report.scanned_pages, (2,))
+            self.assertEqual(report.diagnostics[0]["code"], "page-plan-non-leaf-stop")
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+        self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"]])
 
     def test_reports_page_plan_identity_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

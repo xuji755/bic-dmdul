@@ -43,6 +43,7 @@ class PageCatalogTest(unittest.TestCase):
             "tentative-btree-data",
         )
         self.assertEqual(catalog["reference_samples"][0]["page_no"], 2)
+        self.assertEqual(catalog["nonzero_samples"][0]["page_type_raw"], 6)
         self.assertEqual(catalog["nonzero_samples"][2]["file_no_hint"], 1)
         self.assertEqual(catalog["nonzero_samples"][0]["field_20_u32le"], 0x11223344)
         self.assertEqual(catalog["nonzero_samples"][0]["field_24_u16le"], 0x5566)

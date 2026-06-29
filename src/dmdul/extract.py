@@ -319,22 +319,30 @@ def _walk_leaf_chain(
                     }
                 )
                 break
+            if header.page_kind_label != "tentative-btree-data":
+                diagnostics.append(
+                    {
+                        "level": "warning",
+                        "code": (
+                            "page-plan-start-non-data"
+                            if key in start_keys
+                            else "page-plan-non-leaf-stop"
+                        ),
+                        "message": (
+                            "planned start page is not a BTREE/data page"
+                            if key in start_keys
+                            else "page traversal stopped at a non-BTREE/data page"
+                        ),
+                        "file_no": file_no,
+                        "page_no": page_no,
+                        "page_type_raw": header.page_type_raw,
+                        "page_kind_raw": header.page_kind_raw,
+                        "page_kind_label": header.page_kind_label,
+                    }
+                )
+                break
             seen.add(key)
             result.append(page_ref)
-            if header.page_kind_label != "tentative-btree-data":
-                if key not in start_keys:
-                    diagnostics.append(
-                        {
-                            "level": "warning",
-                            "code": "page-plan-non-leaf-stop",
-                            "message": "page traversal stopped at a non-BTREE/data page",
-                            "file_no": file_no,
-                            "page_no": page_no,
-                            "page_kind_raw": header.page_kind_raw,
-                            "page_kind_label": header.page_kind_label,
-                        }
-                    )
-                break
             if header.next_page.is_null:
                 break
             page_ref = StoragePageRef(

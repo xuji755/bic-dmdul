@@ -370,6 +370,7 @@ def _cmd_discover_files(args: argparse.Namespace) -> int:
                         "page_size": item.page_size,
                         "pages": item.pages,
                         "group_raw": item.group_raw,
+                        "page_type_raw": item.page_type_raw,
                         "group_id": item.group_id,
                         "file_no_hint": item.file_no_hint,
                         "page_no": item.page_no,
@@ -387,7 +388,8 @@ def _cmd_discover_files(args: argparse.Namespace) -> int:
         print(
             f"group={item.group_id} file_hint={item.file_no_hint} "
             f"group_raw=0x{item.group_raw:x} pages={item.pages} "
-            f"kind=0x{item.page_kind_raw:x} path={item.path}{marker}"
+            f"page_type=0x{item.page_type_raw:x} kind=0x{item.page_kind_raw:x} "
+            f"path={item.path}{marker}"
         )
     return 0
 

@@ -143,6 +143,10 @@ but excluded from the row scan. The extraction report records the actual
 extractor falls back to the manifest's transitional `scan_pages` window from
 the root page. Replacing candidate matching with fully decoded root/leaf pointer
 semantics remains required before claiming complete table extraction.
+If a planned start page is not classified as BTREE/data, extraction emits
+`diagnostic=page-plan-start-non-data` and does not include that page in
+`scanned_pages`. If a linked `next_page` reaches a non-BTREE/data page,
+extraction emits `diagnostic=page-plan-non-leaf-stop` before scanning it.
 If sampled root-page references point to pages that are not currently
 classified as BTREE/data pages, the segment manifest emits
 `diagnostic=segment-root-candidate-ref-non-data-page` and excludes those

@@ -32,6 +32,7 @@ class DiscoverDataFilesTest(unittest.TestCase):
             files = discover_data_files(root)
 
         self.assertEqual([item.group_id for item in files], [0, 0, 4, 6])
+        self.assertEqual([item.page_type_raw for item in files], [0, 0, 4, 6])
         self.assertEqual([item.file_no_hint for item in files], [0, 0, 1, 0])
         self.assertEqual([item.pages for item in files], [2, 2, 2, 4])
         self.assertTrue(files[0].is_system_candidate)

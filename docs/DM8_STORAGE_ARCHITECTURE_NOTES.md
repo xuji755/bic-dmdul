@@ -106,11 +106,12 @@ a stable pattern:
 
 | Offset | Size | Working name | Observation |
 | ---: | ---: | --- | --- |
-| `0x00` | 4 | `group_raw` | low 16 bits appear to be tablespace/group id; high 16 bits appear to be file-number hint |
+| `0x00` | 1 | `page_type_raw` | first page byte; likely related to the real PAGE type and must be calibrated separately |
+| `0x00` | 4 | `group_raw` | legacy observed split; low 16 bits appear to be tablespace/group id and high 16 bits appear to be file-number hint in current samples, but this overlaps `page_type_raw` |
 | `0x04` | 4 | `page_no` | zero-based page number inside the data file |
 | `0x08` | 6 | `prev_page_ref` | 6-byte page reference or all `ff` for null |
 | `0x0e` | 6 | `next_page_ref` | 6-byte page reference or all `ff` for null |
-| `0x14` | 4 | `page_kind_raw` | likely page type/kind |
+| `0x14` | 4 | `page_kind_raw` | observed page role/classification field used for current evidence labels; not assumed to be the real PAGE type |
 | `0x20` onward | variable | page-kind-specific fields | counters, free offsets, row counts, object ids, etc. |
 
 The 6-byte page reference appears to be:
@@ -126,7 +127,9 @@ Examples:
 - `00 00 62 00 00 00` => file 0, page 98
 
 The page-header first field was initially treated as only `group_id`. Real
-multi-file tablespaces showed this was incomplete:
+multi-file tablespaces showed this was incomplete, and the first byte is now
+also recorded independently as `page_type_raw` because DM PAGE type is commonly
+stored at the beginning of the page:
 
 | File | Raw first field | Working split |
 | --- | ---: | --- |
@@ -142,11 +145,11 @@ group_id = group_raw & 0xffff
 file_no_hint = group_raw >> 16
 ```
 
-`TEMP.DBF` also starts with low group id 0, but its page kind at page 0 was
-`0x0`, not `0x13`. A SYSTEM-file candidate therefore currently requires group
-id 0, page number 0, and page kind `0x13`.
+`TEMP.DBF` also starts with low group id 0, but its observed role field at page
+0 was `0x0`, not `0x13`. A SYSTEM-file candidate therefore currently requires
+group id 0, page number 0, and observed role `0x13`.
 
-Common `page_kind_raw` values observed:
+Common `page_kind_raw` values observed at offset `0x14`:
 
 | Raw value | Current label | Pages | Working meaning |
 | ---: | --- | --- | --- |

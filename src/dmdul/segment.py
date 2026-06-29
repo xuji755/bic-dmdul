@@ -102,6 +102,7 @@ def analyze_segment_root(
                 "message": "segment root page kind is not one of the currently observed table root kinds",
                 "page_kind_raw": header.page_kind_raw,
                 "page_kind_label": header.page_kind_label,
+                "page_type_raw": header.page_type_raw,
             }
         )
 
@@ -201,6 +202,7 @@ def _candidate_ref_record(
             target_header = ObservedPageHeader.from_page(target_page)
             record["target_page_kind_raw"] = target_header.page_kind_raw
             record["target_page_kind_label"] = target_header.page_kind_label
+            record["target_page_type_raw"] = target_header.page_type_raw
             record["target_header_page_no"] = target_header.page_no
     return record
 
@@ -249,6 +251,8 @@ def _candidate_ref_summary(item: dict[str, Any]) -> dict[str, Any]:
     }
     if "target_page_kind_label" in item:
         summary["target_page_kind_label"] = item.get("target_page_kind_label")
+    if "target_page_type_raw" in item:
+        summary["target_page_type_raw"] = item.get("target_page_type_raw")
     return summary
 
 

@@ -65,6 +65,7 @@ class DatabaseSummaryTest(unittest.TestCase):
         )
         self.assertEqual(main_entry["matched_paths"], [str(root / "MAIN01.DBF")])
         self.assertEqual(main_entry["observed_files"][0]["group_id"], 4)
+        self.assertEqual(main_entry["observed_files"][0]["page_type_raw"], 4)
         self.assertEqual(main_entry["observed_files"][0]["file_no_hint"], 0)
         self.assertEqual(
             main_entry["observed_files"][0]["page0_kind_label"],
@@ -75,6 +76,7 @@ class DatabaseSummaryTest(unittest.TestCase):
         self.assertEqual(groups[4]["file_no_hints"], [0, 1])
         by_name = {Path(item["path"]).name: item for item in summary["files"]}
         self.assertTrue(by_name["SYSTEM.DBF"]["system_candidate"])
+        self.assertEqual(by_name["MAIN01.DBF"]["page_type_raw"], 4)
         self.assertEqual(by_name["MAIN02.DBF"]["file_no_hint"], 1)
         self.assertEqual(by_name["MAIN02.DBF"]["page0_kind_label"], "tentative-file-control")
         self.assertEqual(

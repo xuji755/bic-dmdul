@@ -123,6 +123,7 @@ def _page_summary(
         "page_no": page_no,
         "header_page_no": header.page_no,
         "group_raw": header.group_raw,
+        "page_type_raw": header.page_type_raw,
         "group_id": header.group_id,
         "file_no_hint": header.file_no_hint,
         "page_kind_raw": header.page_kind_raw,
