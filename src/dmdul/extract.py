@@ -57,6 +57,7 @@ def extract_csv_with_calibrated_metadata(
     table_name: str,
     output: Path,
     page_plan_fallback_level: str | None = None,
+    initial_diagnostics: tuple[dict[str, Any], ...] = (),
 ) -> ExtractionReport:
     """Create a CSV for a table using calibrated metadata.
 
@@ -81,7 +82,7 @@ def extract_csv_with_calibrated_metadata(
     rows_skipped_deleted = 0
     rows_skipped_decode_error = 0
     decode_errors: list[str] = []
-    diagnostics: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = list(initial_diagnostics)
     page_plan = _build_page_plan(
         table,
         data_files,

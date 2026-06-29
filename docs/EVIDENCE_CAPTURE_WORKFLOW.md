@@ -119,6 +119,9 @@ If a data-file entry has no matched control-file occurrence, the manifest emits
 `diagnostic=segment-manifest-data-file-without-control-entry`; treat the
 resulting file list as discovered from copied DBF headers rather than fully
 proven from `dm.ctl`.
+`extract-csv --segment-json` and `extract-csv --database-dir` preserve these
+manifest diagnostics in the extraction report so the final CSV artifact carries
+the upstream evidence-chain warnings.
 
 The extractor can consume that handoff file directly:
 

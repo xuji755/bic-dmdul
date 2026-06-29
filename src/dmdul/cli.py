@@ -206,11 +206,15 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     if args.metadata_json is not None:
         metadata = CalibratedMetadata.from_json_file(Path(args.metadata_json))
         page_plan_fallback_level = None
+        initial_diagnostics: tuple[dict[str, object], ...] = ()
     elif args.segment_json is not None:
-        metadata = CalibratedMetadata.from_segment_manifest_file(Path(args.segment_json))
+        segment_manifest = _read_json_file(Path(args.segment_json))
+        metadata = CalibratedMetadata.from_segment_manifest(segment_manifest)
         page_plan_fallback_level = "error" if args.strict_page_plan else "warning"
+        initial_diagnostics = _manifest_diagnostics(segment_manifest)
     else:
         page_plan_fallback_level = None
+        initial_diagnostics = ()
         if not args.skip_preflight:
             summary = summarize_database_dir(
                 database_dir=Path(args.database_dir),
@@ -240,11 +244,13 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
             scan_pages=args.scan_pages,
         )
         metadata = resolved.metadata
+        initial_diagnostics = _manifest_diagnostics(resolved.as_manifest())
     report = extract_csv_with_calibrated_metadata(
         metadata=metadata,
         table_name=args.table,
         output=Path(args.output),
         page_plan_fallback_level=page_plan_fallback_level,
+        initial_diagnostics=initial_diagnostics,
     )
     if args.report_output:
         Path(args.report_output).write_text(
@@ -268,6 +274,21 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     if args.strict_page_plan and not report.ok:
         return 1
     return 0
+
+
+def _read_json_file(path: Path) -> dict[str, object]:
+    with path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected JSON object: {path}")
+    return payload
+
+
+def _manifest_diagnostics(payload: dict[str, object]) -> tuple[dict[str, object], ...]:
+    diagnostics = payload.get("diagnostics", ())
+    if not isinstance(diagnostics, list):
+        return ()
+    return tuple(item for item in diagnostics if isinstance(item, dict))
 
 
 def _write_preflight_output(

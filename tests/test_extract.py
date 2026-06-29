@@ -535,6 +535,61 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID"]])
 
+    def test_preserves_initial_manifest_diagnostics_in_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            page = _row_page(page_no=0, next_page=None, value=7, text="OK")
+            data_file.write_bytes(page)
+            output_path = root / "out.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_DIAG",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                                {"name": "V", "type_name": "VARCHAR"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_DIAG",
+                output=output_path,
+                initial_diagnostics=(
+                    {
+                        "level": "warning",
+                        "code": "segment-manifest-data-file-without-control-entry",
+                        "message": "missing control evidence",
+                    },
+                ),
+            )
+
+        self.assertTrue(report.ok)
+        self.assertEqual(report.rows_written, 1)
+        self.assertEqual(
+            report.diagnostics[0]["code"],
+            "segment-manifest-data-file-without-control-entry",
+        )
+
 
 def _row_page(
     *,

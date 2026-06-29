@@ -241,6 +241,48 @@ class CliTest(unittest.TestCase):
         self.assertEqual(extract_exit_code, 0)
         self.assertEqual(rows, [["ID"], ["7"]])
 
+    def test_extract_csv_database_dir_preserves_resolver_manifest_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "out.csv"
+            report_output = root / "report.json"
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(
+                _large_page0(group_raw=0, page_kind=0x13) + _system_payload()
+            )
+            (root / "DMDUL_TS01.DBF").write_bytes(_user_data_file_payload())
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--database-dir",
+                    str(root),
+                    "--skip-preflight",
+                    "--table",
+                    "SYSDBA.DMDUL_MANY",
+                    "--output",
+                    str(output),
+                    "--report-output",
+                    str(report_output),
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+            report = json.loads(report_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(report["ok"])
+        self.assertEqual(
+            report["diagnostics"][0]["code"],
+            "segment-manifest-data-file-without-control-entry",
+        )
+        self.assertEqual(report["diagnostics"][0]["level"], "warning")
+
     def test_extract_csv_segment_json_reports_scan_range_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -286,6 +328,65 @@ class CliTest(unittest.TestCase):
         self.assertEqual(
             report["diagnostics"][0]["code"],
             "page-plan-fallback-scan-range",
+        )
+
+    def test_extract_csv_segment_json_preserves_manifest_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            segment_file = root / "segment.json"
+            output = root / "out.csv"
+            report_output = root / "report.json"
+            page = bytearray(8192)
+            page[0x62:0x73] = (
+                bytes.fromhex("00 11 00")
+                + (7).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x11 - 2 - 1 - 4)
+            )
+            data_file.write_bytes(bytes(page))
+            manifest = _segment_manifest_without_page_plan(data_file)
+            manifest["diagnostics"] = [
+                {
+                    "level": "warning",
+                    "code": "segment-manifest-data-file-without-control-entry",
+                    "message": "missing control evidence",
+                }
+            ]
+            segment_file.write_text(json.dumps(manifest), encoding="utf-8")
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--segment-json",
+                    str(segment_file),
+                    "--table",
+                    "SYSDBA.DMDUL_ONE",
+                    "--output",
+                    str(output),
+                    "--report-output",
+                    str(report_output),
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+            report = json.loads(report_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(report["ok"])
+        codes = [item["code"] for item in report["diagnostics"]]
+        self.assertEqual(
+            codes,
+            [
+                "segment-manifest-data-file-without-control-entry",
+                "page-plan-fallback-scan-range",
+            ],
+        )
+        self.assertIn(
+            "diagnostic=segment-manifest-data-file-without-control-entry level=warning",
+            stderr.getvalue(),
         )
 
     def test_extract_csv_strict_page_plan_fails_scan_range_fallback(self) -> None:

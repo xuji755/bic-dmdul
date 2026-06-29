@@ -174,6 +174,8 @@ to explain the underlying database structure.
   the resolved segment manifest.
 - [x] Emit segment-manifest diagnostics when a resolved data file lacks matched
   `dm.ctl` DBF occurrence evidence.
+- [x] Preserve segment-manifest diagnostics in `extract-csv` reports for both
+  `--segment-json` and `--database-dir` extraction paths.
 - [ ] Decode enough `SYSOBJECTS` rows offline to recover object name/id/schema/type.
 - [ ] Decode complete `SYSCOLUMNS` row layout offline, including scale,
   nullability, defaults, and exact column id base.
