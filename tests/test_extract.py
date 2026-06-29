@@ -88,6 +88,7 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             self.assertEqual(report.diagnostics, ())
             self.assertEqual(report.as_dict()["rows_written"], 2)
             self.assertTrue(report.as_dict()["ok"])
+            self.assertEqual(report.scanned_pages, (0,))
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["1", "ALIVE"], ["3", "AFTER!"]])
@@ -151,9 +152,64 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             self.assertEqual(report.rows_written, 2)
             self.assertEqual(report.rows_skipped_deleted, 0)
             self.assertEqual(report.rows_skipped_decode_error, 0)
+            self.assertEqual(report.scanned_pages, (0, 1, 2))
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["10", "PAGE1"], ["20", "PAGE2"]])
+
+    def test_walks_manifest_page_refs_and_leaf_next_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [_page(page_no=index, kind=0x14) for index in range(6)]
+            pages[0] = _page(page_no=0, kind=0x15)
+            pages[2] = _row_page(page_no=2, next_page=5, value=10, text="LEAF2")
+            pages[5] = _row_page(page_no=5, next_page=None, value=50, text="LEAF5")
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "walk.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_WALK",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "scan_pages": 1,
+                                "page_numbers": [0, 2],
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                                {"name": "V", "type_name": "VARCHAR"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_WALK",
+                output=output_path,
+            )
+
+            self.assertEqual(report.mode, "segment-manifest-page-ref-walk")
+            self.assertEqual(report.rows_written, 2)
+            self.assertEqual(report.scanned_pages, (0, 2, 5))
+            self.assertEqual(report.as_dict()["scanned_pages"], [0, 2, 5])
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+        self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"], ["50", "LEAF5"]])
 
     def test_reports_decode_failures_without_writing_bad_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -206,6 +262,38 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"]])
+
+
+def _row_page(
+    *,
+    page_no: int,
+    next_page: int | None,
+    value: int,
+    text: str,
+) -> bytearray:
+    page = _page(page_no=page_no, kind=0x14, next_page=next_page)
+    encoded = text.encode("ascii")
+    page[0x62 : 0x62 + 0x19] = (
+        bytes.fromhex("00 19 00")
+        + value.to_bytes(4, "little", signed=True)
+        + bytes([0x80 + len(encoded)])
+        + encoded
+        + b"\0" * (0x19 - 2 - 1 - 4 - 1 - len(encoded))
+    )
+    return page
+
+
+def _page(*, page_no: int, kind: int, next_page: int | None = None) -> bytearray:
+    page = bytearray(b"\0" * 8192)
+    page[0:4] = (6).to_bytes(4, "little")
+    page[4:8] = page_no.to_bytes(4, "little")
+    page[8:14] = b"\xff" * 6
+    if next_page is None:
+        page[14:20] = b"\xff" * 6
+    else:
+        page[14:20] = (0).to_bytes(2, "little") + next_page.to_bytes(4, "little")
+    page[20:24] = kind.to_bytes(4, "little")
+    return page
 
 
 if __name__ == "__main__":

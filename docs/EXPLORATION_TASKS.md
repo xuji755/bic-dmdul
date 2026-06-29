@@ -112,8 +112,12 @@ to explain the underlying database structure.
 - [x] Confirm larger tables move rows to linked leaf pages.
 - [x] Capture segment root page-header identity and sampled candidate 6-byte
   page references in the target-table segment manifest.
+- [x] Use segment manifest page-reference candidates plus same-file leaf
+  `next_page` links as a conservative extraction page plan.
 - [ ] Decode root page child/leaf pointers.
-- [ ] Traverse linked leaf pages without scanning the whole file.
+- [x] Traverse same-file linked leaf pages from a validated manifest leaf
+  candidate without scanning the whole file.
+- [ ] Decode and traverse cross-file or multi-level BTREE leaf chains.
 - [ ] Decide fallback strategy: full segment scan when root traversal is not yet
   reliable.
 - [ ] Decode how allocated extent lists are represented outside online views.

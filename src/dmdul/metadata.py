@@ -21,6 +21,7 @@ class StorageRoot:
     file_no: int
     root_page: int
     scan_pages: int = 1
+    page_numbers: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ class CalibratedMetadata:
                 file_no=int(segment["root_file"]),
                 root_page=int(segment["root_page"]),
                 scan_pages=int(segment.get("scan_pages", 1)),
+                page_numbers=_segment_manifest_page_numbers(payload),
             ),
         )
         return cls(data_files=data_files, tables=(table,))
@@ -145,6 +147,7 @@ def _table_from_dict(item: dict[str, Any]) -> TableMeta:
             file_no=int(storage["file_no"]),
             root_page=int(storage["root_page"]),
             scan_pages=int(storage.get("scan_pages", 1)),
+            page_numbers=tuple(int(value) for value in storage.get("page_numbers", ())),
         ),
     )
 
@@ -160,3 +163,22 @@ def _split_qualified_name(value: str) -> tuple[str, str]:
         owner, name = value.split(".", 1)
         return owner.upper(), name.upper()
     return "SYSDBA", value.upper()
+
+
+def _segment_manifest_page_numbers(payload: dict[str, Any]) -> tuple[int, ...]:
+    segment = payload["segment"]
+    root_file = int(segment["root_file"])
+    root_page = int(segment["root_page"])
+    segment_root = payload.get("segment_root")
+    if not isinstance(segment_root, dict):
+        return ()
+    pages = [root_page]
+    for item in segment_root.get("candidate_page_refs", []):
+        if not isinstance(item, dict):
+            continue
+        if int(item.get("file_no", -1)) != root_file:
+            continue
+        if item.get("target_page_kind_label") != "tentative-btree-data":
+            continue
+        pages.append(int(item["page_no"]))
+    return tuple(dict.fromkeys(pages))

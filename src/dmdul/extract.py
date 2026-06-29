@@ -7,6 +7,7 @@ from typing import Any
 
 from .decode import DecodeError, decode_observed_row_values
 from .metadata import CalibratedMetadata, TableMeta
+from .page import ObservedPageHeader
 from .row import scan_observed_row_chain
 from .storage import DataFile
 
@@ -20,6 +21,7 @@ class ExtractionReport:
     rows_skipped_decode_error: int
     decode_errors: tuple[str, ...]
     diagnostics: tuple[dict[str, Any], ...]
+    scanned_pages: tuple[int, ...]
     mode: str
 
     @property
@@ -36,6 +38,7 @@ class ExtractionReport:
             "rows_skipped_decode_error": self.rows_skipped_decode_error,
             "decode_errors": list(self.decode_errors),
             "diagnostics": list(self.diagnostics),
+            "scanned_pages": list(self.scanned_pages),
             "mode": self.mode,
         }
 
@@ -65,10 +68,11 @@ def extract_csv_with_calibrated_metadata(
     rows_skipped_decode_error = 0
     decode_errors: list[str] = []
     diagnostics: list[dict[str, Any]] = []
+    page_numbers = _iter_table_pages(table, data_file)
     with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([column.name for column in table.columns])
-        for page_no in _iter_scan_pages(table):
+        for page_no in page_numbers:
             page = data_file.read_page(page_no)
             rows = scan_observed_row_chain(page)
             for row in rows:
@@ -103,7 +107,12 @@ def extract_csv_with_calibrated_metadata(
         rows_skipped_decode_error=rows_skipped_decode_error,
         decode_errors=tuple(decode_errors),
         diagnostics=tuple(diagnostics),
-        mode="calibrated-metadata-page-range-scan",
+        scanned_pages=tuple(page_numbers),
+        mode=(
+            "segment-manifest-page-ref-walk"
+            if table.storage.page_numbers
+            else "calibrated-metadata-page-range-scan"
+        ),
     )
 
 
@@ -116,9 +125,20 @@ def describe_table_plan(table: TableMeta) -> list[str]:
             f"file:{table.storage.file_no},"
             f"root_page:{table.storage.root_page}"
             f",scan_pages:{table.storage.scan_pages}"
+            f",page_numbers:{','.join(str(value) for value in table.storage.page_numbers) or '-'}"
         ),
         "columns=" + ",".join(f"{col.name}:{col.type_name}" for col in table.columns),
     ]
+
+
+def _iter_table_pages(table: TableMeta, data_file: DataFile) -> tuple[int, ...]:
+    if table.storage.page_numbers:
+        return _walk_same_file_leaf_chain(
+            data_file=data_file,
+            file_no=table.storage.file_no,
+            start_pages=table.storage.page_numbers,
+        )
+    return tuple(_iter_scan_pages(table))
 
 
 def _iter_scan_pages(table: TableMeta) -> range:
@@ -126,3 +146,33 @@ def _iter_scan_pages(table: TableMeta) -> range:
         table.storage.root_page,
         table.storage.root_page + table.storage.scan_pages,
     )
+
+
+def _walk_same_file_leaf_chain(
+    *,
+    data_file: DataFile,
+    file_no: int,
+    start_pages: tuple[int, ...],
+) -> tuple[int, ...]:
+    pages_total = data_file.path.stat().st_size // data_file.page_size
+    result: list[int] = []
+    seen: set[int] = set()
+    for start_page in start_pages:
+        page_no: int | None = start_page
+        while page_no is not None:
+            if page_no < 0 or page_no >= pages_total or page_no in seen:
+                break
+            page = data_file.read_page(page_no)
+            header = ObservedPageHeader.from_page(page)
+            if header.file_no_hint != file_no or header.page_no != page_no:
+                break
+            seen.add(page_no)
+            result.append(page_no)
+            if (
+                header.page_kind_label != "tentative-btree-data"
+                or header.next_page.is_null
+                or header.next_page.file_no != file_no
+            ):
+                break
+            page_no = header.next_page.page_no
+    return tuple(result)

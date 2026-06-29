@@ -124,9 +124,14 @@ PYTHONPATH=src python3 -m dmdul.cli extract-csv \
   --report-output evidence/SYSDBA.DMDUL_MANY.extract.json
 ```
 
-This still uses the manifest's transitional `scan_pages` window from the root
-page. Replacing that window with decoded root/leaf traversal remains required
-before claiming complete table extraction.
+When the segment manifest contains `segment_root.candidate_page_refs`, the
+extractor builds a page plan from the root page and same-file BTREE/data page
+candidates, then follows same-file `next_page` links between BTREE/data pages.
+The extraction report records the actual `scanned_pages`. If no segment-root
+page-reference evidence is present, the extractor falls back to the manifest's
+transitional `scan_pages` window from the root page. Replacing candidate
+matching with fully decoded root/leaf pointer semantics remains required before
+claiming complete table extraction.
 
 If extraction reaches row decoding but any live row cannot be decoded, the
 report emits `diagnostic=row-decode-error` and `ok=false`; treat that CSV as

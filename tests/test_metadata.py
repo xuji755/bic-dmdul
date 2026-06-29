@@ -26,6 +26,15 @@ class MetadataTest(unittest.TestCase):
                         "page_size": 8192,
                     }
                 ],
+                "segment_root": {
+                    "candidate_page_refs": [
+                        {
+                            "file_no": 0,
+                            "page_no": 96,
+                            "target_page_kind_label": "tentative-btree-data",
+                        }
+                    ]
+                },
             }
         )
 
@@ -34,6 +43,7 @@ class MetadataTest(unittest.TestCase):
         self.assertEqual(table.storage.file_no, 0)
         self.assertEqual(table.storage.root_page, 80)
         self.assertEqual(table.storage.scan_pages, 64)
+        self.assertEqual(table.storage.page_numbers, (80, 96))
         self.assertEqual(table.columns[0].name, "ID")
         self.assertEqual(metadata.data_files[0].path, Path("/tmp/DMDUL_TS01.DBF"))
 
