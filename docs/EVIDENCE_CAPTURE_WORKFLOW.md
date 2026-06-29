@@ -84,6 +84,10 @@ control files, missing DBF files referenced by control-file path hints,
 duplicate group/file hints, truncated/unparsed DBF files, empty data files, and
 files whose byte size is not page-aligned.
 
+`extract-csv --database-dir ...` runs the same preflight gate by default before
+dictionary resolution. `--skip-preflight` exists only for controlled research
+while a parser is being calibrated.
+
 For controlled `dm.ctl` layout exploration, capture snapshots before and after
 one storage operation, then compare them:
 

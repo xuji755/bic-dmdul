@@ -202,6 +202,26 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     if args.metadata_json is not None:
         metadata = CalibratedMetadata.from_json_file(Path(args.metadata_json))
     else:
+        if not args.skip_preflight:
+            summary = summarize_database_dir(
+                database_dir=Path(args.database_dir),
+                page_size=args.page_size,
+                catalog_pages=args.preflight_catalog_pages,
+                sample_limit=args.preflight_sample_limit,
+            )
+            preflight = evaluate_database_summary_preflight(summary)
+            if not preflight["ok"]:
+                print(
+                    "dmdul: extract-csv preflight failed; "
+                    "run preflight-database for the full report",
+                    file=sys.stderr,
+                )
+                for item in preflight["fatal_codes"]:
+                    print(
+                        f"fatal_preflight={item['code']} count={item['count']}",
+                        file=sys.stderr,
+                    )
+                return 1
         resolved = resolve_offline_table_metadata(
             database_dir=Path(args.database_dir),
             table_name=args.table,
@@ -650,6 +670,23 @@ def build_parser() -> argparse.ArgumentParser:
     extract_csv.add_argument("--metadata-json")
     extract_csv.add_argument("--database-dir")
     extract_csv.add_argument("--owner")
+    extract_csv.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="skip conservative database-dir preflight checks for research use",
+    )
+    extract_csv.add_argument(
+        "--preflight-catalog-pages",
+        type=int,
+        default=64,
+        help="pages to sample per file during extract-csv preflight",
+    )
+    extract_csv.add_argument(
+        "--preflight-sample-limit",
+        type=int,
+        default=8,
+        help="sample limit during extract-csv preflight",
+    )
     extract_csv.add_argument(
         "--scan-pages",
         type=int,

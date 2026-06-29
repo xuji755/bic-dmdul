@@ -62,6 +62,8 @@ to explain the underlying database structure.
   duplicate file hints, and control-file DBF hints not found in the copy.
 - [x] Add conservative `preflight-database` gate that exits nonzero on current
   fatal file-set diagnostics.
+- [x] Run conservative file-set preflight by default for
+  `extract-csv --database-dir`.
 
 ## B. Page Header And Space Management
 

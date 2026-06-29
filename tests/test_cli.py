@@ -1,6 +1,8 @@
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 from dmdul.cli import build_parser
@@ -60,6 +62,37 @@ class CliTest(unittest.TestCase):
             payload["preflight"]["fatal_codes"],
             [{"code": "control-file-not-found", "count": 1}],
         )
+
+    def test_extract_csv_database_dir_runs_preflight_before_resolving(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "out.csv"
+            (root / "SYSTEM.DBF").write_bytes(_page0() + bytes(128))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "128",
+                    "extract-csv",
+                    "--database-dir",
+                    str(root),
+                    "--table",
+                    "SYSDBA.MISSING_TABLE",
+                    "--output",
+                    str(output),
+                    "--preflight-catalog-pages",
+                    "0",
+                ]
+            )
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = args.func(args)
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("extract-csv preflight failed", stderr.getvalue())
+        self.assertIn("fatal_preflight=control-file-not-found", stderr.getvalue())
+        self.assertFalse(output.exists())
 
 
 def _page0() -> bytes:
