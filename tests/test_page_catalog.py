@@ -38,6 +38,10 @@ class PageCatalogTest(unittest.TestCase):
         self.assertEqual(catalog["group_id_counts"]["6"], 3)
         self.assertEqual(catalog["page_no_mismatches"][0]["page_no"], 2)
         self.assertEqual(catalog["page_no_mismatches"][0]["header_page_no"], 99)
+        self.assertEqual(
+            catalog["page_no_mismatches"][0]["page_kind_label"],
+            "tentative-btree-data",
+        )
         self.assertEqual(catalog["reference_samples"][0]["page_no"], 2)
         self.assertEqual(catalog["nonzero_samples"][2]["file_no_hint"], 1)
 

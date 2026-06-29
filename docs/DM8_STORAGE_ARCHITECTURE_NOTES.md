@@ -148,16 +148,17 @@ id 0, page number 0, and page kind `0x13`.
 
 Common `page_kind_raw` values observed:
 
-| Raw value | Pages | Working meaning |
-| ---: | --- | --- |
-| `0x13` | data file page 0/1 | file/control page |
-| `0x11` | data file page 8 | space-management/bitmap-like page |
-| `0x14` | small table root pages and data leaf pages | BTREE/data page |
-| `0x15` | larger root/header pages | segment root/header candidate |
-| `0x1a1a001a` | companion/internal pages after root page | internal/metadata page candidate |
-| `0xffff00ff` | empty initialized pages | empty/free page candidate |
+| Raw value | Current label | Pages | Working meaning |
+| ---: | --- | --- | --- |
+| `0x13` | `tentative-file-control` | data file page 0/1 | file/control page |
+| `0x11` | `tentative-space-bitmap` | data file page 8 | space-management/bitmap-like page |
+| `0x14` | `tentative-btree-data` | small table root pages and data leaf pages | BTREE/data page |
+| `0x15` | `tentative-segment-root` | larger root/header pages | segment root/header candidate |
+| `0x1a1a001a` | `tentative-internal-metadata` | companion/internal pages after root page | internal/metadata page candidate |
+| `0xffff00ff` | `tentative-empty-initialized` | empty initialized pages | empty/free page candidate |
 
-These names are tentative.
+These names are tentative labels used in `ObservedPageHeader` and
+`catalog-pages` output. They are not final parser semantics.
 
 ## Segment And Extent Findings
 

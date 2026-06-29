@@ -100,6 +100,7 @@ def _page_summary(
         "group_id": header.group_id,
         "file_no_hint": header.file_no_hint,
         "page_kind_raw": header.page_kind_raw,
+        "page_kind_label": header.page_kind_label,
         "prev_page": str(header.prev_page),
         "next_page": str(header.next_page),
         "observed_row_count": header.observed_row_count,

@@ -72,9 +72,10 @@ PYTHONPATH=src python3 -m dmdul.cli catalog-pages \
   --output evidence/dmdul_ts01_page_catalog.json
 ```
 
-The catalog records page-kind counts, empty pages, page-number mismatches,
-nonzero page samples, and previous/next page-reference samples. It does not
-assign final semantic names to unknown page kinds.
+The catalog records page-kind counts, tentative page-kind labels, empty pages,
+page-number mismatches, nonzero page samples, and previous/next page-reference
+samples. Labels are for evidence triage only and must not be treated as final
+page parser semantics.
 
 Fill in `docs/templates/evidence_manifest.json` beside the captured DBF files
 so the copy method, reference output, and evidence JSON remain tied together.

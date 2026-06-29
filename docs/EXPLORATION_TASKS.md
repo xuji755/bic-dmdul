@@ -59,6 +59,8 @@ to explain the underlying database structure.
   position.
 - [x] Add page catalog scanner for page-kind counts, empty pages, page identity
   mismatches, and page-reference samples.
+- [x] Add tentative page-kind labels to evidence output while preserving raw
+  page kind values.
 
 ## C. Segment And BTREE Structure
 

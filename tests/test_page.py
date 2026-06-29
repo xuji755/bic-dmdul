@@ -40,6 +40,16 @@ class ObservedPageHeaderTest(unittest.TestCase):
         self.assertEqual(header.next_page.file_no, 0)
         self.assertEqual(header.next_page.page_no, 98)
         self.assertEqual(header.page_kind_raw, 0x14)
+        self.assertEqual(header.page_kind_label, "tentative-btree-data")
+
+    def test_unknown_page_kind_label(self) -> None:
+        raw = bytearray(b"\0" * 64)
+        raw[20:24] = (0x12345678).to_bytes(4, "little")
+
+        header = ObservedPageHeader.from_page(bytes(raw))
+
+        self.assertEqual(header.page_kind_raw, 0x12345678)
+        self.assertEqual(header.page_kind_label, "unknown")
 
     def test_group_raw_splits_file_hint_and_group_id(self) -> None:
         raw = bytearray(b"\0" * 64)

@@ -3,6 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+OBSERVED_PAGE_KIND_LABELS = {
+    0x00000011: "tentative-space-bitmap",
+    0x00000013: "tentative-file-control",
+    0x00000014: "tentative-btree-data",
+    0x00000015: "tentative-segment-root",
+    0x1A1A001A: "tentative-internal-metadata",
+    0xFFFF00FF: "tentative-empty-initialized",
+}
+
+
 @dataclass(frozen=True)
 class ObservedPageRef:
     raw: bytes
@@ -74,6 +84,10 @@ class ObservedPageHeader:
         return int.from_bytes(self.raw[20:24], "little")
 
     @property
+    def page_kind_label(self) -> str:
+        return observed_page_kind_label(self.page_kind_raw)
+
+    @property
     def field_20_u32le(self) -> int:
         return int.from_bytes(self.raw[32:36], "little")
 
@@ -102,12 +116,17 @@ class ObservedPageHeader:
             "prev_page": str(self.prev_page),
             "next_page": str(self.next_page),
             "page_kind_raw": self.page_kind_raw,
+            "page_kind_label": self.page_kind_label,
             "field_20_u32le": self.field_20_u32le,
             "field_24_u16le": self.field_24_u16le,
             "field_26_u16le": self.field_26_u16le,
             "field_2c_u16le": self.field_2c_u16le,
             "observed_row_count": self.observed_row_count,
         }
+
+
+def observed_page_kind_label(page_kind_raw: int) -> str:
+    return OBSERVED_PAGE_KIND_LABELS.get(page_kind_raw, "unknown")
 
 
 def format_hex_dump(data: bytes, *, base_offset: int = 0, width: int = 16) -> str:
