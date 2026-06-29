@@ -26,6 +26,19 @@ class ExtractionReport:
     def ok(self) -> bool:
         return not any(item.get("level") == "error" for item in self.diagnostics)
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "table": self.table,
+            "output": str(self.output),
+            "ok": self.ok,
+            "rows_written": self.rows_written,
+            "rows_skipped_deleted": self.rows_skipped_deleted,
+            "rows_skipped_decode_error": self.rows_skipped_decode_error,
+            "decode_errors": list(self.decode_errors),
+            "diagnostics": list(self.diagnostics),
+            "mode": self.mode,
+        }
+
 
 def extract_csv_with_calibrated_metadata(
     *,

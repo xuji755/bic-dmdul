@@ -236,6 +236,11 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         table_name=args.table,
         output=Path(args.output),
     )
+    if args.report_output:
+        Path(args.report_output).write_text(
+            json.dumps(report.as_dict(), indent=2) + "\n",
+            encoding="utf-8",
+        )
     print(f"table={report.table}")
     print(f"output={report.output}")
     print(f"rows_written={report.rows_written}")
@@ -714,6 +719,10 @@ def build_parser() -> argparse.ArgumentParser:
     extract_csv.add_argument(
         "--preflight-output",
         help="write extract-csv preflight summary and decision JSON",
+    )
+    extract_csv.add_argument(
+        "--report-output",
+        help="write extract-csv report JSON after row scanning",
     )
     extract_csv.add_argument(
         "--scan-pages",

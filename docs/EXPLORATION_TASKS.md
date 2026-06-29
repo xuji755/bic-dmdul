@@ -248,8 +248,10 @@ dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
   test tables.
 - [ ] Add strict mode that fails if any live row, page, dictionary record, or
   transaction visibility decision is uncertain.
-- [ ] Emit extraction report artifact with row counts, skipped deleted rows,
-  decode errors, unsupported structures, and consistency diagnostics.
+- [x] Emit extraction report artifact with row counts, skipped deleted rows,
+  decode errors, and current consistency diagnostics.
+- [ ] Extend extraction report artifact to include unsupported structures and
+  transaction visibility diagnostics.
 
 ## H. Test Corpus
 

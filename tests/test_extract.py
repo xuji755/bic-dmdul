@@ -86,6 +86,8 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             self.assertEqual(report.decode_errors, ())
             self.assertTrue(report.ok)
             self.assertEqual(report.diagnostics, ())
+            self.assertEqual(report.as_dict()["rows_written"], 2)
+            self.assertTrue(report.as_dict()["ok"])
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["1", "ALIVE"], ["3", "AFTER!"]])
@@ -199,6 +201,7 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             self.assertEqual(report.rows_skipped_decode_error, 1)
             self.assertFalse(report.ok)
             self.assertEqual(report.diagnostics[0]["code"], "row-decode-error")
+            self.assertEqual(report.as_dict()["diagnostics"][0]["code"], "row-decode-error")
             self.assertIn("page=0 offset=98", report.decode_errors[0])
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
