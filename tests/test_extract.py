@@ -481,6 +481,60 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["N"]])
 
+    def test_reports_unsupported_row_metadata_without_writing_bad_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            page = bytearray(b"\0" * 8192)
+            page[0x62:0x71] = (
+                bytes.fromhex("00 0f 01")
+                + (7).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x0F - 2 - 1 - 4)
+            )
+            data_file.write_bytes(bytes(page))
+            output_path = root / "unsupported_row_metadata.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_ROW_METADATA",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_ROW_METADATA",
+                output=output_path,
+            )
+
+            self.assertFalse(report.ok)
+            self.assertEqual(report.rows_written, 0)
+            self.assertEqual(report.rows_skipped_decode_error, 1)
+            self.assertEqual(report.diagnostics[0]["code"], "unsupported-row-metadata")
+            self.assertIn("offset=98", report.decode_errors[0])
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+        self.assertEqual(rows, [["ID"]])
+
 
 def _row_page(
     *,

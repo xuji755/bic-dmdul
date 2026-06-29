@@ -198,6 +198,8 @@ to explain the underlying database structure.
   128 and above.
 - [ ] Decode row column directory, if present.
 - [ ] Decode NULL bitmap/NULL column handling.
+- [x] Reject non-zero observed row metadata bytes before column payload until
+  NULL bitmap, column directory, and transaction flags are decoded.
 - [ ] Decode `CHAR` padding rules.
 - [ ] Decode `DATE`.
 - [ ] Decode `TIME`.

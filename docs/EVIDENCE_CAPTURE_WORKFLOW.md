@@ -142,6 +142,10 @@ tablespace/group.
 If extraction reaches row decoding but any live row cannot be decoded, the
 report emits `diagnostic=row-decode-error` and `ok=false`; treat that CSV as
 partial research output, not a complete recovery result.
+If the observed metadata bytes between the row length/status prefix and column
+payload are non-zero, extraction emits `diagnostic=unsupported-row-metadata`.
+This guards against silently mis-decoding rows that may contain NULL bitmap,
+column-directory, or transaction metadata not decoded yet.
 If any column type is not supported by the current observed row decoder,
 extraction emits `diagnostic=unsupported-column-type`, writes only the CSV
 header, and reports `ok=false`.

@@ -7,7 +7,9 @@ from .row import ObservedRow, decode_observed_var_length
 
 
 class DecodeError(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str = "row-decode-error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 SUPPORTED_OBSERVED_TYPE_NAMES = frozenset(
@@ -35,6 +37,7 @@ def decode_observed_row_values(
     """
 
     offset = _observed_column_start_offset(columns)
+    _require_supported_row_metadata(row.data, offset)
     values: list[object] = []
     data = row.data
     for column in columns:
@@ -83,6 +86,21 @@ def _observed_column_start_offset(columns: tuple[ColumnMeta, ...]) -> int:
     # columns and two bytes for 5 columns. This is likely NULL metadata and will
     # be replaced once the bitmap/directory is fully decoded.
     return 4 if len(columns) >= 5 else 3
+
+
+def _require_supported_row_metadata(data: bytes, column_start_offset: int) -> None:
+    if len(data) < column_start_offset:
+        raise DecodeError(
+            "row is too short while decoding row metadata: "
+            f"metadata_end={column_start_offset}, row_length={len(data)}"
+        )
+    metadata = data[2:column_start_offset]
+    if any(metadata):
+        raise DecodeError(
+            "unsupported row metadata before column payload; possible NULL bitmap, "
+            "column directory, or transaction flags are not decoded yet",
+            code="unsupported-row-metadata",
+        )
 
 
 def _require(data: bytes, offset: int, length: int, column_name: str) -> None:

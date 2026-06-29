@@ -1,6 +1,6 @@
 import unittest
 
-from dmdul.decode import decode_observed_row_values
+from dmdul.decode import DecodeError, decode_observed_row_values
 from dmdul.metadata import ColumnMeta
 from dmdul.row import ObservedRow, ObservedRowHeader
 
@@ -78,6 +78,19 @@ class ObservedRowDecodeTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(values[0], 1.5)
+
+    def test_rejects_nonzero_row_metadata_before_column_payload(self) -> None:
+        data = bytes.fromhex("00 0f 01") + (7).to_bytes(4, "little", signed=True)
+        row = ObservedRow(
+            page_offset=0x62,
+            data=data,
+            header=ObservedRowHeader.from_bytes(data),
+        )
+
+        with self.assertRaises(DecodeError) as cm:
+            decode_observed_row_values(row, (ColumnMeta(name="ID", type_name="INT"),))
+
+        self.assertEqual(cm.exception.code, "unsupported-row-metadata")
 
 
 if __name__ == "__main__":

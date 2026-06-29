@@ -119,12 +119,13 @@ def extract_csv_with_calibrated_metadata(
                     values = decode_observed_row_values(row, table.columns)
                 except DecodeError as exc:
                     rows_skipped_decode_error += 1
-                    if not any(item["code"] == "row-decode-error" for item in diagnostics):
+                    diagnostic_code = exc.code
+                    if not any(item.get("code") == diagnostic_code for item in diagnostics):
                         diagnostics.append(
                             {
                                 "level": "error",
-                                "code": "row-decode-error",
-                                "message": "one or more live rows could not be decoded",
+                                "code": diagnostic_code,
+                                "message": _decode_error_message(diagnostic_code),
                             }
                         )
                     if len(decode_errors) < 10:
@@ -162,6 +163,15 @@ def _unsupported_column_types(table: TableMeta) -> tuple[ColumnMeta, ...]:
         for column in table.columns
         if column.type_name.upper() not in SUPPORTED_OBSERVED_TYPE_NAMES
     )
+
+
+def _decode_error_message(code: str) -> str:
+    if code == "unsupported-row-metadata":
+        return (
+            "one or more live rows contain row metadata not supported by the "
+            "observed decoder"
+        )
+    return "one or more live rows could not be decoded"
 
 
 def describe_table_plan(table: TableMeta) -> list[str]:
