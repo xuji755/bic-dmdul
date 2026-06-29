@@ -128,6 +128,34 @@ class OfflineResolverTest(unittest.TestCase):
         }
         self.assertEqual(manifest_files["DMDUL_TS01.DBF"]["control_file_entries"], [])
 
+    def test_manifest_promotes_segment_root_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            database_dir = Path(tmp_dir)
+            system = database_dir / "SYSTEM.DBF"
+            user_file = database_dir / "DMDUL_TS01.DBF"
+            (database_dir / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            _write_dbf(system, _page0(group_raw=0, kind=0x13) + _system_payload())
+            user_file.write_bytes(_user_data_file_payload_with_non_data_root_ref())
+
+            resolved = resolve_offline_table_metadata(
+                database_dir=database_dir,
+                table_name="DMDUL_MANY",
+                scan_pages=64,
+            )
+
+        manifest = resolved.as_manifest()
+        self.assertEqual(
+            manifest["diagnostics"][0]["code"],
+            "segment-root-candidate-ref-non-data-page",
+        )
+        self.assertEqual(
+            manifest["segment_root"]["diagnostics"][0]["code"],
+            "segment-root-candidate-ref-non-data-page",
+        )
+
 
 def _page0(*, group_raw: int, kind: int) -> bytes:
     page = bytearray(PAGE_SIZE)
@@ -145,6 +173,17 @@ def _user_data_file_payload() -> bytes:
     pages = [_page0(group_raw=6, kind=0x13)]
     pages.extend(bytes(PAGE_SIZE) for _ in range(1, 80))
     pages.append(_segment_root_page(group_raw=6, page_no=80, leaf_page=96))
+    pages.extend(bytes(PAGE_SIZE) for _ in range(81, 96))
+    pages.append(_page(group_raw=6, page_no=96, kind=0x14))
+    return b"".join(pages)
+
+
+def _user_data_file_payload_with_non_data_root_ref() -> bytes:
+    pages = [_page0(group_raw=6, kind=0x13)]
+    pages.extend(bytes(PAGE_SIZE) for _ in range(1, 80))
+    root = bytearray(_segment_root_page(group_raw=6, page_no=80, leaf_page=96))
+    root[144:150] = (0).to_bytes(2, "little") + (2).to_bytes(4, "little")
+    pages.append(bytes(root))
     pages.extend(bytes(PAGE_SIZE) for _ in range(81, 96))
     pages.append(_page(group_raw=6, page_no=96, kind=0x14))
     return b"".join(pages)

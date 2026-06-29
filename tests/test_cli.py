@@ -389,6 +389,63 @@ class CliTest(unittest.TestCase):
             stderr.getvalue(),
         )
 
+    def test_extract_csv_segment_json_preserves_segment_root_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            segment_file = root / "segment.json"
+            output = root / "out.csv"
+            report_output = root / "report.json"
+            page = bytearray(8192)
+            page[0x62:0x73] = (
+                bytes.fromhex("00 11 00")
+                + (7).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x11 - 2 - 1 - 4)
+            )
+            data_file.write_bytes(bytes(page))
+            manifest = _segment_manifest_without_page_plan(data_file)
+            manifest["segment_root"] = {
+                "diagnostics": [
+                    {
+                        "level": "warning",
+                        "code": "segment-root-candidate-ref-non-data-page",
+                        "message": "non-data root ref",
+                    }
+                ]
+            }
+            segment_file.write_text(json.dumps(manifest), encoding="utf-8")
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--segment-json",
+                    str(segment_file),
+                    "--table",
+                    "SYSDBA.DMDUL_ONE",
+                    "--output",
+                    str(output),
+                    "--report-output",
+                    str(report_output),
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+            report = json.loads(report_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(report["ok"])
+        self.assertEqual(
+            report["diagnostics"][0]["code"],
+            "segment-root-candidate-ref-non-data-page",
+        )
+        self.assertIn(
+            "diagnostic=segment-root-candidate-ref-non-data-page level=warning",
+            stderr.getvalue(),
+        )
+
     def test_extract_csv_strict_page_plan_fails_scan_range_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

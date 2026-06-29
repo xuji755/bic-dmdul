@@ -144,7 +144,8 @@ claiming complete table extraction.
 If sampled root-page references point to pages that are not currently
 classified as BTREE/data pages, the segment manifest emits
 `diagnostic=segment-root-candidate-ref-non-data-page` and excludes those
-references from the extraction page plan.
+references from the extraction page plan. Segment-root diagnostics are promoted
+to the manifest-level `diagnostics` list and preserved in extraction reports.
 Page-plan anomalies such as out-of-range pages, page header identity mismatch,
 cycles, or `next_page` references to missing files are emitted as extraction
 diagnostics; errors make `ok=false`, while warnings identify traversal branches

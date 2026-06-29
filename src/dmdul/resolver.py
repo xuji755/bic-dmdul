@@ -61,7 +61,10 @@ class OfflineTableResolution:
             "table": self.table.qualified_name,
             "table_object_id": self.table_object_id,
             "storage_index_id": self.index_child.index_id,
-            "diagnostics": _manifest_diagnostics(data_files),
+            "diagnostics": _manifest_diagnostics(
+                data_files=data_files,
+                segment_root=self.segment_root,
+            ),
             "storage": {
                 "group_id": self.table.storage.group_id,
                 "file_no": self.table.storage.file_no,
@@ -332,7 +335,11 @@ def _control_file_entries_for_path(
     return matches
 
 
-def _manifest_diagnostics(data_files: list[dict[str, object]]) -> list[dict[str, object]]:
+def _manifest_diagnostics(
+    *,
+    data_files: list[dict[str, object]],
+    segment_root: dict[str, object] | None,
+) -> list[dict[str, object]]:
     diagnostics: list[dict[str, object]] = []
     missing = [
         {
@@ -353,6 +360,12 @@ def _manifest_diagnostics(data_files: list[dict[str, object]]) -> list[dict[str,
                 "data_files": missing,
             }
         )
+    if isinstance(segment_root, dict):
+        segment_diagnostics = segment_root.get("diagnostics", [])
+        if isinstance(segment_diagnostics, list):
+            diagnostics.extend(
+                item for item in segment_diagnostics if isinstance(item, dict)
+            )
     return diagnostics
 
 

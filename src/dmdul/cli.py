@@ -285,10 +285,22 @@ def _read_json_file(path: Path) -> dict[str, object]:
 
 
 def _manifest_diagnostics(payload: dict[str, object]) -> tuple[dict[str, object], ...]:
+    result: list[dict[str, object]] = []
     diagnostics = payload.get("diagnostics", ())
-    if not isinstance(diagnostics, list):
-        return ()
-    return tuple(item for item in diagnostics if isinstance(item, dict))
+    if isinstance(diagnostics, list):
+        result.extend(item for item in diagnostics if isinstance(item, dict))
+    segment_root = payload.get("segment_root")
+    if isinstance(segment_root, dict):
+        segment_diagnostics = segment_root.get("diagnostics", ())
+        if isinstance(segment_diagnostics, list):
+            for item in segment_diagnostics:
+                if not isinstance(item, dict):
+                    continue
+                code = item.get("code")
+                if any(existing.get("code") == code for existing in result):
+                    continue
+                result.append(item)
+    return tuple(result)
 
 
 def _write_preflight_output(

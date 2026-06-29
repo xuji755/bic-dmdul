@@ -116,6 +116,8 @@ to explain the underlying database structure.
   page references in the target-table segment manifest.
 - [x] Emit segment-root diagnostics for sampled candidate references that point
   to pages not currently classified as BTREE data pages.
+- [x] Promote segment-root diagnostics to manifest-level diagnostics and final
+  extraction reports.
 - [x] Use segment manifest page-reference candidates plus same-file leaf
   `next_page` links as a conservative extraction page plan.
 - [x] Emit extraction diagnostics for page-plan identity mismatches, out-of-range
