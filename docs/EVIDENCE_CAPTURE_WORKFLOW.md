@@ -40,6 +40,18 @@ rollback/undo files and any metadata/control files needed to identify them.
 
 ## 4. Capture Raw Page Evidence
 
+Start by summarizing the database directory:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli summarize-database \
+  /dmdata/data/DAMENG \
+  --catalog-pages 64 \
+  --output evidence/database_summary.json
+```
+
+The summary records DBF files, group ids, file-number hints, SYSTEM candidates,
+duplicate group/file hints, and a sampled page-kind catalog for each file.
+
 Use deterministic markers from the fixture SQL to locate relevant pages:
 
 ```sh

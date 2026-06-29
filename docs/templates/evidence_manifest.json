@@ -22,6 +22,7 @@
     }
   ],
   "evidence_json": [
+    "path/to/database-summary-output.json",
     "path/to/capture-evidence-output.json",
     "path/to/catalog-pages-output.json"
   ],

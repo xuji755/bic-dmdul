@@ -32,6 +32,8 @@ to explain the underlying database structure.
 - [ ] Determine which rollback/undo files are required for MVCC visibility.
 - [ ] Detect missing files, sparse holes, short reads, and file-size/page-count
   mismatches before extraction.
+- [x] Add database directory summary for discovered DBF files, group ids,
+  file-number hints, SYSTEM candidates, duplicate hints, and sampled page kinds.
 
 ## B. Page Header And Space Management
 

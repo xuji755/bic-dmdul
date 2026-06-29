@@ -150,6 +150,50 @@ class EvidenceCaptureTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["evidence_files"][0]["type"], "catalog-pages")
 
+    def test_verify_evidence_manifest_accepts_database_summary_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "SYSTEM.DBF"
+            data_file.write_bytes(b"abc")
+            summary_json = root / "database_summary.json"
+            summary_json.write_text(
+                json.dumps(
+                    {
+                        "database_dir": str(root),
+                        "page_size": 8192,
+                        "files_total": 1,
+                        "groups": [],
+                        "system_candidates": [str(data_file)],
+                        "files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "label": "unit",
+                        "copy_state": "clean-shutdown",
+                        "reference_output": ["reference.out"],
+                        "copied_files": [
+                            {
+                                "path": data_file.name,
+                                "bytes": 3,
+                                "sha256": hashlib.sha256(b"abc").hexdigest(),
+                            }
+                        ],
+                        "evidence_json": [summary_json.name],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = verify_evidence_manifest(manifest)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["evidence_files"][0]["type"], "summarize-database")
+
     def test_verify_evidence_manifest_rejects_unknown_evidence_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

@@ -304,6 +304,18 @@ def _classify_evidence_payload(payload: Any) -> tuple[str | None, tuple[str, ...
                 "nonzero_samples",
             ),
         )
+    if "files_total" in payload or "system_candidates" in payload:
+        return (
+            "summarize-database",
+            (
+                "database_dir",
+                "page_size",
+                "files_total",
+                "groups",
+                "system_candidates",
+                "files",
+            ),
+        )
     return None, ()
 
 

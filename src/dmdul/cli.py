@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .database_summary import summarize_database_dir
 from .discovery import discover_data_files
 from .evidence import (
     capture_data_file_evidence,
@@ -120,6 +121,21 @@ def _cmd_catalog_pages(args: argparse.Namespace) -> int:
         sample_limit=args.sample_limit,
     )
     payload = json.dumps(catalog, indent=2)
+    if args.output:
+        Path(args.output).write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
+    return 0
+
+
+def _cmd_summarize_database(args: argparse.Namespace) -> int:
+    summary = summarize_database_dir(
+        database_dir=Path(args.database_dir),
+        page_size=args.page_size,
+        catalog_pages=args.catalog_pages,
+        sample_limit=args.sample_limit,
+    )
+    payload = json.dumps(summary, indent=2)
     if args.output:
         Path(args.output).write_text(payload + "\n", encoding="utf-8")
     else:
@@ -527,6 +543,21 @@ def build_parser() -> argparse.ArgumentParser:
     catalog_pages.add_argument("--sample-limit", type=int, default=32)
     catalog_pages.add_argument("--output")
     catalog_pages.set_defaults(func=_cmd_catalog_pages)
+
+    summarize_database = subparsers.add_parser(
+        "summarize-database",
+        help="summarize DBF files, groups, and sampled page kinds in a database directory",
+    )
+    summarize_database.add_argument("database_dir")
+    summarize_database.add_argument(
+        "--catalog-pages",
+        type=int,
+        default=64,
+        help="pages to scan from each discovered file for page-kind samples",
+    )
+    summarize_database.add_argument("--sample-limit", type=int, default=8)
+    summarize_database.add_argument("--output")
+    summarize_database.set_defaults(func=_cmd_summarize_database)
 
     extract_csv = subparsers.add_parser(
         "extract-csv",
