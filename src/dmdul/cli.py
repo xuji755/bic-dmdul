@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .discovery import discover_data_files
+from .evidence import capture_data_file_evidence, parse_page_selection
 from .extract import extract_csv_with_calibrated_metadata
 from .metadata import CalibratedMetadata
 from .page import ObservedPageHeader, format_hex_dump
@@ -77,6 +78,23 @@ def _cmd_find(args: argparse.Namespace) -> int:
             f"page_offset={match.page_offset}"
         )
     return 0 if matches else 1
+
+
+def _cmd_capture_evidence(args: argparse.Namespace) -> int:
+    evidence = capture_data_file_evidence(
+        path=Path(args.file),
+        page_size=args.page_size,
+        pages=parse_page_selection(args.pages or ""),
+        markers=tuple(args.marker or ()),
+        marker_encoding=args.encoding,
+        marker_context=args.context,
+    )
+    payload = json.dumps(evidence, indent=2)
+    if args.output:
+        Path(args.output).write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
+    return 0
 
 
 def _cmd_extract_csv(args: argparse.Namespace) -> int:
@@ -414,6 +432,31 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("marker")
     find.add_argument("--encoding", default="utf-8")
     find.set_defaults(func=_cmd_find)
+
+    capture_evidence = subparsers.add_parser(
+        "capture-evidence",
+        help="capture raw page and marker evidence from a DM data file",
+    )
+    capture_evidence.add_argument("file")
+    capture_evidence.add_argument(
+        "--pages",
+        default="",
+        help="comma-separated page numbers and inclusive ranges, e.g. 0,1,16,96-98",
+    )
+    capture_evidence.add_argument(
+        "--marker",
+        action="append",
+        help="marker string to locate; may be supplied multiple times",
+    )
+    capture_evidence.add_argument("--encoding", default="utf-8")
+    capture_evidence.add_argument(
+        "--context",
+        type=int,
+        default=64,
+        help="bytes of context to capture on each side of marker matches",
+    )
+    capture_evidence.add_argument("--output")
+    capture_evidence.set_defaults(func=_cmd_capture_evidence)
 
     extract_csv = subparsers.add_parser(
         "extract-csv",

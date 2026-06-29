@@ -217,6 +217,9 @@ dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
 - [x] Create `DMDUL_VLEN2`: `VARCHAR` length threshold table.
 - [x] Create `DMDUL_DTTM2`: date/time/timestamp table.
 - [x] Create `DMDUL_MOD2`: delete/update row-status table.
+- [x] Add foundational fixture SQL covering tablespace/page/row/type/MVCC
+  research scenarios.
+- [x] Add raw page and marker evidence capture command for DBF files.
 - [ ] Create one-column tables for each target type.
 - [ ] Create rows around page capacity boundaries.
 - [ ] Create deleted rows followed by insert reuse.

@@ -20,6 +20,7 @@ Research notes:
 
 - [Project goal](docs/PROJECT_GOAL.md)
 - [Foundational research plan](docs/FOUNDATIONAL_RESEARCH_PLAN.md)
+- [Evidence capture workflow](docs/EVIDENCE_CAPTURE_WORKFLOW.md)
 - [Exploration and implementation tasks](docs/EXPLORATION_TASKS.md)
 - [Exploration plan](docs/EXPLORATION_PLAN.md)
 - [Technical exploration roadmap](docs/TECHNICAL_EXPLORATION_ROADMAP.md)
