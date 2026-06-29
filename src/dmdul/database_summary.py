@@ -49,7 +49,9 @@ def summarize_database_dir(
         "warnings": _summary_warnings(
             system_candidates=system_candidates,
             duplicate_file_hints=duplicate_file_hints,
+            file_entries=file_entries,
         ),
+        "diagnostics": _summary_diagnostics(file_entries),
         "duplicate_file_hints": duplicate_file_hints,
         "files": file_entries,
     }
@@ -61,6 +63,7 @@ def _file_entry(
     catalog_pages: int,
     sample_limit: int,
 ) -> dict[str, Any]:
+    diagnostics = _file_diagnostics(item)
     entry: dict[str, Any] = {
         "path": str(item.path),
         "bytes": item.bytes,
@@ -74,6 +77,7 @@ def _file_entry(
         "page0_kind_raw": item.page_kind_raw,
         "page0_kind_label": observed_page_kind_label(item.page_kind_raw),
         "system_candidate": item.is_system_candidate,
+        "diagnostics": diagnostics,
     }
     if catalog_pages > 0:
         catalog = catalog_data_file_pages(
@@ -89,6 +93,15 @@ def _file_entry(
             "page_kind_counts": catalog["page_kind_counts"],
             "page_no_mismatches": catalog["page_no_mismatches"],
         }
+        if catalog["page_no_mismatches"]:
+            diagnostics.append(
+                {
+                    "level": "warning",
+                    "code": "catalog-page-number-mismatch",
+                    "message": "sampled pages contain header page numbers that differ from physical page numbers",
+                    "count": len(catalog["page_no_mismatches"]),
+                }
+            )
     return entry
 
 
@@ -118,6 +131,7 @@ def _summary_warnings(
     *,
     system_candidates: list[str],
     duplicate_file_hints: list[dict[str, Any]],
+    file_entries: list[dict[str, Any]],
 ) -> list[str]:
     warnings: list[str] = []
     if not system_candidates:
@@ -126,4 +140,53 @@ def _summary_warnings(
         warnings.append("multiple SYSTEM.DBF candidates found")
     if duplicate_file_hints:
         warnings.append("duplicate group/file_no_hint combinations found")
+    if any(item["diagnostics"] for item in file_entries):
+        warnings.append("one or more files have diagnostics")
     return warnings
+
+
+def _file_diagnostics(item: DiscoveredDataFile) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    trailing_bytes = item.bytes % item.page_size
+    if trailing_bytes:
+        diagnostics.append(
+            {
+                "level": "error",
+                "code": "trailing-bytes",
+                "message": "file size is not an exact multiple of page size",
+                "trailing_bytes": trailing_bytes,
+            }
+        )
+    if item.page_no != 0:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "page0-header-page-number",
+                "message": "page 0 header page number is not zero",
+                "header_page_no": item.page_no,
+            }
+        )
+    if item.pages == 0:
+        diagnostics.append(
+            {
+                "level": "error",
+                "code": "empty-data-file",
+                "message": "file contains no complete pages",
+            }
+        )
+    return diagnostics
+
+
+def _summary_diagnostics(file_entries: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = defaultdict(int)
+    files_with_diagnostics = 0
+    for item in file_entries:
+        diagnostics = item.get("diagnostics", [])
+        if diagnostics:
+            files_with_diagnostics += 1
+        for diagnostic in diagnostics:
+            counts[str(diagnostic["code"])] += 1
+    return {
+        "files_with_diagnostics": files_with_diagnostics,
+        "counts_by_code": dict(sorted(counts.items())),
+    }

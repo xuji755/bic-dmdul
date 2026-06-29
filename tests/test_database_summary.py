@@ -54,6 +54,36 @@ class DatabaseSummaryTest(unittest.TestCase):
         self.assertIn("SYSTEM.DBF candidate not found", summary["warnings"])
         self.assertIn("duplicate group/file_no_hint combinations found", summary["warnings"])
 
+    def test_reports_file_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            bad = root / "BAD.DBF"
+            bad.write_bytes(
+                _page(group_raw=6, page_no=9, page_kind=0x13)
+                + _page(group_raw=6, page_no=99, page_kind=0x14)
+                + b"tail"
+            )
+
+            summary = summarize_database_dir(
+                database_dir=root,
+                page_size=128,
+                catalog_pages=2,
+                sample_limit=4,
+            )
+
+        self.assertIn("one or more files have diagnostics", summary["warnings"])
+        diagnostics = summary["files"][0]["diagnostics"]
+        codes = {item["code"] for item in diagnostics}
+        self.assertIn("trailing-bytes", codes)
+        self.assertIn("page0-header-page-number", codes)
+        self.assertIn("catalog-page-number-mismatch", codes)
+        self.assertEqual(summary["diagnostics"]["files_with_diagnostics"], 1)
+        self.assertEqual(summary["diagnostics"]["counts_by_code"]["trailing-bytes"], 1)
+        self.assertEqual(
+            summary["diagnostics"]["counts_by_code"]["catalog-page-number-mismatch"],
+            1,
+        )
+
 
 def _page0(group_raw: int, page_kind: int) -> bytes:
     return _page(group_raw, 0, page_kind)

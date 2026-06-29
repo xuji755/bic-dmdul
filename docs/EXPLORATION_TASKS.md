@@ -34,6 +34,8 @@ to explain the underlying database structure.
   mismatches before extraction.
 - [x] Add database directory summary for discovered DBF files, group ids,
   file-number hints, SYSTEM candidates, duplicate hints, and sampled page kinds.
+- [x] Add basic file-set diagnostics for trailing bytes, abnormal page0 page
+  numbers, duplicate group/file hints, and sampled page-number mismatches.
 
 ## B. Page Header And Space Management
 
