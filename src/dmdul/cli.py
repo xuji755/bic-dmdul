@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .bootstrap import build_bootstrap_dicts
 from .control_file import compare_control_files, summarize_control_file
 from .database_summary import summarize_database_dir
 from .discovery import discover_data_files
@@ -189,6 +190,23 @@ def _cmd_compare_control_files(args: argparse.Namespace) -> int:
         Path(args.output).write_text(payload + "\n", encoding="utf-8")
     else:
         print(payload)
+    return 0
+
+
+def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
+    manifest = build_bootstrap_dicts(
+        database_dir=Path(args.database_dir),
+        output_dir=Path(args.output_dir),
+        page_size=args.page_size,
+        catalog_pages=args.catalog_pages,
+        sample_limit=args.sample_limit,
+    )
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        print(f"manifest={manifest['manifest_path']}")
+        for name, path in manifest["dict_files"].items():
+            print(f"{name}={path} rows={manifest['rows'][name]}")
     return 0
 
 
@@ -720,6 +738,22 @@ def build_parser() -> argparse.ArgumentParser:
     compare_control_files_parser.add_argument("--sample-limit", type=int, default=64)
     compare_control_files_parser.add_argument("--output")
     compare_control_files_parser.set_defaults(func=_cmd_compare_control_files)
+
+    bootstrap_dicts = subparsers.add_parser(
+        "bootstrap-dicts",
+        help="build bootstrap dictionary artifact files from an offline database copy",
+    )
+    bootstrap_dicts.add_argument("database_dir")
+    bootstrap_dicts.add_argument("--output-dir", required=True)
+    bootstrap_dicts.add_argument(
+        "--catalog-pages",
+        type=int,
+        default=0,
+        help="pages to sample per file while building the bootstrap summary",
+    )
+    bootstrap_dicts.add_argument("--sample-limit", type=int, default=8)
+    bootstrap_dicts.add_argument("--json", action="store_true")
+    bootstrap_dicts.set_defaults(func=_cmd_bootstrap_dicts)
 
     extract_csv = subparsers.add_parser(
         "extract-csv",

@@ -173,6 +173,72 @@ class CliTest(unittest.TestCase):
         self.assertEqual(report["rows_written"], 1)
         self.assertEqual(report["diagnostics"], [])
 
+    def test_bootstrap_dicts_writes_dict_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output_dir = root / "dicts"
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/MAIN.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(_large_page0(group_raw=0, page_kind=0x13))
+            (root / "MAIN.DBF").write_bytes(_large_page0(group_raw=6, page_kind=0x13))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "bootstrap-dicts",
+                    str(root),
+                    "--output-dir",
+                    str(output_dir),
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            file_rows = [
+                json.loads(line)
+                for line in (output_dir / "file.dict").read_text(encoding="utf-8").splitlines()
+            ]
+            rows_by_name = {row["basename"]: row for row in file_rows}
+            artifact_exists = {
+                name: (output_dir / name).exists()
+                for name in (
+                    "bootstrap_manifest.json",
+                    "user.dict",
+                    "tab.dict",
+                    "col.dict",
+                )
+            }
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["mode"], "dm-bootstrap-dicts")
+        self.assertEqual(manifest["rows"]["file.dict"], 2)
+        self.assertEqual(manifest["rows"]["user.dict"], 0)
+        self.assertEqual(
+            artifact_exists,
+            {
+                "bootstrap_manifest.json": True,
+                "user.dict": True,
+                "tab.dict": True,
+                "col.dict": True,
+            },
+        )
+        self.assertTrue(rows_by_name["SYSTEM.DBF"]["system_candidate"])
+        self.assertEqual(rows_by_name["MAIN.DBF"]["group_id"], 6)
+        self.assertEqual(
+            rows_by_name["MAIN.DBF"]["control_file_entries"][0]["basename"],
+            "main.dbf",
+        )
+        self.assertEqual(
+            manifest["steps"][2]["status"],
+            "not-yet-implemented",
+        )
+
     def test_resolve_table_writes_segment_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

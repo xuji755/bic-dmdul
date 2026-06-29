@@ -72,6 +72,8 @@ to explain the underlying database structure.
   `extract-csv --database-dir`.
 - [x] Allow `extract-csv --database-dir` to persist its preflight JSON with
   `--preflight-output`.
+- [x] Add a `bootstrap-dicts` command that materializes the bootstrap artifact
+  set (`file.dict`, `user.dict`, `tab.dict`, `col.dict`) and writes a manifest.
 
 ## B. Page Header And Space Management
 
@@ -198,6 +200,11 @@ to explain the underlying database structure.
   `dm.ctl` DBF occurrence evidence.
 - [x] Preserve segment-manifest diagnostics in `extract-csv` reports for both
   `--segment-json` and `--database-dir` extraction paths.
+- [x] Define the first three recovery steps as bootstrap:
+  1. read the control file and recover database file structure;
+  2. find the first SYSTEM tablespace file and dictionary table locations;
+  3. dump dictionary information into `user.dict`, `tab.dict`, `col.dict`, and
+     `file.dict`.
 - [ ] Decode enough `SYSOBJECTS` rows offline to recover object name/id/schema/type.
 - [ ] Decode complete `SYSCOLUMNS` row layout offline, including scale,
   nullability, defaults, and exact column id base.
