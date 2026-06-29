@@ -12,3 +12,7 @@ Run them on a disposable DM8 instance. After each fixture phase, capture:
 
 The extractor must not depend on online views. Online output is used only to
 label and verify raw-byte observations.
+
+`003_control_file_layout.sql` is a manual phased fixture. Capture `dm.ctl`
+between phases and compare adjacent snapshots to identify tablespace and
+data-file records in the control file.

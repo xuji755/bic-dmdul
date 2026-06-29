@@ -22,6 +22,8 @@ to explain the underlying database structure.
   capture.
 - [x] Add byte-level `dm.ctl` snapshot comparison output for controlled
   create/resize/add/drop data-file experiments.
+- [x] Add phased SQL fixture for `dm.ctl` tablespace/data-file layout
+  experiments.
 - [ ] Decode the `dm.ctl` binary layout for:
   - database identity
   - tablespace entries
