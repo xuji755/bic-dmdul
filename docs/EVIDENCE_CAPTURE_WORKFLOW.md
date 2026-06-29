@@ -70,6 +70,20 @@ PYTHONPATH=src python3 -m dmdul.cli summarize-control-file \
   --output evidence/dmctl_summary.json
 ```
 
+Before attempting offline extraction, run the conservative preflight gate:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli preflight-database \
+  /dmdata/data/DAMENG \
+  --catalog-pages 64 \
+  --output evidence/preflight.json
+```
+
+The command exits nonzero when fatal diagnostics are present, including missing
+control files, missing DBF files referenced by control-file path hints,
+duplicate group/file hints, truncated/unparsed DBF files, empty data files, and
+files whose byte size is not page-aligned.
+
 For controlled `dm.ctl` layout exploration, capture snapshots before and after
 one storage operation, then compare them:
 

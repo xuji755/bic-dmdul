@@ -17,6 +17,7 @@ from .extract import extract_csv_with_calibrated_metadata
 from .metadata import CalibratedMetadata
 from .page import ObservedPageHeader, format_hex_dump
 from .page_catalog import catalog_data_file_pages
+from .preflight import evaluate_database_summary_preflight
 from .resolver import OfflineResolveError, resolve_offline_table_metadata
 from .row import iter_observed_rows, scan_observed_row_chain
 from .storage import DataFile
@@ -155,6 +156,25 @@ def _cmd_summarize_control_file(args: argparse.Namespace) -> int:
     else:
         print(payload)
     return 0
+
+
+def _cmd_preflight_database(args: argparse.Namespace) -> int:
+    summary = summarize_database_dir(
+        database_dir=Path(args.database_dir),
+        page_size=args.page_size,
+        catalog_pages=args.catalog_pages,
+        sample_limit=args.sample_limit,
+    )
+    result = {
+        "summary": summary,
+        "preflight": evaluate_database_summary_preflight(summary),
+    }
+    payload = json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
+    return 0 if result["preflight"]["ok"] else 1
 
 
 def _cmd_compare_control_files(args: argparse.Namespace) -> int:
@@ -596,6 +616,21 @@ def build_parser() -> argparse.ArgumentParser:
     summarize_control.add_argument("--sample-limit", type=int, default=32)
     summarize_control.add_argument("--output")
     summarize_control.set_defaults(func=_cmd_summarize_control_file)
+
+    preflight_database = subparsers.add_parser(
+        "preflight-database",
+        help="run conservative preflight checks before offline extraction",
+    )
+    preflight_database.add_argument("database_dir")
+    preflight_database.add_argument(
+        "--catalog-pages",
+        type=int,
+        default=64,
+        help="pages to scan from each discovered file for page-kind samples",
+    )
+    preflight_database.add_argument("--sample-limit", type=int, default=8)
+    preflight_database.add_argument("--output")
+    preflight_database.set_defaults(func=_cmd_preflight_database)
 
     compare_control_files_parser = subparsers.add_parser(
         "compare-control-files",

@@ -60,6 +60,8 @@ to explain the underlying database structure.
   in database summaries.
 - [x] Emit stable summary-level diagnostic codes for missing control files,
   duplicate file hints, and control-file DBF hints not found in the copy.
+- [x] Add conservative `preflight-database` gate that exits nonzero on current
+  fatal file-set diagnostics.
 
 ## B. Page Header And Space Management
 
