@@ -16,6 +16,9 @@ def capture_data_file_evidence(
     markers: tuple[str, ...] = (),
     marker_encoding: str = "utf-8",
     marker_context: int = 64,
+    label: str | None = None,
+    copy_state: str | None = None,
+    notes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Capture reproducible raw-page evidence from one DM data file.
 
@@ -27,6 +30,9 @@ def capture_data_file_evidence(
     data_file = DataFile(path, page_size=page_size)
     stat = path.stat()
     return {
+        "label": label,
+        "copy_state": copy_state,
+        "notes": list(notes),
         "file": str(path),
         "bytes": stat.st_size,
         "page_size": page_size,

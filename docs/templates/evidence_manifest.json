@@ -1,0 +1,30 @@
+{
+  "label": "dmdul_fixture_clean_shutdown_001",
+  "copy_state": "clean-shutdown",
+  "database": {
+    "host": "example-host",
+    "dm_version": "DM8 build string from disql",
+    "database_dir": "/dmdata/data/DAMENG",
+    "page_size": 8192
+  },
+  "fixture_sql": [
+    "fixtures/sql/001_foundational_storage.sql"
+  ],
+  "reference_output": [
+    "path/to/002_reference_queries.out"
+  ],
+  "copied_files": [
+    {
+      "path": "SYSTEM.DBF",
+      "source_path": "/dmdata/data/DAMENG/SYSTEM.DBF",
+      "bytes": null,
+      "sha256": null
+    }
+  ],
+  "evidence_json": [
+    "path/to/capture-evidence-output.json"
+  ],
+  "notes": [
+    "Describe shutdown/snapshot method and any SQL dialect adjustments."
+  ]
+}

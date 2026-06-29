@@ -88,6 +88,9 @@ def _cmd_capture_evidence(args: argparse.Namespace) -> int:
         markers=tuple(args.marker or ()),
         marker_encoding=args.encoding,
         marker_context=args.context,
+        label=args.label,
+        copy_state=args.copy_state,
+        notes=tuple(args.note or ()),
     )
     payload = json.dumps(evidence, indent=2)
     if args.output:
@@ -449,6 +452,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="marker string to locate; may be supplied multiple times",
     )
     capture_evidence.add_argument("--encoding", default="utf-8")
+    capture_evidence.add_argument(
+        "--label",
+        help="human-readable evidence label, e.g. dmdul_fix_types_clean",
+    )
+    capture_evidence.add_argument(
+        "--copy-state",
+        choices=[
+            "clean-shutdown",
+            "storage-snapshot",
+            "live-copy",
+            "crash-state",
+            "open-transaction",
+            "unknown",
+        ],
+        default="unknown",
+        help="how the source file set was copied",
+    )
+    capture_evidence.add_argument(
+        "--note",
+        action="append",
+        help="free-form evidence note; may be supplied multiple times",
+    )
     capture_evidence.add_argument(
         "--context",
         type=int,

@@ -32,8 +32,14 @@ class EvidenceCaptureTest(unittest.TestCase):
                 pages=(1,),
                 markers=("FIX_TINY_ROW_1",),
                 marker_context=4,
+                label="sample",
+                copy_state="clean-shutdown",
+                notes=("unit fixture",),
             )
 
+        self.assertEqual(evidence["label"], "sample")
+        self.assertEqual(evidence["copy_state"], "clean-shutdown")
+        self.assertEqual(evidence["notes"], ["unit fixture"])
         self.assertEqual(evidence["bytes"], 256)
         self.assertEqual(evidence["pages_total"], 2)
         self.assertEqual(evidence["captured_pages"][0]["page_no"], 1)

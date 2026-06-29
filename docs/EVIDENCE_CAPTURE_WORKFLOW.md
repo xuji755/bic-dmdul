@@ -45,6 +45,8 @@ Use deterministic markers from the fixture SQL to locate relevant pages:
 ```sh
 PYTHONPATH=src python3 -m dmdul.cli capture-evidence \
   /dmdata/data/DAMENG/DMDUL_TS01.DBF \
+  --label dmdul_fix_clean_001 \
+  --copy-state clean-shutdown \
   --pages 0,1,8,16,96-98 \
   --marker FIX_TINY_ROW_0001 \
   --marker FIX_TYPES_POS_BOUND \
@@ -59,6 +61,9 @@ The JSON records:
 - observed page-header fields;
 - marker offsets and page-relative positions;
 - marker context as hex and formatted dump.
+
+Fill in `docs/templates/evidence_manifest.json` beside the captured DBF files
+so the copy method, reference output, and evidence JSON remain tied together.
 
 ## 5. Promote Only Proven Fields
 
