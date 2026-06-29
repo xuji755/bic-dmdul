@@ -36,6 +36,8 @@ to explain the underlying database structure.
   file-number hints, SYSTEM candidates, duplicate hints, and sampled page kinds.
 - [x] Add basic file-set diagnostics for trailing bytes, abnormal page0 page
   numbers, duplicate group/file hints, and sampled page-number mismatches.
+- [x] Report short or otherwise unparsed `.DBF` files in database summaries
+  instead of silently ignoring them.
 
 ## B. Page Header And Space Management
 

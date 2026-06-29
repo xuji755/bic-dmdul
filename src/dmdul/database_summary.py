@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from .discovery import DiscoveredDataFile, discover_data_files
+from .discovery import DiscoveredDataFile, discover_data_files, find_dbf_files
 from .page import observed_page_kind_label
 from .page_catalog import catalog_data_file_pages
 
@@ -18,7 +18,14 @@ def summarize_database_dir(
 ) -> dict[str, Any]:
     """Summarize a DM database directory for storage exploration."""
 
+    dbf_paths = find_dbf_files(database_dir)
     files = discover_data_files(database_dir, page_size=page_size)
+    discovered_paths = {item.path for item in files}
+    skipped_files = [
+        _skipped_file_entry(path, page_size=page_size)
+        for path in dbf_paths
+        if path not in discovered_paths
+    ]
     groups: dict[int, list[DiscoveredDataFile]] = defaultdict(list)
     for item in files:
         groups[item.group_id].append(item)
@@ -35,7 +42,9 @@ def summarize_database_dir(
     return {
         "database_dir": str(database_dir),
         "page_size": page_size,
+        "dbf_files_total": len(dbf_paths),
         "files_total": len(files),
+        "skipped_files_total": len(skipped_files),
         "groups": [
             {
                 "group_id": group_id,
@@ -50,9 +59,11 @@ def summarize_database_dir(
             system_candidates=system_candidates,
             duplicate_file_hints=duplicate_file_hints,
             file_entries=file_entries,
+            skipped_files=skipped_files,
         ),
-        "diagnostics": _summary_diagnostics(file_entries),
+        "diagnostics": _summary_diagnostics(file_entries, skipped_files),
         "duplicate_file_hints": duplicate_file_hints,
+        "skipped_files": skipped_files,
         "files": file_entries,
     }
 
@@ -132,6 +143,7 @@ def _summary_warnings(
     system_candidates: list[str],
     duplicate_file_hints: list[dict[str, Any]],
     file_entries: list[dict[str, Any]],
+    skipped_files: list[dict[str, Any]],
 ) -> list[str]:
     warnings: list[str] = []
     if not system_candidates:
@@ -142,6 +154,8 @@ def _summary_warnings(
         warnings.append("duplicate group/file_no_hint combinations found")
     if any(item["diagnostics"] for item in file_entries):
         warnings.append("one or more files have diagnostics")
+    if skipped_files:
+        warnings.append("one or more DBF files were skipped")
     return warnings
 
 
@@ -177,7 +191,10 @@ def _file_diagnostics(item: DiscoveredDataFile) -> list[dict[str, Any]]:
     return diagnostics
 
 
-def _summary_diagnostics(file_entries: list[dict[str, Any]]) -> dict[str, Any]:
+def _summary_diagnostics(
+    file_entries: list[dict[str, Any]],
+    skipped_files: list[dict[str, Any]],
+) -> dict[str, Any]:
     counts: dict[str, int] = defaultdict(int)
     files_with_diagnostics = 0
     for item in file_entries:
@@ -186,7 +203,27 @@ def _summary_diagnostics(file_entries: list[dict[str, Any]]) -> dict[str, Any]:
             files_with_diagnostics += 1
         for diagnostic in diagnostics:
             counts[str(diagnostic["code"])] += 1
+    for item in skipped_files:
+        counts[str(item["code"])] += 1
     return {
         "files_with_diagnostics": files_with_diagnostics,
+        "skipped_files": len(skipped_files),
         "counts_by_code": dict(sorted(counts.items())),
+    }
+
+
+def _skipped_file_entry(path: Path, *, page_size: int) -> dict[str, Any]:
+    stat = path.stat()
+    if stat.st_size < page_size:
+        code = "short-dbf-file"
+        message = "DBF file is smaller than one page"
+    else:
+        code = "unparsed-dbf-file"
+        message = "DBF file was not parsed as a DM data file"
+    return {
+        "path": str(path),
+        "bytes": stat.st_size,
+        "page_size": page_size,
+        "code": code,
+        "message": message,
     }

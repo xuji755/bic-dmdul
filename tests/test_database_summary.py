@@ -24,6 +24,8 @@ class DatabaseSummaryTest(unittest.TestCase):
             )
 
         self.assertEqual(summary["files_total"], 4)
+        self.assertEqual(summary["dbf_files_total"], 4)
+        self.assertEqual(summary["skipped_files_total"], 0)
         self.assertEqual(summary["system_candidates"], [str(root / "SYSTEM.DBF")])
         self.assertEqual(summary["warnings"], [])
         groups = {item["group_id"]: item for item in summary["groups"]}
@@ -81,6 +83,29 @@ class DatabaseSummaryTest(unittest.TestCase):
         self.assertEqual(summary["diagnostics"]["counts_by_code"]["trailing-bytes"], 1)
         self.assertEqual(
             summary["diagnostics"]["counts_by_code"]["catalog-page-number-mismatch"],
+            1,
+        )
+
+    def test_reports_short_skipped_dbf_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "SYSTEM.DBF").write_bytes(_page0(0, 0x13))
+            (root / "SHORT.DBF").write_bytes(b"too short")
+
+            summary = summarize_database_dir(
+                database_dir=root,
+                page_size=128,
+                catalog_pages=0,
+            )
+
+        self.assertEqual(summary["dbf_files_total"], 2)
+        self.assertEqual(summary["files_total"], 1)
+        self.assertEqual(summary["skipped_files_total"], 1)
+        self.assertEqual(summary["skipped_files"][0]["code"], "short-dbf-file")
+        self.assertIn("one or more DBF files were skipped", summary["warnings"])
+        self.assertEqual(summary["diagnostics"]["skipped_files"], 1)
+        self.assertEqual(
+            summary["diagnostics"]["counts_by_code"]["short-dbf-file"],
             1,
         )
 

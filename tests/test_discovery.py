@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dmdul.discovery import discover_data_files
+from dmdul.discovery import discover_data_files, find_dbf_files
 
 
 def _page0(group_raw: int, page_kind: int = 0x13) -> bytes:
@@ -37,6 +37,16 @@ class DiscoverDataFilesTest(unittest.TestCase):
         self.assertTrue(files[0].is_system_candidate)
         self.assertFalse(files[1].is_system_candidate)
         self.assertFalse(files[2].is_system_candidate)
+
+    def test_find_dbf_files_includes_short_dbf_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "SHORT.DBF").write_bytes(b"x")
+            (root / "README.txt").write_text("ignored", encoding="utf-8")
+
+            files = find_dbf_files(root)
+
+        self.assertEqual([item.name for item in files], ["SHORT.DBF"])
 
 
 if __name__ == "__main__":

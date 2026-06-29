@@ -29,7 +29,7 @@ def discover_data_files(
     page_size: int = 8192,
 ) -> list[DiscoveredDataFile]:
     files: list[DiscoveredDataFile] = []
-    for path in _iter_dbf_files(database_dir):
+    for path in find_dbf_files(database_dir):
         stat = path.stat()
         if stat.st_size < page_size:
             continue
@@ -55,7 +55,7 @@ def discover_data_files(
     return sorted(files, key=lambda item: (item.group_id, item.file_no_hint, str(item.path)))
 
 
-def _iter_dbf_files(database_dir: Path) -> list[Path]:
+def find_dbf_files(database_dir: Path) -> list[Path]:
     candidates: list[Path] = []
     for pattern in ("*.DBF", "*.dbf"):
         candidates.extend(path for path in database_dir.rglob(pattern) if path.is_file())
