@@ -82,7 +82,8 @@ PYTHONPATH=src python3 -m dmdul.cli preflight-database \
 The command exits nonzero when fatal diagnostics are present, including missing
 control files, missing DBF files referenced by control-file path hints,
 duplicate group/file hints, truncated/unparsed DBF files, empty data files, and
-files whose byte size is not page-aligned.
+files whose byte size is not page-aligned. Sampled pages whose header page
+number does not match the physical page number are also fatal.
 
 `extract-csv --database-dir ...` runs the same preflight gate by default before
 dictionary resolution. `--skip-preflight` exists only for controlled research

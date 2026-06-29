@@ -89,8 +89,8 @@ to explain the underlying database structure.
   free pages.
 - [ ] Decode page checksum or validation fields if present.
 - [ ] Decode page SCN/LSN/checkpoint fields if present.
-- [ ] Reject pages whose header identity does not match their file/page
-  position.
+- [x] Reject sampled pages whose header identity does not match their file/page
+  position in preflight.
 - [x] Add page catalog scanner for page-kind counts, empty pages, page identity
   mismatches, and page-reference samples.
 - [x] Add tentative page-kind labels to evidence output while preserving raw

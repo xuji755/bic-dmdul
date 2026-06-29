@@ -12,6 +12,7 @@ DEFAULT_FATAL_CODES = frozenset(
         "empty-data-file",
         "short-dbf-file",
         "unparsed-dbf-file",
+        "catalog-page-number-mismatch",
     }
 )
 
