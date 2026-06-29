@@ -234,8 +234,11 @@ header row-count candidate with a physical row-length-chain scan so delete,
 update, and slot/free-space behavior can be calibrated from evidence. The
 top-level `row_area_summary` aggregates these row-area signals for sampled
 BTREE/data pages and keeps capped samples for row-count deltas and deleted-row
-cases. Labels and anonymous header-field names are for evidence triage only and
-must not be treated as final page parser semantics.
+cases. It also records neutral relation counts between anonymous page-header
+fields and observed row-chain facts, such as chain start/end offsets and
+live/deleted row counts. Labels, relation names, and anonymous header-field
+names are for evidence triage only and must not be treated as final page parser
+semantics.
 
 Fill in `docs/templates/evidence_manifest.json` beside the captured DBF files
 so the copy method, reference output, and evidence JSON remain tied together.

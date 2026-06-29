@@ -178,13 +178,25 @@ def _row_area_probe(
     rows = scan_observed_row_chain(page, start_offset=start_offset)
     live_rows = sum(1 for row in rows if not row.is_deleted)
     deleted_rows = sum(1 for row in rows if row.is_deleted)
+    row_chain_end_offset = rows[-1].page_offset + rows[-1].length if rows else start_offset
+    field_relations = _header_field_relations(
+        header=header,
+        start_offset=start_offset,
+        row_chain_end_offset=row_chain_end_offset,
+        physical_rows=len(rows),
+        live_rows=live_rows,
+        deleted_rows=deleted_rows,
+    )
     return {
         "start_offset": start_offset,
+        "row_chain_end_offset": row_chain_end_offset,
         "header_observed_row_count": header.observed_row_count,
         "physical_rows_scanned": len(rows),
         "live_rows_scanned": live_rows,
         "deleted_rows_scanned": deleted_rows,
         "count_delta_physical_minus_header": len(rows) - header.observed_row_count,
+        "header_field_candidates": _header_field_candidates(header),
+        "candidate_field_relations": field_relations,
         "sampled_rows": [
             {
                 "page_offset": row.page_offset,
@@ -209,6 +221,7 @@ def _new_row_area_summary() -> dict[str, Any]:
         "total_live_rows_scanned": 0,
         "total_deleted_rows_scanned": 0,
         "count_delta_histogram": Counter(),
+        "header_field_relation_counts": {},
         "count_delta_samples": [],
         "deleted_row_samples": [],
     }
@@ -235,6 +248,13 @@ def _accumulate_row_area_summary(
     summary["total_live_rows_scanned"] += probe["live_rows_scanned"]
     summary["total_deleted_rows_scanned"] += deleted_rows
     summary["count_delta_histogram"][str(delta)] += 1
+    for field_name, relations in probe["candidate_field_relations"].items():
+        for relation in relations["matches"]:
+            _increment_nested(
+                summary["header_field_relation_counts"],
+                field_name,
+                relation,
+            )
     if physical_rows:
         summary["pages_with_physical_rows"] += 1
     if deleted_rows:
@@ -270,6 +290,7 @@ def _row_area_page_sample(
         "count_delta_physical_minus_header": probe[
             "count_delta_physical_minus_header"
         ],
+        "candidate_field_relations": probe["candidate_field_relations"],
         "sampled_rows": probe["sampled_rows"],
     }
 
@@ -282,7 +303,49 @@ def _finalize_row_area_summary(summary: dict[str, Any]) -> dict[str, Any]:
             key=lambda item: int(item[0]),
         )
     )
+    finalized["header_field_relation_counts"] = _sorted_nested_counts(
+        summary["header_field_relation_counts"]
+    )
     return finalized
+
+
+def _header_field_candidates(header: ObservedPageHeader) -> dict[str, int]:
+    return {
+        "field_20_u32le": header.field_20_u32le,
+        "field_24_u16le": header.field_24_u16le,
+        "field_26_u16le": header.field_26_u16le,
+        "field_2c_u16le": header.field_2c_u16le,
+    }
+
+
+def _header_field_relations(
+    *,
+    header: ObservedPageHeader,
+    start_offset: int,
+    row_chain_end_offset: int,
+    physical_rows: int,
+    live_rows: int,
+    deleted_rows: int,
+) -> dict[str, dict[str, Any]]:
+    relation_values = {
+        "equals_row_chain_start_offset": start_offset,
+        "equals_row_chain_end_offset": row_chain_end_offset,
+        "equals_header_observed_row_count": header.observed_row_count,
+        "equals_physical_rows_scanned": physical_rows,
+        "equals_live_rows_scanned": live_rows,
+        "equals_deleted_rows_scanned": deleted_rows,
+    }
+    result: dict[str, dict[str, Any]] = {}
+    for field_name, value in _header_field_candidates(header).items():
+        result[field_name] = {
+            "value": value,
+            "matches": [
+                relation
+                for relation, relation_value in relation_values.items()
+                if value == relation_value
+            ],
+        }
+    return result
 
 
 def _increment_nested(

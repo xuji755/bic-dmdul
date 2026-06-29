@@ -114,6 +114,9 @@ to explain the underlying database structure.
   row-count candidate with the physical row-length chain and deleted-row flags.
 - [x] Aggregate row-area probe signals for sampled BTREE/data pages so count
   deltas and deleted-row pages are visible without inspecting every page sample.
+- [x] Record neutral relations between anonymous page-header fields and
+  row-chain facts to calibrate row count, free-space, and slot-directory
+  candidates from evidence.
 
 ## C. Segment And BTREE Structure
 

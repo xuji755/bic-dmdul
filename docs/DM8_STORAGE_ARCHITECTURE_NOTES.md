@@ -304,6 +304,15 @@ still keep their per-page probe in `nonzero_samples`, but they are excluded from
 the aggregate so file-control and space-management pages do not pollute row
 format calibration.
 
+The row-area probe also records neutral candidate relations for anonymous page
+header fields `field_20_u32le`, `field_24_u16le`, `field_26_u16le`, and
+`field_2c_u16le`. For each field it records whether the value equals observed
+quantities such as row-chain start offset, row-chain end offset, header row
+count, physical row count, live row count, or deleted row count. The aggregate
+`header_field_relation_counts` shows which relations are stable across sampled
+BTREE/data pages. These relations are intended to identify row count, free-space
+boundary, and slot-directory fields from evidence before assigning final names.
+
 Observed fixed-width values:
 
 - `INT 1` -> `01 00 00 00`

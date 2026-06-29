@@ -111,7 +111,16 @@ class PageCatalogTest(unittest.TestCase):
     def test_catalog_probes_row_area_chain(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "rows.dbf"
-            page = bytearray(_page(group_raw=6, header_page_no=0, kind=0x14, row_count=1))
+            page = bytearray(
+                _page(
+                    group_raw=6,
+                    header_page_no=0,
+                    kind=0x14,
+                    row_count=1,
+                    field_24=0x62,
+                    field_26=0x6B,
+                )
+            )
             page[0x62:0x66] = bytes.fromhex("00 04 01 02")
             page[0x66:0x6B] = bytes.fromhex("80 05") + b"DEL"
             path.write_bytes(bytes(page))
@@ -124,6 +133,7 @@ class PageCatalogTest(unittest.TestCase):
 
         probe = catalog["nonzero_samples"][0]["row_area_probe"]
         self.assertEqual(probe["start_offset"], 0x62)
+        self.assertEqual(probe["row_chain_end_offset"], 0x6B)
         self.assertEqual(probe["header_observed_row_count"], 1)
         self.assertEqual(probe["physical_rows_scanned"], 2)
         self.assertEqual(probe["live_rows_scanned"], 1)
@@ -135,6 +145,20 @@ class PageCatalogTest(unittest.TestCase):
                 {"page_offset": 0x62, "length": 4, "deleted": False},
                 {"page_offset": 0x66, "length": 5, "deleted": True},
             ],
+        )
+        self.assertEqual(probe["header_field_candidates"]["field_24_u16le"], 0x62)
+        self.assertEqual(probe["header_field_candidates"]["field_26_u16le"], 0x6B)
+        self.assertEqual(
+            probe["candidate_field_relations"]["field_24_u16le"]["matches"],
+            ["equals_row_chain_start_offset"],
+        )
+        self.assertEqual(
+            probe["candidate_field_relations"]["field_26_u16le"]["matches"],
+            ["equals_row_chain_end_offset"],
+        )
+        self.assertIn(
+            "equals_header_observed_row_count",
+            probe["candidate_field_relations"]["field_2c_u16le"]["matches"],
         )
         row_summary = catalog["row_area_summary"]
         self.assertEqual(
@@ -150,6 +174,14 @@ class PageCatalogTest(unittest.TestCase):
         self.assertEqual(row_summary["total_live_rows_scanned"], 1)
         self.assertEqual(row_summary["total_deleted_rows_scanned"], 1)
         self.assertEqual(row_summary["count_delta_histogram"], {"1": 1})
+        self.assertEqual(
+            row_summary["header_field_relation_counts"]["field_24_u16le"],
+            {"equals_row_chain_start_offset": 1},
+        )
+        self.assertEqual(
+            row_summary["header_field_relation_counts"]["field_26_u16le"],
+            {"equals_row_chain_end_offset": 1},
+        )
         self.assertEqual(row_summary["count_delta_samples"][0]["page_no"], 0)
         self.assertEqual(row_summary["deleted_row_samples"][0]["deleted_rows_scanned"], 1)
 
@@ -182,6 +214,9 @@ def _page(
     header_page_no: int,
     kind: int,
     row_count: int = 7,
+    field_20: int = 0x11223344,
+    field_24: int = 0x5566,
+    field_26: int = 0x7788,
     prev_ref: bytes | None = None,
     next_ref: bytes | None = None,
 ) -> bytes:
@@ -191,9 +226,9 @@ def _page(
     page[8:14] = prev_ref or (b"\xff" * 6)
     page[14:20] = next_ref or (b"\xff" * 6)
     page[20:24] = kind.to_bytes(4, "little")
-    page[32:36] = (0x11223344).to_bytes(4, "little")
-    page[36:38] = (0x5566).to_bytes(2, "little")
-    page[38:40] = (0x7788).to_bytes(2, "little")
+    page[32:36] = field_20.to_bytes(4, "little")
+    page[36:38] = field_24.to_bytes(2, "little")
+    page[38:40] = field_26.to_bytes(2, "little")
     page[44:46] = row_count.to_bytes(2, "little")
     page[64] = 1
     return bytes(page)
