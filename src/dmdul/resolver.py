@@ -12,6 +12,7 @@ from .metadata import (
     StorageRoot,
     TableMeta,
 )
+from .segment import analyze_segment_root
 from .sysdict import (
     SysColumnCandidate,
     SysIndexCandidate,
@@ -39,6 +40,7 @@ class OfflineTableResolution:
     storage_index: SysIndexCandidate
     columns: tuple[SysColumnCandidate, ...]
     control_file_data_files: dict[str, object] | None = None
+    segment_root: dict[str, object] | None = None
 
     def as_manifest(self) -> dict[str, object]:
         return {
@@ -97,6 +99,7 @@ class OfflineTableResolution:
                 for item in self.metadata.data_files
             ],
             "control_file_data_files": self.control_file_data_files,
+            "segment_root": self.segment_root,
             "mode": "dmctl-system-sysdict-segment-root",
         }
 
@@ -152,6 +155,19 @@ def resolve_offline_table_metadata(
         group_id=_required_int(storage_index.group_id, "storage group id"),
         file_no=_required_int(storage_index.root_file, "storage root file"),
     )
+    known_file_nos = {
+        item.file_no_hint
+        for item in files
+        if item.group_id == data_file.group_id
+    }
+    segment_root = analyze_segment_root(
+        path=data_file.path,
+        page_size=data_file.page_size,
+        group_id=_required_int(storage_index.group_id, "storage group id"),
+        file_no=_required_int(storage_index.root_file, "storage root file"),
+        root_page=_required_int(storage_index.root_page, "storage root page"),
+        known_file_nos=known_file_nos,
+    )
     table = TableMeta(
         owner=owner_name,
         name=object_name,
@@ -191,6 +207,7 @@ def resolve_offline_table_metadata(
         storage_index=storage_index,
         columns=columns,
         control_file_data_files=database_summary.get("control_file_data_files"),
+        segment_root=segment_root,
     )
 
 

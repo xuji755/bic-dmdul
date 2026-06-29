@@ -193,14 +193,20 @@ def _cmd_compare_control_files(args: argparse.Namespace) -> int:
 
 
 def _cmd_extract_csv(args: argparse.Namespace) -> int:
-    if args.metadata_json is None and args.database_dir is None:
+    if (
+        args.metadata_json is None
+        and args.segment_json is None
+        and args.database_dir is None
+    ):
         print(
-            "dmdul: extract-csv requires --metadata-json or --database-dir",
+            "dmdul: extract-csv requires --metadata-json, --segment-json, or --database-dir",
             file=sys.stderr,
         )
         return 2
     if args.metadata_json is not None:
         metadata = CalibratedMetadata.from_json_file(Path(args.metadata_json))
+    elif args.segment_json is not None:
+        metadata = CalibratedMetadata.from_segment_manifest_file(Path(args.segment_json))
     else:
         if not args.skip_preflight:
             summary = summarize_database_dir(
@@ -679,6 +685,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="extract a table to CSV",
     )
     extract_csv.add_argument("--metadata-json")
+    extract_csv.add_argument(
+        "--segment-json",
+        help="read resolved table dictionary and segment metadata JSON",
+    )
     extract_csv.add_argument("--database-dir")
     extract_csv.add_argument("--owner")
     extract_csv.add_argument(

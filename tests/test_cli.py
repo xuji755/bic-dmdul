@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import tempfile
@@ -175,6 +176,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             output = root / "segment.json"
+            csv_output = root / "out.csv"
             (root / "dm.ctl").write_bytes(
                 b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
                 b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
@@ -182,9 +184,7 @@ class CliTest(unittest.TestCase):
             (root / "SYSTEM.DBF").write_bytes(
                 _large_page0(group_raw=0, page_kind=0x13) + _system_payload()
             )
-            (root / "DMDUL_TS01.DBF").write_bytes(
-                _large_page0(group_raw=6, page_kind=0x13) + b"\0" * 8192
-            )
+            (root / "DMDUL_TS01.DBF").write_bytes(_user_data_file_payload())
 
             parser = build_parser()
             args = parser.parse_args(
@@ -201,13 +201,33 @@ class CliTest(unittest.TestCase):
             with redirect_stdout(stdout):
                 exit_code = args.func(args)
             manifest = json.loads(output.read_text(encoding="utf-8"))
+            extract_args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--segment-json",
+                    str(output),
+                    "--table",
+                    "SYSDBA.DMDUL_MANY",
+                    "--output",
+                    str(csv_output),
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                extract_exit_code = extract_args.func(extract_args)
+            with csv_output.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(manifest["mode"], "dmctl-system-sysdict-segment-root")
         self.assertEqual(manifest["segment"]["group_id"], 6)
         self.assertEqual(manifest["segment"]["root_file"], 0)
         self.assertEqual(manifest["segment"]["root_page"], 80)
+        self.assertTrue(manifest["segment_root"]["identity_ok"])
+        self.assertEqual(manifest["segment_root"]["candidate_page_refs"][0]["page_no"], 96)
         self.assertEqual(manifest["columns"][0]["name"], "ID")
+        self.assertEqual(extract_exit_code, 0)
+        self.assertEqual(rows, [["ID"], ["7"]])
 
 
 def _page0() -> bytes:
@@ -239,6 +259,42 @@ def _system_payload() -> bytes:
         + b"\0" * 256
         + _sysindex(index_id=index_id)
     )
+
+
+def _user_data_file_payload() -> bytes:
+    pages = [_large_page0(group_raw=6, page_kind=0x13)]
+    pages.extend(bytes(8192) for _ in range(1, 80))
+    pages.append(_segment_root_page(page_no=80, leaf_page=96))
+    pages.extend(bytes(8192) for _ in range(81, 96))
+    pages.append(_leaf_page(page_no=96, value=7))
+    pages.extend(bytes(8192) for _ in range(97, 144))
+    return b"".join(pages)
+
+
+def _segment_root_page(*, page_no: int, leaf_page: int) -> bytes:
+    page = bytearray(_large_page(group_raw=6, page_no=page_no, page_kind=0x15))
+    page[128:134] = (0).to_bytes(2, "little") + leaf_page.to_bytes(4, "little")
+    return bytes(page)
+
+
+def _large_page(*, group_raw: int, page_no: int, page_kind: int) -> bytes:
+    page = bytearray(8192)
+    page[0:4] = group_raw.to_bytes(4, "little")
+    page[4:8] = page_no.to_bytes(4, "little")
+    page[8:14] = b"\xff" * 6
+    page[14:20] = b"\xff" * 6
+    page[20:24] = page_kind.to_bytes(4, "little")
+    return bytes(page)
+
+
+def _leaf_page(*, page_no: int, value: int) -> bytes:
+    page = bytearray(_large_page(group_raw=6, page_no=page_no, page_kind=0x14))
+    page[0x62:0x73] = (
+        bytes.fromhex("00 11 00")
+        + value.to_bytes(4, "little", signed=True)
+        + b"\0" * (0x11 - 2 - 1 - 4)
+    )
+    return bytes(page)
 
 
 def _sysobject_table_name(table_id: int) -> bytes:

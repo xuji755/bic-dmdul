@@ -55,6 +55,12 @@ class CalibratedMetadata:
         return cls.from_dict(payload)
 
     @classmethod
+    def from_segment_manifest_file(cls, path: Path) -> "CalibratedMetadata":
+        with path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+        return cls.from_segment_manifest(payload)
+
+    @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "CalibratedMetadata":
         data_files = tuple(
             DataFileMeta(
@@ -67,6 +73,42 @@ class CalibratedMetadata:
         )
         tables = tuple(_table_from_dict(item) for item in payload.get("tables", []))
         return cls(data_files=data_files, tables=tables)
+
+    @classmethod
+    def from_segment_manifest(cls, payload: dict[str, Any]) -> "CalibratedMetadata":
+        owner, name = _split_qualified_name(str(payload["table"]))
+        segment = payload["segment"]
+        columns = tuple(
+            ColumnMeta(
+                name=str(column["name"]),
+                type_name=str(column["type_name"]).upper(),
+                length=_optional_int(column.get("length")),
+                scale=_optional_int(column.get("scale")),
+                nullable=bool(column.get("nullable", True)),
+            )
+            for column in payload.get("columns", [])
+        )
+        data_files = tuple(
+            DataFileMeta(
+                group_id=int(item["group_id"]),
+                file_no=int(item["file_no"]),
+                path=Path(item["path"]),
+                page_size=int(item.get("page_size", 8192)),
+            )
+            for item in payload.get("data_files", [])
+        )
+        table = TableMeta(
+            owner=owner,
+            name=name,
+            columns=columns,
+            storage=StorageRoot(
+                group_id=int(segment["group_id"]),
+                file_no=int(segment["root_file"]),
+                root_page=int(segment["root_page"]),
+                scan_pages=int(segment.get("scan_pages", 1)),
+            ),
+        )
+        return cls(data_files=data_files, tables=(table,))
 
     def find_table(self, qualified_name: str) -> TableMeta:
         normalized = qualified_name.upper()
@@ -111,3 +153,10 @@ def _optional_int(value: Any) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _split_qualified_name(value: str) -> tuple[str, str]:
+    if "." in value:
+        owner, name = value.split(".", 1)
+        return owner.upper(), name.upper()
+    return "SYSDBA", value.upper()

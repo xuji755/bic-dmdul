@@ -19,7 +19,7 @@ class OfflineResolverTest(unittest.TestCase):
                 b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
             )
             _write_dbf(system, _page0(group_raw=0, kind=0x13) + _system_payload())
-            _write_dbf(user_file, _page0(group_raw=6, kind=0x13))
+            user_file.write_bytes(_user_data_file_payload())
 
             resolved = resolve_offline_table_metadata(
                 database_dir=database_dir,
@@ -49,6 +49,12 @@ class OfflineResolverTest(unittest.TestCase):
         self.assertEqual(manifest["segment"]["group_id"], 6)
         self.assertEqual(manifest["segment"]["root_file"], 0)
         self.assertEqual(manifest["segment"]["root_page"], 80)
+        self.assertTrue(manifest["segment_root"]["identity_ok"])
+        self.assertEqual(manifest["segment_root"]["root_header"]["page_no"], 80)
+        self.assertEqual(
+            manifest["segment_root"]["candidate_page_refs"][0]["page_no"],
+            96,
+        )
         self.assertEqual(manifest["data_files"][0]["path"], str(user_file))
         control_files = manifest["control_file_data_files"]
         self.assertEqual(control_files["entries_total"], 2)
@@ -71,6 +77,31 @@ def _page0(*, group_raw: int, kind: int) -> bytes:
 
 def _write_dbf(path: Path, payload: bytes) -> None:
     path.write_bytes(payload + b"\0" * PAGE_SIZE)
+
+
+def _user_data_file_payload() -> bytes:
+    pages = [_page0(group_raw=6, kind=0x13)]
+    pages.extend(bytes(PAGE_SIZE) for _ in range(1, 80))
+    pages.append(_segment_root_page(group_raw=6, page_no=80, leaf_page=96))
+    pages.extend(bytes(PAGE_SIZE) for _ in range(81, 96))
+    pages.append(_page(group_raw=6, page_no=96, kind=0x14))
+    return b"".join(pages)
+
+
+def _segment_root_page(*, group_raw: int, page_no: int, leaf_page: int) -> bytes:
+    page = bytearray(_page(group_raw=group_raw, page_no=page_no, kind=0x15))
+    page[128:134] = (0).to_bytes(2, "little") + leaf_page.to_bytes(4, "little")
+    return bytes(page)
+
+
+def _page(*, group_raw: int, page_no: int, kind: int) -> bytes:
+    page = bytearray(PAGE_SIZE)
+    page[0:4] = group_raw.to_bytes(4, "little")
+    page[4:8] = page_no.to_bytes(4, "little")
+    page[8:14] = b"\xff" * 6
+    page[14:20] = b"\xff" * 6
+    page[20:24] = kind.to_bytes(4, "little")
+    return bytes(page)
 
 
 def _system_payload() -> bytes:

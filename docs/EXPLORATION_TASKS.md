@@ -110,6 +110,8 @@ to explain the underlying database structure.
 - [x] Confirm table storage entry uses `GROUPID`, `ROOTFILE`, `ROOTPAGE`.
 - [x] Confirm small tables can store rows directly in the root page.
 - [x] Confirm larger tables move rows to linked leaf pages.
+- [x] Capture segment root page-header identity and sampled candidate 6-byte
+  page references in the target-table segment manifest.
 - [ ] Decode root page child/leaf pointers.
 - [ ] Traverse linked leaf pages without scanning the whole file.
 - [ ] Decide fallback strategy: full segment scan when root traversal is not yet
@@ -257,6 +259,8 @@ dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
   decode errors, and current consistency diagnostics.
 - [ ] Extend extraction report artifact to include unsupported structures and
   transaction visibility diagnostics.
+- [x] Allow `extract-csv` to consume the target-table segment manifest produced
+  by `resolve-table --output`.
 
 ## H. Test Corpus
 

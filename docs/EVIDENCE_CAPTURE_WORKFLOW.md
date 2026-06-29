@@ -108,8 +108,25 @@ PYTHONPATH=src python3 -m dmdul.cli resolve-table \
 The segment manifest is derived from the copied `dm.ctl` file list and
 `SYSTEM.DBF` dictionary evidence. It records the matched control-file DBF
 manifest, target table object id, recovered columns, `SYSOBJECTS` child index,
-`SYSINDEXES` storage root, group/tablespace id, root file, and root page. Treat
-this as the handoff file between dictionary recovery and page/row extraction.
+`SYSINDEXES` storage root, group/tablespace id, root file, root page, segment
+root page-header identity, and sampled 6-byte page-reference candidates found
+inside the root page. Treat this as the handoff file between dictionary
+recovery and page/row extraction; the candidate references are evidence for
+BTREE/extent calibration, not yet decoded traversal semantics.
+
+The extractor can consume that handoff file directly:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli extract-csv \
+  --segment-json evidence/SYSDBA.DMDUL_MANY.segment.json \
+  --table SYSDBA.DMDUL_MANY \
+  --output evidence/SYSDBA.DMDUL_MANY.csv \
+  --report-output evidence/SYSDBA.DMDUL_MANY.extract.json
+```
+
+This still uses the manifest's transitional `scan_pages` window from the root
+page. Replacing that window with decoded root/leaf traversal remains required
+before claiming complete table extraction.
 
 If extraction reaches row decoding but any live row cannot be decoded, the
 report emits `diagnostic=row-decode-error` and `ok=false`; treat that CSV as
