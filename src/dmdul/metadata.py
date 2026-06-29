@@ -181,7 +181,8 @@ def _segment_manifest_page_numbers(payload: dict[str, Any]) -> tuple[int, ...]:
     segment_root = payload.get("segment_root")
     if not isinstance(segment_root, dict):
         return ()
-    pages = [root_page]
+    pages: list[int] = []
+    data_pages: list[int] = []
     for item in segment_root.get("candidate_page_refs", []):
         if not isinstance(item, dict):
             continue
@@ -189,7 +190,10 @@ def _segment_manifest_page_numbers(payload: dict[str, Any]) -> tuple[int, ...]:
             continue
         if item.get("target_page_kind_label") != "tentative-btree-data":
             continue
-        pages.append(int(item["page_no"]))
+        data_pages.append(int(item["page_no"]))
+    if _include_root_page_from_segment_manifest(segment_root, data_pages):
+        pages.append(root_page)
+    pages.extend(data_pages)
     return tuple(dict.fromkeys(pages))
 
 
@@ -200,19 +204,35 @@ def _segment_manifest_page_refs(payload: dict[str, Any]) -> tuple[StoragePageRef
     segment_root = payload.get("segment_root")
     if not isinstance(segment_root, dict):
         return ()
-    refs = [StoragePageRef(file_no=root_file, page_no=root_page)]
+    refs: list[StoragePageRef] = []
+    data_refs: list[StoragePageRef] = []
     for item in segment_root.get("candidate_page_refs", []):
         if not isinstance(item, dict):
             continue
         if item.get("target_page_kind_label") != "tentative-btree-data":
             continue
-        refs.append(
+        data_refs.append(
             StoragePageRef(
                 file_no=int(item["file_no"]),
                 page_no=int(item["page_no"]),
             )
         )
+    if _include_root_page_from_segment_manifest(segment_root, data_refs):
+        refs.append(StoragePageRef(file_no=root_file, page_no=root_page))
+    refs.extend(data_refs)
     return tuple(dict.fromkeys(refs))
+
+
+def _include_root_page_from_segment_manifest(
+    segment_root: dict[str, Any],
+    data_refs: list[Any],
+) -> bool:
+    root_header = segment_root.get("root_header")
+    if not data_refs:
+        return True
+    if not isinstance(root_header, dict):
+        return True
+    return root_header.get("page_kind_label") == "tentative-btree-data"
 
 
 def _storage_page_refs(storage: dict[str, Any]) -> tuple[StoragePageRef, ...]:

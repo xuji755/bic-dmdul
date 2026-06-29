@@ -211,6 +211,64 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"], ["50", "LEAF5"]])
 
+    def test_segment_manifest_page_plan_skips_non_data_root_when_leaf_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [_page(page_no=index, kind=0x14) for index in range(6)]
+            pages[0] = _page(page_no=0, kind=0x15)
+            pages[2] = _row_page(page_no=2, next_page=5, value=10, text="LEAF2")
+            pages[5] = _row_page(page_no=5, next_page=None, value=50, text="LEAF5")
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "manifest_walk.csv"
+            metadata = CalibratedMetadata.from_segment_manifest(
+                {
+                    "table": "SYSDBA.DMDUL_MANIFEST",
+                    "columns": [
+                        {"name": "ID", "type_name": "INT"},
+                        {"name": "V", "type_name": "VARCHAR"},
+                    ],
+                    "segment": {
+                        "group_id": 6,
+                        "root_file": 0,
+                        "root_page": 0,
+                        "scan_pages": 1,
+                    },
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "segment_root": {
+                        "root_header": {
+                            "page_kind_label": "tentative-segment-root",
+                        },
+                        "candidate_page_refs": [
+                            {
+                                "file_no": 0,
+                                "page_no": 2,
+                                "target_page_kind_label": "tentative-btree-data",
+                            }
+                        ],
+                    },
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_MANIFEST",
+                output=output_path,
+            )
+
+            self.assertEqual(report.rows_written, 2)
+            self.assertEqual(report.scanned_pages, (2, 5))
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+        self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"], ["50", "LEAF5"]])
+
     def test_reports_page_plan_identity_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

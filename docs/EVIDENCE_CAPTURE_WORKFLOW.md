@@ -136,11 +136,13 @@ PYTHONPATH=src python3 -m dmdul.cli extract-csv \
 When the segment manifest contains `segment_root.candidate_page_refs`, the
 extractor builds a page plan from the root page and same-file BTREE/data page
 candidates, then follows same-file `next_page` links between BTREE/data pages.
-The extraction report records the actual `scanned_pages`. If no segment-root
-page-reference evidence is present, the extractor falls back to the manifest's
-transitional `scan_pages` window from the root page. Replacing candidate
-matching with fully decoded root/leaf pointer semantics remains required before
-claiming complete table extraction.
+If BTREE/data candidates are present and the root header is not itself
+classified as a BTREE/data page, the root/header page is retained as evidence
+but excluded from the row scan. The extraction report records the actual
+`scanned_pages`. If no segment-root page-reference evidence is present, the
+extractor falls back to the manifest's transitional `scan_pages` window from
+the root page. Replacing candidate matching with fully decoded root/leaf pointer
+semantics remains required before claiming complete table extraction.
 If sampled root-page references point to pages that are not currently
 classified as BTREE/data pages, the segment manifest emits
 `diagnostic=segment-root-candidate-ref-non-data-page` and excludes those

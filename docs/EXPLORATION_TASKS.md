@@ -120,6 +120,8 @@ to explain the underlying database structure.
   extraction reports.
 - [x] Use segment manifest page-reference candidates plus same-file leaf
   `next_page` links as a conservative extraction page plan.
+- [x] Exclude non-BTREE/data segment root/header pages from row scanning when
+  BTREE/data leaf candidates are present in the manifest.
 - [x] Emit extraction diagnostics for page-plan identity mismatches, out-of-range
   pages, cycles, and missing files referenced by page links.
 - [x] Emit extraction diagnostics for unsupported column types before row
