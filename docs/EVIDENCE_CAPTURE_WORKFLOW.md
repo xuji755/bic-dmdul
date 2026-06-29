@@ -93,7 +93,10 @@ The verifier checks:
 - copied file existence;
 - copied file byte size if recorded;
 - copied file SHA-256 if recorded;
-- referenced evidence JSON existence and required top-level keys.
+- referenced evidence JSON existence;
+- whether each evidence JSON is a recognized `capture-evidence` or
+  `catalog-pages` output;
+- required top-level keys for the detected evidence type.
 
 ## 6. Promote Only Proven Fields
 

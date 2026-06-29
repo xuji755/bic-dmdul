@@ -104,6 +104,76 @@ class EvidenceCaptureTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["errors"], [])
+        self.assertEqual(result["evidence_files"][0]["type"], "capture-evidence")
+
+    def test_verify_evidence_manifest_accepts_page_catalog_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "SYSTEM.DBF"
+            data_file.write_bytes(b"abc")
+            catalog_json = root / "system_catalog.json"
+            catalog_json.write_text(
+                json.dumps(
+                    {
+                        "file": str(data_file),
+                        "page_size": 8192,
+                        "pages_total": 1,
+                        "scan": {"scanned_pages": 1},
+                        "page_kind_counts": {"zero": 1},
+                        "nonzero_samples": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "label": "unit",
+                        "copy_state": "clean-shutdown",
+                        "reference_output": ["reference.out"],
+                        "copied_files": [
+                            {
+                                "path": data_file.name,
+                                "bytes": 3,
+                                "sha256": hashlib.sha256(b"abc").hexdigest(),
+                            }
+                        ],
+                        "evidence_json": [catalog_json.name],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = verify_evidence_manifest(manifest)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["evidence_files"][0]["type"], "catalog-pages")
+
+    def test_verify_evidence_manifest_rejects_unknown_evidence_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "SYSTEM.DBF"
+            data_file.write_bytes(b"abc")
+            evidence_json = root / "unknown.json"
+            evidence_json.write_text(json.dumps({"file": str(data_file)}), encoding="utf-8")
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "label": "unit",
+                        "copy_state": "clean-shutdown",
+                        "copied_files": [{"path": data_file.name}],
+                        "evidence_json": [evidence_json.name],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = verify_evidence_manifest(manifest)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("not a recognized" in item for item in result["errors"]))
 
     def test_verify_evidence_manifest_reports_mismatches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

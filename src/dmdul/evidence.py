@@ -103,6 +103,7 @@ def verify_evidence_manifest(path: Path) -> dict[str, Any]:
 
     errors: list[str] = []
     warnings: list[str] = []
+    evidence_files: list[dict[str, Any]] = []
 
     label = manifest.get("label")
     if not isinstance(label, str) or not label:
@@ -137,6 +138,7 @@ def verify_evidence_manifest(path: Path) -> dict[str, Any]:
                 item=item,
                 index=index,
                 errors=errors,
+                evidence_files=evidence_files,
             )
 
     reference_output = manifest.get("reference_output", [])
@@ -148,6 +150,7 @@ def verify_evidence_manifest(path: Path) -> dict[str, Any]:
         "ok": not errors,
         "errors": errors,
         "warnings": warnings,
+        "evidence_files": evidence_files,
     }
 
 
@@ -251,6 +254,7 @@ def _verify_evidence_json_ref(
     item: Any,
     index: int,
     errors: list[str],
+    evidence_files: list[dict[str, Any]],
 ) -> None:
     if not isinstance(item, str) or not item:
         errors.append(f"evidence_json[{index}] must be a path string")
@@ -265,10 +269,42 @@ def _verify_evidence_json_ref(
     except json.JSONDecodeError as exc:
         errors.append(f"evidence_json[{index}] is invalid JSON: {exc}")
         return
-    required = ("file", "page_size", "captured_pages", "markers")
+    evidence_type, required = _classify_evidence_payload(payload)
+    if evidence_type is None:
+        errors.append(
+            f"evidence_json[{index}] is not a recognized dmdul evidence file"
+        )
+        return
     for key in required:
         if key not in payload:
             errors.append(f"evidence_json[{index}] missing key: {key}")
+    evidence_files.append(
+        {
+            "path": str(evidence_path),
+            "type": evidence_type,
+            "file": payload.get("file"),
+        }
+    )
+
+
+def _classify_evidence_payload(payload: Any) -> tuple[str | None, tuple[str, ...]]:
+    if not isinstance(payload, dict):
+        return None, ()
+    if "captured_pages" in payload or "markers" in payload:
+        return "capture-evidence", ("file", "page_size", "captured_pages", "markers")
+    if "page_kind_counts" in payload or "nonzero_samples" in payload:
+        return (
+            "catalog-pages",
+            (
+                "file",
+                "page_size",
+                "pages_total",
+                "scan",
+                "page_kind_counts",
+                "nonzero_samples",
+            ),
+        )
+    return None, ()
 
 
 def _manifest_path(root: Path, value: str) -> Path:
