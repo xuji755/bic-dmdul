@@ -40,6 +40,106 @@ The row layout observed for this five-column all-non-null table is:
 This confirms that rows are not stored by blindly concatenating columns in SQL
 column order. Fixed-width and variable-width regions must be decoded separately.
 
+## Row Structure Working Model
+
+Current all-non-null row evidence supports this working structure:
+
+```text
+row_head
+fixed_area
+variable_area
+row_tail_or_control
+```
+
+It is therefore not correct to model every row as:
+
+```text
+row_head, col1_length, col1, col2_length, col2, ...
+```
+
+That pattern applies only inside the variable area. Fixed-width columns are
+stored first, without a per-column length prefix. Variable-width columns then
+follow in column order among the variable-width subset, each with the compact
+length prefix already observed for `VARCHAR`.
+
+Observed examples:
+
+### Five-column `DMDUL_NUM38_STORE`
+
+Columns:
+
+```text
+ID INT, N38 NUMBER(38), D DATE, TS TIMESTAMP, MARKER VARCHAR(64)
+```
+
+Observed row structure:
+
+```text
+row_head      4 bytes
+fixed_area    ID(4), D(3), TS(8)
+variable_area N38(varlen), MARKER(varlen)
+tail          19 bytes, not decoded yet
+```
+
+Row 1 (`ID=1`, zero number, minimum date marker):
+
+```text
+head          00 3c 00 00
+ID            01 00 00 00
+D             01 80 08
+TS            01 80 08 00 00 00 00 00
+N38           81 80
+MARKER        93 4e 55 4d 33 38 5f 5a 45 52 4f 5f 44 41 54 45 5f 4d 49 4e
+tail          01 00 00 00 00 00 ff ff ff ff 7f ff ff b0 42 35 04 00 00
+```
+
+### Seventeen-column `DMDUL_TYPE_STORE`
+
+Columns include fixed numeric/date/time fields and variable
+`NUMBER/DECIMAL/CHAR/VARCHAR/CLOB/BLOB/MARKER` fields.
+
+Observed row structure:
+
+```text
+row_head      7 bytes
+fixed_area    ID, TINYINT, SMALLINT, INT, BIGINT, FLOAT, DOUBLE, DATE, TIME, TIMESTAMP
+variable_area NUMBER, DECIMAL, CHAR, VARCHAR, CLOB locator, BLOB locator, MARKER
+tail          19 bytes, not decoded yet
+```
+
+For row 3:
+
+```text
+head          01 31 00 00 00 00 00
+ID            03 00 00 00
+C_TINY        7f
+C_SMALL       ff 7f
+C_INT         ff ff ff 7f
+C_BIG         ff ff ff ff ff ff ff 7f
+C_FLOAT       00 00 00 00 00 00 f8 3f
+C_DOUBLE      00 00 00 00 00 00 02 40
+C_DATE        ea 07 f3
+C_TIME        6a 61 00 00 00
+C_TS          ea 07 f3 6a 61 e2 f7 13
+C_NUM         90 ca 0d 23 39 4f 5b 0d 23 39 4f 5b 0d 23 39 4f 5b
+C_DEC         8a c7 0d 23 39 4f 5b 0d 23 39 4f
+C_CHAR        83 50 4f 53
+C_VC          00 82 <130 bytes of 0x50>
+C_CLOB        9e 01 33 a6 06 00 00 00 00 00 11 00 00 00 ...
+C_BLOB        91 01 34 a6 06 00 00 00 00 00 04 00 00 00 ca fe ba be
+MARKER        8e 54 59 50 45 5f 53 54 4f 52 45 5f 50 4f 53
+tail          03 00 00 00 00 00 ff ff ff ff 7f ff ff b9 41 35 04 00 00
+```
+
+Open points before this becomes a complete row decoder:
+
+- identify exact row-head bits beyond length/delete status;
+- decode nonzero row metadata for NULL columns;
+- decode the 19-byte row tail/control region;
+- confirm whether fixed and variable partitioning changes for nullable,
+  updated, compressed, or chained rows;
+- decode LOB locator fields rather than treating them as opaque variable values.
+
 ## NUMBER(38)
 
 `NUMBER(38)` is stored as a variable-length base-100 numeric payload.
