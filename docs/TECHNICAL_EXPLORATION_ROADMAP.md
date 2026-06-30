@@ -13,6 +13,26 @@ and headers. It must skip deleted, rolled-back, and uncommitted row versions
 when that state can be determined. If a required structure is unknown, the tool
 must fail in strict mode instead of silently returning partial data.
 
+## Required Bootstrap Workflow
+
+The implementation must follow this offline recovery sequence:
+
+1. Read the copied control metadata and data-file headers, then write
+   `control.ctl` as `tablespace_id,file_id,full_local_path`. This file is an
+   extraction-time map and may be generated from `dm.ctl`, generated from copied
+   DBF headers, or hand-written when the original control file is unavailable.
+2. Identify the SYSTEM data file that stores dictionary tables, then extract
+   dictionary rows for USER, TABLE, and COLUMN into `user.dict`, `tab.dict`, and
+   `col.dict`. Target-table name scans are only an interim heuristic, not a
+   complete bootstrap.
+3. Decode data block structures before trusting row extraction. The page parser
+   must identify page kind, segment/table identity, relevant transaction fields,
+   and page-to-page references.
+4. Decode row structures and type storage before broad CSV extraction. The row
+   parser must distinguish live, deleted, updated, locked, and undo-dependent
+   rows, and must decode ordinary scalar types plus reject or follow LOB/overflow
+   structures according to explicit evidence.
+
 ## Correctness Tiers
 
 Tier 1: cold-consistent files.

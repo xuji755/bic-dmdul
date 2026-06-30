@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .bootstrap import build_bootstrap_dicts
 from .control_file import compare_control_files, summarize_control_file
+from .control_map import write_control_ctl
 from .database_summary import summarize_database_dir
 from .discovery import discover_data_files
 from .evidence import (
@@ -191,6 +192,21 @@ def _cmd_compare_control_files(args: argparse.Namespace) -> int:
     else:
         print(payload)
     return 0
+
+
+def _cmd_write_control_ctl(args: argparse.Namespace) -> int:
+    manifest = write_control_ctl(
+        database_dir=Path(args.database_dir),
+        output=Path(args.output),
+        page_size=args.page_size,
+        sample_limit=args.sample_limit,
+    )
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        print(f"output={manifest['output']}")
+        print(f"rows={manifest['rows_total']}")
+    return 0 if manifest["rows_total"] else 1
 
 
 def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
@@ -741,6 +757,16 @@ def build_parser() -> argparse.ArgumentParser:
     compare_control_files_parser.add_argument("--sample-limit", type=int, default=64)
     compare_control_files_parser.add_argument("--output")
     compare_control_files_parser.set_defaults(func=_cmd_compare_control_files)
+
+    write_control = subparsers.add_parser(
+        "write-control-ctl",
+        help="write extraction-time control.ctl as tablespace_id,file_id,path rows",
+    )
+    write_control.add_argument("database_dir")
+    write_control.add_argument("--output", required=True)
+    write_control.add_argument("--sample-limit", type=int, default=8)
+    write_control.add_argument("--json", action="store_true")
+    write_control.set_defaults(func=_cmd_write_control_ctl)
 
     bootstrap_dicts = subparsers.add_parser(
         "bootstrap-dicts",

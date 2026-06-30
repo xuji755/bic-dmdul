@@ -74,8 +74,18 @@ to explain the underlying database structure.
   `--preflight-output`.
 - [x] Add a `bootstrap-dicts` command that materializes the bootstrap artifact
   set (`file.dict`, `user.dict`, `tab.dict`, `col.dict`) and writes a manifest.
+- [x] Generate extraction-time `control.ctl` rows in the format
+  `tablespace_id,file_id,full_local_path`, using local copied DBF paths and DBF
+  page-0 headers so the file can also be hand-written when `dm.ctl` is absent.
 - [x] Allow `bootstrap-dicts --table` to populate `user.dict`, `tab.dict`, and
   `col.dict` for a requested table using current SYSTEM.DBF heuristic scans.
+- [ ] Replace target-table heuristic bootstrap with full SYSTEM dictionary
+  extraction:
+  - locate USER/TABLE/COLUMN dictionary table segments from SYSTEM metadata
+  - scan those dictionary table segments without a target table name
+  - write complete `user.dict`, `tab.dict`, and `col.dict`
+  - include table object id, storage index id, tablespace id, file id, root page,
+    column id, type id/name, precision, scale, length, nullable, and ordering
 
 ## B. Page Header And Space Management
 
@@ -93,6 +103,11 @@ to explain the underlying database structure.
   - BTREE/leaf data page
   - internal/metadata page
   - free/empty initialized page
+- [ ] Decode table/object identity fields from data page headers, including the
+  field that proves a page belongs to a target table object or segment.
+- [ ] Decode transaction and visibility fields from data page headers, including
+  page-level change counters, transaction references, and rollback/undo pointers
+  if present.
 - [ ] Decode page-level row count, free-space offset, slot directory offset, and
   object/storage id fields.
 - [ ] Decode file or extent bitmap pages enough to distinguish allocated and
@@ -242,17 +257,32 @@ to explain the underlying database structure.
 - [x] Reject non-zero observed row metadata bytes before column payload until
   NULL bitmap, column directory, and transaction flags are decoded.
 - [ ] Decode `CHAR` padding rules.
+- [ ] Decode signed integer family storage precisely:
+  - `TINYINT`
+  - `SMALLINT`
+  - `INTEGER`
+  - `BIGINT`
 - [ ] Decode `DATE`.
 - [ ] Decode `TIME`.
 - [ ] Decode `TIMESTAMP`.
+- [ ] Decode timestamp variants, including fractional precision and timezone
+  variants if present in DM row-store tables.
 - [ ] Decode `DECIMAL/NUMBER`.
 - [ ] Decode `FLOAT` precisely and distinguish DM `FLOAT` from double storage.
+- [ ] Decode LOB locator inline structure and decide when BLOB/CLOB data can be
+  followed offline versus rejected as unsupported.
 - [ ] Decode update and delete row status flags precisely.
 - [ ] Decode row transaction/MVCC fields:
   - inserting/updating transaction id
   - commit/visibility SCN or equivalent
   - lock/active transaction marker
   - undo pointer
+- [ ] Distinguish row states in parser output:
+  - visible live row
+  - committed deleted row
+  - committed old update version
+  - uncommitted locked row
+  - row that requires UNDO before-image lookup
 - [ ] Decode row chaining, overflow rows, and LOB locators enough to detect or
   reject unsupported rows.
 
@@ -262,6 +292,10 @@ to explain the underlying database structure.
 - [ ] Decode undo segment headers.
 - [ ] Decode undo page headers.
 - [ ] Decode undo record headers and before-image payloads.
+- [ ] Decode how a row points to its undo record, including file/page/slot or
+  equivalent address fields.
+- [ ] Follow PRE IMAGE chains for updated/deleted rows and reconstruct the
+  logically visible row image for the chosen extraction snapshot.
 - [ ] Decode transaction table/status metadata.
 - [ ] Build visibility rules for:
   - committed insert

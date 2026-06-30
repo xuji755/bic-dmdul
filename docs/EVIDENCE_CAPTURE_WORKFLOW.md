@@ -108,6 +108,8 @@ The first recovery phase is bootstrap:
 
 The bootstrap artifact set is:
 
+- `control.ctl`: extraction-time file map, one CSV row per data file:
+  `tablespace_id,file_id,full_local_path`;
 - `file.dict`: database file and tablespace/file-number evidence;
 - `user.dict`: decoded user/schema dictionary rows;
 - `tab.dict`: decoded table/object dictionary rows;
@@ -124,6 +126,19 @@ PYTHONPATH=src python3 -m dmdul.cli bootstrap-dicts \
   --output-dir evidence/bootstrap \
   --table SYSDBA.DMDUL_MANY
 ```
+
+`control.ctl` can also be generated directly:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli write-control-ctl \
+  /dmdata/data/DAMENG \
+  --output evidence/bootstrap/control.ctl
+```
+
+The paths in `control.ctl` are the local offline-copy paths used for extraction.
+They do not need to match the original paths embedded in `dm.ctl`; if `dm.ctl`
+is unavailable, the same file can be written by scanning copied DBF page-0
+headers.
 
 Without `--table`, `user.dict`, `tab.dict`, and `col.dict` are explicit empty
 artifacts. With `--table`, their rows are marked

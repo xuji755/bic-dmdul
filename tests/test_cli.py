@@ -34,6 +34,73 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["path"], str(control))
         self.assertEqual(payload["dbf_path_hints"], ["/dmdata/data/DAMENG/SYSTEM.DBF"])
 
+    def test_write_control_ctl_writes_local_file_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "control.ctl"
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/original/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/original/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(_large_page0(group_raw=0, page_kind=0x13))
+            (root / "DMDUL_TS01.DBF").write_bytes(_large_page0(group_raw=6, page_kind=0x13))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "write-control-ctl",
+                    str(root),
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+            rows = list(csv.reader(output.read_text(encoding="utf-8").splitlines()))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["rows_total"], 2)
+        self.assertEqual(
+            rows,
+            [
+                ["0", "0", str(root / "SYSTEM.DBF")],
+                ["6", "0", str(root / "DMDUL_TS01.DBF")],
+            ],
+        )
+
+    def test_write_control_ctl_without_dm_ctl_uses_dbf_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "control.ctl"
+            (root / "SYSTEM.DBF").write_bytes(_large_page0(group_raw=0, page_kind=0x13))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "write-control-ctl",
+                    str(root),
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+            control_ctl_text = output.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(control_ctl_text, f"0,0,{root / 'SYSTEM.DBF'}\n")
+        self.assertEqual(payload["diagnostics"][0]["code"], "control-ctl-without-dm-ctl")
+
     def test_preflight_database_writes_json_and_returns_nonzero_on_fatal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -225,6 +292,7 @@ class CliTest(unittest.TestCase):
                 name: (output_dir / name).exists()
                 for name in (
                     "bootstrap_manifest.json",
+                    "control.ctl",
                     "user.dict",
                     "tab.dict",
                     "col.dict",
@@ -233,6 +301,7 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(manifest["mode"], "dm-bootstrap-dicts")
+        self.assertEqual(manifest["rows"]["control.ctl"], 2)
         self.assertEqual(manifest["rows"]["file.dict"], 2)
         self.assertEqual(manifest["rows"]["user.dict"], 1)
         self.assertEqual(manifest["rows"]["tab.dict"], 1)
@@ -241,6 +310,7 @@ class CliTest(unittest.TestCase):
             artifact_exists,
             {
                 "bootstrap_manifest.json": True,
+                "control.ctl": True,
                 "user.dict": True,
                 "tab.dict": True,
                 "col.dict": True,

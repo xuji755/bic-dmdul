@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .control_map import write_control_ctl
 from .database_summary import summarize_database_dir
 from .resolver import OfflineResolveError, resolve_offline_table_metadata
 
@@ -38,6 +39,13 @@ def build_bootstrap_dicts(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dict_paths = {name: output_dir / name for name in DICT_FILENAMES}
+    control_ctl_path = output_dir / "control.ctl"
+    control_ctl_manifest = write_control_ctl(
+        database_dir=database_dir,
+        output=control_ctl_path,
+        page_size=page_size,
+        sample_limit=sample_limit,
+    )
     file_rows = _file_dict_rows(summary)
     user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_for_tables(
         database_dir=database_dir,
@@ -55,8 +63,10 @@ def build_bootstrap_dicts(
         "mode": "dm-bootstrap-dicts",
         "database_dir": str(database_dir),
         "page_size": page_size,
+        "control_ctl": str(control_ctl_path),
         "dict_files": {name: str(path) for name, path in dict_paths.items()},
         "rows": {
+            "control.ctl": control_ctl_manifest["rows_total"],
             "file.dict": len(file_rows),
             "user.dict": len(user_rows),
             "tab.dict": len(table_rows),
@@ -67,7 +77,7 @@ def build_bootstrap_dicts(
                 "step": 1,
                 "name": "read-control-file-and-data-files",
                 "status": "ok" if file_rows else "incomplete",
-                "output": "file.dict",
+                "output": ["control.ctl", "file.dict"],
             },
             {
                 "step": 2,
@@ -90,6 +100,7 @@ def build_bootstrap_dicts(
         "diagnostics": _bootstrap_diagnostics(
             summary,
             file_rows,
+            control_ctl_manifest=control_ctl_manifest,
             requested_tables=tables,
             table_diagnostics=table_diagnostics,
         ),
@@ -283,10 +294,14 @@ def _bootstrap_diagnostics(
     summary: dict[str, Any],
     file_rows: list[dict[str, Any]],
     *,
+    control_ctl_manifest: dict[str, Any],
     requested_tables: tuple[str, ...],
     table_diagnostics: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
+    for item in control_ctl_manifest.get("diagnostics", ()):
+        if isinstance(item, dict):
+            diagnostics.append(item)
     if not file_rows:
         diagnostics.append(
             {
