@@ -8,7 +8,7 @@ from typing import Any
 from .decode import DecodeError, SUPPORTED_OBSERVED_TYPE_NAMES, decode_observed_row_values
 from .metadata import CalibratedMetadata, ColumnMeta, StoragePageRef, TableMeta
 from .page import ObservedPageHeader
-from .row import scan_observed_row_chain
+from .row import iter_observed_rows_by_slots, scan_observed_row_chain
 from .storage import DataFile
 
 
@@ -111,11 +111,12 @@ def extract_csv_with_calibrated_metadata(
             page_no = page_ref.page_no
             page_file = data_files[page_ref.file_no]
             page = page_file.read_page(page_no)
-            rows = scan_observed_row_chain(page)
+            physical_rows = scan_observed_row_chain(page)
+            rows_skipped_deleted += sum(1 for row in physical_rows if row.is_deleted)
+            rows = iter_observed_rows_by_slots(page) or [
+                row for row in physical_rows if not row.is_deleted
+            ]
             for row in rows:
-                if row.is_deleted:
-                    rows_skipped_deleted += 1
-                    continue
                 try:
                     values = decode_observed_row_values(row, table.columns)
                 except DecodeError as exc:

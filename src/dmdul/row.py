@@ -172,6 +172,40 @@ def scan_observed_row_chain(
     return rows
 
 
+def iter_observed_rows_by_slots(
+    page: bytes,
+    *,
+    start_offset: int = 0x62,
+    max_rows: int = 4096,
+) -> list[ObservedRow]:
+    """Return active rows using the observed page-tail slot directory.
+
+    The current slot decoder is deliberately conservative: it first scans the
+    physical row chain to know valid row starts, then accepts only tail slot
+    values that point to those starts. If no slot entries are found, callers can
+    still use `scan_observed_row_chain` as a fallback.
+    """
+
+    physical_rows = scan_observed_row_chain(
+        page,
+        start_offset=start_offset,
+        max_rows=max_rows,
+    )
+    rows_by_offset = {row.page_offset: row for row in physical_rows}
+    slot_offsets = find_observed_row_slots(
+        page,
+        row_start_offsets=set(rows_by_offset),
+        search_start_offset=_slot_search_start_offset(page),
+    )
+    if not slot_offsets:
+        return []
+    return [
+        rows_by_offset[offset]
+        for offset in reversed(slot_offsets)
+        if offset in rows_by_offset and not rows_by_offset[offset].is_deleted
+    ]
+
+
 def find_observed_row_slots(
     page: bytes,
     *,
@@ -191,3 +225,7 @@ def find_observed_row_slots(
         if value in row_start_offsets:
             slots.append((offset, value))
     return [value for _, value in slots]
+
+
+def _slot_search_start_offset(page: bytes) -> int:
+    return max(0, len(page) - 512)

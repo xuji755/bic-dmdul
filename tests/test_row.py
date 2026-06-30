@@ -6,6 +6,7 @@ from dmdul.row import (
     decode_observed_var_length,
     describe_observed_row_layout,
     find_observed_row_slots,
+    iter_observed_rows_by_slots,
     iter_observed_rows,
     scan_observed_row_chain,
 )
@@ -155,6 +156,18 @@ class ObservedRowSlotTest(unittest.TestCase):
         )
 
         self.assertEqual(slots, [0x66, 0x62])
+
+    def test_iter_rows_by_slots_returns_live_rows_in_forward_order(self) -> None:
+        page = bytearray(b"\0" * 256)
+        page[0x62:0x66] = bytes.fromhex("00 04 01 02")
+        page[0x66:0x6A] = bytes.fromhex("80 04 03 04")
+        page[0x6A:0x6E] = bytes.fromhex("00 04 05 06")
+        page[0xF8:0xFC] = bytes.fromhex("6a 00 62 00")
+
+        rows = iter_observed_rows_by_slots(bytes(page), max_rows=3)
+
+        self.assertEqual([row.page_offset for row in rows], [0x62, 0x6A])
+        self.assertEqual([row.is_deleted for row in rows], [False, False])
 
 
 def _observed_row(data: bytes) -> ObservedRow:

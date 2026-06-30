@@ -167,6 +167,13 @@ free space. The surrounding slot metadata is not fully decoded yet, so this
 should be treated as a row-start pointer list, not yet a complete slot record
 format.
 
+For normal page row scanning, this pointer list is the preferred path: use the
+slot directory to reach active row heads directly, then use the physical row
+chain only as fallback and calibration evidence. In the committed-delete sample
+on page `208`, the deleted physical row at offset `135` remains in the row
+chain with a high-bit delete flag in its row head, but the page-tail slot list
+contains only live row offsets `174` and `98`.
+
 ## NUMBER(38)
 
 `NUMBER(38)` is stored as a variable-length base-100 numeric payload.
