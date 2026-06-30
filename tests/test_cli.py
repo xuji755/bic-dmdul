@@ -179,10 +179,12 @@ class CliTest(unittest.TestCase):
             output_dir = root / "dicts"
             (root / "dm.ctl").write_bytes(
                 b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
-                b"DATAFILE=/dmdata/data/DAMENG/MAIN.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
             )
-            (root / "SYSTEM.DBF").write_bytes(_large_page0(group_raw=0, page_kind=0x13))
-            (root / "MAIN.DBF").write_bytes(_large_page0(group_raw=6, page_kind=0x13))
+            (root / "SYSTEM.DBF").write_bytes(
+                _large_page0(group_raw=0, page_kind=0x13) + _system_payload()
+            )
+            (root / "DMDUL_TS01.DBF").write_bytes(_user_data_file_payload())
 
             parser = build_parser()
             args = parser.parse_args(
@@ -193,6 +195,8 @@ class CliTest(unittest.TestCase):
                     str(root),
                     "--output-dir",
                     str(output_dir),
+                    "--table",
+                    "SYSDBA.DMDUL_MANY",
                     "--json",
                 ]
             )
@@ -203,6 +207,18 @@ class CliTest(unittest.TestCase):
             file_rows = [
                 json.loads(line)
                 for line in (output_dir / "file.dict").read_text(encoding="utf-8").splitlines()
+            ]
+            user_rows = [
+                json.loads(line)
+                for line in (output_dir / "user.dict").read_text(encoding="utf-8").splitlines()
+            ]
+            table_rows = [
+                json.loads(line)
+                for line in (output_dir / "tab.dict").read_text(encoding="utf-8").splitlines()
+            ]
+            column_rows = [
+                json.loads(line)
+                for line in (output_dir / "col.dict").read_text(encoding="utf-8").splitlines()
             ]
             rows_by_name = {row["basename"]: row for row in file_rows}
             artifact_exists = {
@@ -218,7 +234,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(manifest["mode"], "dm-bootstrap-dicts")
         self.assertEqual(manifest["rows"]["file.dict"], 2)
-        self.assertEqual(manifest["rows"]["user.dict"], 0)
+        self.assertEqual(manifest["rows"]["user.dict"], 1)
+        self.assertEqual(manifest["rows"]["tab.dict"], 1)
+        self.assertEqual(manifest["rows"]["col.dict"], 1)
         self.assertEqual(
             artifact_exists,
             {
@@ -229,14 +247,19 @@ class CliTest(unittest.TestCase):
             },
         )
         self.assertTrue(rows_by_name["SYSTEM.DBF"]["system_candidate"])
-        self.assertEqual(rows_by_name["MAIN.DBF"]["group_id"], 6)
+        self.assertEqual(rows_by_name["DMDUL_TS01.DBF"]["group_id"], 6)
         self.assertEqual(
-            rows_by_name["MAIN.DBF"]["control_file_entries"][0]["basename"],
-            "main.dbf",
+            rows_by_name["DMDUL_TS01.DBF"]["control_file_entries"][0]["basename"],
+            "dmdul_ts01.dbf",
         )
+        self.assertEqual(user_rows[0]["owner"], "SYSDBA")
+        self.assertEqual(table_rows[0]["qualified_name"], "SYSDBA.DMDUL_MANY")
+        self.assertEqual(table_rows[0]["root_page"], 80)
+        self.assertEqual(column_rows[0]["name"], "ID")
+        self.assertEqual(column_rows[0]["type_name"], "INT")
         self.assertEqual(
             manifest["steps"][2]["status"],
-            "not-yet-implemented",
+            "heuristic-output",
         )
 
     def test_resolve_table_writes_segment_manifest(self) -> None:

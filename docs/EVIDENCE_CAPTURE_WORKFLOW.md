@@ -114,18 +114,22 @@ The bootstrap artifact set is:
 - `col.dict`: decoded column dictionary rows.
 
 Current code can materialize the artifact set and populate `file.dict` from
-control-file evidence plus DBF page-0 headers:
+control-file evidence plus DBF page-0 headers. When one or more target tables
+are supplied, it also writes current heuristic SYSTEM.DBF results into
+`user.dict`, `tab.dict`, and `col.dict`:
 
 ```sh
 PYTHONPATH=src python3 -m dmdul.cli bootstrap-dicts \
   /dmdata/data/DAMENG \
-  --output-dir evidence/bootstrap
+  --output-dir evidence/bootstrap \
+  --table SYSDBA.DMDUL_MANY
 ```
 
-`user.dict`, `tab.dict`, and `col.dict` are created as explicit empty artifacts
-until the SYSTEM dictionary row layouts are fully decoded. The accompanying
-`bootstrap_manifest.json` records that status so later recovery steps do not
-mistake heuristic or missing dictionary data for a complete bootstrap.
+Without `--table`, `user.dict`, `tab.dict`, and `col.dict` are explicit empty
+artifacts. With `--table`, their rows are marked
+`source=heuristic-system-scan`; the accompanying `bootstrap_manifest.json`
+records that status so later recovery steps do not mistake the current
+heuristic dictionary output for a complete decoded SYSTEM dictionary bootstrap.
 
 Before extracting a target table, persist the offline dictionary and segment
 resolution:

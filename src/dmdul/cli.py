@@ -200,6 +200,9 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         page_size=args.page_size,
         catalog_pages=args.catalog_pages,
         sample_limit=args.sample_limit,
+        tables=tuple(args.table or ()),
+        owner=args.owner,
+        scan_pages=args.scan_pages,
     )
     if args.json:
         print(json.dumps(manifest, indent=2))
@@ -752,6 +755,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="pages to sample per file while building the bootstrap summary",
     )
     bootstrap_dicts.add_argument("--sample-limit", type=int, default=8)
+    bootstrap_dicts.add_argument(
+        "--table",
+        action="append",
+        help="target table to resolve into user.dict/tab.dict/col.dict; repeatable",
+    )
+    bootstrap_dicts.add_argument("--owner")
+    bootstrap_dicts.add_argument("--scan-pages", type=int, default=64)
     bootstrap_dicts.add_argument("--json", action="store_true")
     bootstrap_dicts.set_defaults(func=_cmd_bootstrap_dicts)
 

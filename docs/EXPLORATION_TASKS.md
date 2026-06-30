@@ -74,6 +74,8 @@ to explain the underlying database structure.
   `--preflight-output`.
 - [x] Add a `bootstrap-dicts` command that materializes the bootstrap artifact
   set (`file.dict`, `user.dict`, `tab.dict`, `col.dict`) and writes a manifest.
+- [x] Allow `bootstrap-dicts --table` to populate `user.dict`, `tab.dict`, and
+  `col.dict` for a requested table using current SYSTEM.DBF heuristic scans.
 
 ## B. Page Header And Space Management
 

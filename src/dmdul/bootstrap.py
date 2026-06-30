@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .database_summary import summarize_database_dir
+from .resolver import OfflineResolveError, resolve_offline_table_metadata
 
 
 DICT_FILENAMES = ("file.dict", "user.dict", "tab.dict", "col.dict")
@@ -17,6 +18,9 @@ def build_bootstrap_dicts(
     page_size: int = 8192,
     catalog_pages: int = 0,
     sample_limit: int = 8,
+    tables: tuple[str, ...] = (),
+    owner: str | None = None,
+    scan_pages: int = 64,
 ) -> dict[str, Any]:
     """Write first-stage bootstrap dictionary artifacts.
 
@@ -35,9 +39,17 @@ def build_bootstrap_dicts(
 
     dict_paths = {name: output_dir / name for name in DICT_FILENAMES}
     file_rows = _file_dict_rows(summary)
+    user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_for_tables(
+        database_dir=database_dir,
+        tables=tables,
+        owner=owner,
+        page_size=page_size,
+        scan_pages=scan_pages,
+    )
     _write_jsonl(dict_paths["file.dict"], file_rows)
-    for name in ("user.dict", "tab.dict", "col.dict"):
-        _write_jsonl(dict_paths[name], ())
+    _write_jsonl(dict_paths["user.dict"], user_rows)
+    _write_jsonl(dict_paths["tab.dict"], table_rows)
+    _write_jsonl(dict_paths["col.dict"], column_rows)
 
     manifest = {
         "mode": "dm-bootstrap-dicts",
@@ -46,9 +58,9 @@ def build_bootstrap_dicts(
         "dict_files": {name: str(path) for name, path in dict_paths.items()},
         "rows": {
             "file.dict": len(file_rows),
-            "user.dict": 0,
-            "tab.dict": 0,
-            "col.dict": 0,
+            "user.dict": len(user_rows),
+            "tab.dict": len(table_rows),
+            "col.dict": len(column_rows),
         },
         "steps": [
             {
@@ -66,11 +78,21 @@ def build_bootstrap_dicts(
             {
                 "step": 3,
                 "name": "dump-user-table-column-dictionaries",
-                "status": "not-yet-implemented",
+                "status": _dictionary_dump_status(
+                    requested_tables=tables,
+                    table_rows=table_rows,
+                    diagnostics=table_diagnostics,
+                ),
                 "output": ["user.dict", "tab.dict", "col.dict"],
             },
         ],
-        "diagnostics": _bootstrap_diagnostics(summary, file_rows),
+        "requested_tables": list(tables),
+        "diagnostics": _bootstrap_diagnostics(
+            summary,
+            file_rows,
+            requested_tables=tables,
+            table_diagnostics=table_diagnostics,
+        ),
         "database_summary": summary,
     }
     manifest_path = output_dir / "bootstrap_manifest.json"
@@ -105,6 +127,130 @@ def _file_dict_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _dictionary_rows_for_tables(
+    *,
+    database_dir: Path,
+    tables: tuple[str, ...],
+    owner: str | None,
+    page_size: int,
+    scan_pages: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    user_by_owner: dict[str, dict[str, Any]] = {}
+    table_rows: list[dict[str, Any]] = []
+    column_rows: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    for table_name in tables:
+        try:
+            resolution = resolve_offline_table_metadata(
+                database_dir=database_dir,
+                table_name=table_name,
+                page_size=page_size,
+                owner=owner,
+                scan_pages=scan_pages,
+            )
+        except OfflineResolveError as exc:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "code": "bootstrap-table-dictionary-resolve-failed",
+                    "table": table_name,
+                    "message": str(exc),
+                }
+            )
+            continue
+        owner_name = resolution.table.owner
+        user_by_owner.setdefault(
+            owner_name,
+            {
+                "dict_type": "user",
+                "owner": owner_name,
+                "source": "heuristic-system-scan",
+                "schema_id": None,
+                "status": "schema-id-not-decoded",
+            },
+        )
+        table_rows.append(_table_dict_row(resolution))
+        column_rows.extend(_column_dict_rows(resolution))
+    return list(user_by_owner.values()), table_rows, column_rows, diagnostics
+
+
+def _table_dict_row(resolution: Any) -> dict[str, Any]:
+    return {
+        "dict_type": "table",
+        "owner": resolution.table.owner,
+        "name": resolution.table.name,
+        "qualified_name": resolution.table.qualified_name,
+        "object_id": resolution.table_object_id,
+        "storage_index_id": resolution.index_child.index_id,
+        "group_id": resolution.table.storage.group_id,
+        "root_file": resolution.table.storage.file_no,
+        "root_page": resolution.table.storage.root_page,
+        "scan_pages": resolution.table.storage.scan_pages,
+        "source": "heuristic-system-scan",
+        "sysobjects": {
+            "offset": resolution.table_object.offset,
+            "page_no": resolution.table_object.page_no,
+            "page_offset": resolution.table_object.page_offset,
+            "score": resolution.table_object.score,
+        },
+        "sysobject_index_child": {
+            "name": resolution.index_child.name,
+            "offset": resolution.index_child.offset,
+            "page_no": resolution.index_child.page_no,
+            "page_offset": resolution.index_child.page_offset,
+            "score": resolution.index_child.score,
+        },
+        "sysindexes": {
+            "offset": resolution.storage_index.offset,
+            "page_no": resolution.storage_index.page_no,
+            "page_offset": resolution.storage_index.page_offset,
+            "score": resolution.storage_index.score,
+            "type_name": resolution.storage_index.type_name,
+            "flag": resolution.storage_index.flag,
+        },
+    }
+
+
+def _column_dict_rows(resolution: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for ordinal, column in enumerate(resolution.columns, start=1):
+        rows.append(
+            {
+                "dict_type": "column",
+                "owner": resolution.table.owner,
+                "table_name": resolution.table.name,
+                "qualified_table_name": resolution.table.qualified_name,
+                "object_id": resolution.table_object_id,
+                "column_id": column.column_id,
+                "ordinal": ordinal,
+                "name": column.name,
+                "type_name": column.type_name,
+                "length": column.length,
+                "source": "heuristic-system-scan",
+                "syscolumns": {
+                    "offset": column.offset,
+                    "page_no": column.page_no,
+                    "page_offset": column.page_offset,
+                    "score": column.score,
+                },
+            }
+        )
+    return rows
+
+
+def _dictionary_dump_status(
+    *,
+    requested_tables: tuple[str, ...],
+    table_rows: list[dict[str, Any]],
+    diagnostics: list[dict[str, Any]],
+) -> str:
+    if not requested_tables:
+        return "not-requested"
+    if diagnostics:
+        return "partial" if table_rows else "failed"
+    return "heuristic-output"
+
+
 def _matched_control_entries(
     summary: dict[str, Any],
     file_entry: dict[str, Any],
@@ -136,6 +282,9 @@ def _matched_control_entries(
 def _bootstrap_diagnostics(
     summary: dict[str, Any],
     file_rows: list[dict[str, Any]],
+    *,
+    requested_tables: tuple[str, ...],
+    table_diagnostics: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
     if not file_rows:
@@ -146,13 +295,23 @@ def _bootstrap_diagnostics(
                 "message": "no DBF files were available for file.dict",
             }
         )
-    diagnostics.append(
-        {
-            "level": "warning",
-            "code": "bootstrap-sys-dictionaries-not-decoded",
-            "message": "user.dict, tab.dict, and col.dict are empty until SYSTEM dictionary table rows are decoded",
-        }
-    )
+    if requested_tables:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "bootstrap-sys-dictionaries-heuristic",
+                "message": "user.dict, tab.dict, and col.dict were built from current SYSTEM.DBF heuristics; complete SYS row layouts are still not decoded",
+            }
+        )
+        diagnostics.extend(table_diagnostics)
+    else:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "code": "bootstrap-sys-dictionaries-not-requested",
+                "message": "user.dict, tab.dict, and col.dict are empty because no target table was requested",
+            }
+        )
     summary_diagnostics = summary.get("diagnostics")
     if isinstance(summary_diagnostics, dict):
         counts = summary_diagnostics.get("counts_by_code")
