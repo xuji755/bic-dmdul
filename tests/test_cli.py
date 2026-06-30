@@ -306,6 +306,7 @@ class CliTest(unittest.TestCase):
                     str(output_dir),
                     "--table",
                     "SYSDBA.DMDUL_MANY",
+                    "--experimental-heuristic-dicts",
                     "--json",
                 ]
             )
@@ -372,6 +373,51 @@ class CliTest(unittest.TestCase):
         self.assertEqual(
             manifest["steps"][2]["status"],
             "heuristic-output",
+        )
+
+    def test_bootstrap_dicts_keeps_target_table_dicts_empty_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output_dir = root / "dicts"
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(
+                _large_page0(group_raw=0, page_kind=0x13) + _system_payload()
+            )
+            (root / "DMDUL_TS01.DBF").write_bytes(_user_data_file_payload())
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "bootstrap-dicts",
+                    str(root),
+                    "--output-dir",
+                    str(output_dir),
+                    "--table",
+                    "SYSDBA.DMDUL_MANY",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["rows"]["user.dict"], 0)
+        self.assertEqual(manifest["rows"]["tab.dict"], 0)
+        self.assertEqual(manifest["rows"]["col.dict"], 0)
+        self.assertEqual(
+            manifest["steps"][2]["status"],
+            "blocked-by-type-decoding",
+        )
+        self.assertEqual(
+            manifest["diagnostics"][0]["code"],
+            "bootstrap-heuristic-dictionary-output-disabled",
         )
 
     def test_resolve_table_writes_segment_manifest(self) -> None:

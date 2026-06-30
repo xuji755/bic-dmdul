@@ -45,6 +45,15 @@ class ObservedRowLayoutTest(unittest.TestCase):
         self.assertEqual(layout.metadata_size, 2)
         self.assertEqual(layout.column_payload_offset, 4)
 
+    def test_describes_five_byte_metadata_for_seventeen_columns(self) -> None:
+        row = _observed_row(bytes.fromhex("00 10 00 00 00 00 00 07 00 00 00"))
+
+        layout = describe_observed_row_layout(row, column_count=17)
+
+        self.assertEqual(layout.metadata, bytes.fromhex("00 00 00 00 00"))
+        self.assertEqual(layout.metadata_size, 5)
+        self.assertEqual(layout.column_payload_offset, 7)
+
     def test_marks_nonzero_metadata_as_unsupported_for_now(self) -> None:
         row = _observed_row(bytes.fromhex("00 0f 01 07 00 00 00"))
 

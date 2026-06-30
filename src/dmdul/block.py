@@ -17,6 +17,8 @@ from .storage import DataFile
 
 
 FIXED_TRACE_LENGTHS = {
+    "TINYINT": 1,
+    "SMALLINT": 2,
     "INT": 4,
     "INTEGER": 4,
     "BIGINT": 8,
@@ -30,11 +32,11 @@ FIXED_TRACE_LENGTHS = {
 
 VARIABLE_TRACE_TYPES = {
     "CHAR",
+    "DECIMAL",
+    "NUMBER",
+    "NUMERIC",
     "VARCHAR",
     "VARCHAR2",
-}
-
-LOB_TRACE_TYPES = {
     "BLOB",
     "CLOB",
 }
@@ -240,9 +242,27 @@ def _field_trace(
     payload_offset: int,
 ) -> list[dict[str, Any]]:
     trace: list[dict[str, Any]] = []
+    fixed_columns = [column for column in columns if _fixed_trace_length(column.type_name.upper(), column.length) is not None]
+    variable_columns = [column for column in columns if column not in fixed_columns]
     relative_offset = payload_offset
-    for column in columns:
-        entry = _field_trace_entry(row, column, relative_offset=relative_offset)
+    for column in fixed_columns:
+        entry = _field_trace_entry(
+            row,
+            column,
+            relative_offset=relative_offset,
+            storage_area="fixed",
+        )
+        trace.append(entry)
+        consumed = entry.get("consumed_bytes")
+        if isinstance(consumed, int):
+            relative_offset += consumed
+    for column in variable_columns:
+        entry = _field_trace_entry(
+            row,
+            column,
+            relative_offset=relative_offset,
+            storage_area="variable",
+        )
         trace.append(entry)
         consumed = entry.get("consumed_bytes")
         if isinstance(consumed, int):
@@ -255,11 +275,13 @@ def _field_trace_entry(
     column: ColumnMeta,
     *,
     relative_offset: int,
+    storage_area: str,
 ) -> dict[str, Any]:
     type_name = column.type_name.upper()
     entry: dict[str, Any] = {
         "name": column.name,
         "type_name": type_name,
+        "storage_area": storage_area,
         "relative_offset": relative_offset,
         "page_offset": row.page_offset + relative_offset,
     }
@@ -269,14 +291,6 @@ def _field_trace_entry(
         return entry
     if type_name in VARIABLE_TRACE_TYPES:
         return _variable_field_trace(entry, data, relative_offset)
-    if type_name in LOB_TRACE_TYPES:
-        return _raw_field_trace(
-            entry,
-            data,
-            relative_offset=relative_offset,
-            length=column.length,
-            status="lob-locator-not-decoded",
-        )
     length = _fixed_trace_length(type_name, column.length)
     if length is not None:
         return _raw_field_trace(

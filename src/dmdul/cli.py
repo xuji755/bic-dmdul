@@ -240,6 +240,7 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         tables=tuple(args.table or ()),
         owner=args.owner,
         scan_pages=args.scan_pages,
+        experimental_heuristic_dicts=args.experimental_heuristic_dicts,
     )
     if args.json:
         print(json.dumps(manifest, indent=2))
@@ -843,6 +844,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bootstrap_dicts.add_argument("--owner")
     bootstrap_dicts.add_argument("--scan-pages", type=int, default=64)
+    bootstrap_dicts.add_argument(
+        "--experimental-heuristic-dicts",
+        action="store_true",
+        help="write target-table heuristic user/tab/col dict rows; research only",
+    )
     bootstrap_dicts.add_argument("--json", action="store_true")
     bootstrap_dicts.set_defaults(func=_cmd_bootstrap_dicts)
 

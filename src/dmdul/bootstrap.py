@@ -22,6 +22,7 @@ def build_bootstrap_dicts(
     tables: tuple[str, ...] = (),
     owner: str | None = None,
     scan_pages: int = 64,
+    experimental_heuristic_dicts: bool = False,
 ) -> dict[str, Any]:
     """Write first-stage bootstrap dictionary artifacts.
 
@@ -47,13 +48,19 @@ def build_bootstrap_dicts(
         sample_limit=sample_limit,
     )
     file_rows = _file_dict_rows(summary)
-    user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_for_tables(
-        database_dir=database_dir,
-        tables=tables,
-        owner=owner,
-        page_size=page_size,
-        scan_pages=scan_pages,
-    )
+    if experimental_heuristic_dicts:
+        user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_for_tables(
+            database_dir=database_dir,
+            tables=tables,
+            owner=owner,
+            page_size=page_size,
+            scan_pages=scan_pages,
+        )
+    else:
+        user_rows = []
+        table_rows = []
+        column_rows = []
+        table_diagnostics = _heuristic_dicts_disabled_diagnostics(tables)
     _write_jsonl(dict_paths["file.dict"], file_rows)
     _write_jsonl(dict_paths["user.dict"], user_rows)
     _write_jsonl(dict_paths["tab.dict"], table_rows)
@@ -92,16 +99,19 @@ def build_bootstrap_dicts(
                     requested_tables=tables,
                     table_rows=table_rows,
                     diagnostics=table_diagnostics,
+                    experimental_heuristic_dicts=experimental_heuristic_dicts,
                 ),
                 "output": ["user.dict", "tab.dict", "col.dict"],
             },
         ],
         "requested_tables": list(tables),
+        "experimental_heuristic_dicts": experimental_heuristic_dicts,
         "diagnostics": _bootstrap_diagnostics(
             summary,
             file_rows,
             control_ctl_manifest=control_ctl_manifest,
             requested_tables=tables,
+            experimental_heuristic_dicts=experimental_heuristic_dicts,
             table_diagnostics=table_diagnostics,
         ),
         "database_summary": summary,
@@ -185,6 +195,26 @@ def _dictionary_rows_for_tables(
     return list(user_by_owner.values()), table_rows, column_rows, diagnostics
 
 
+def _heuristic_dicts_disabled_diagnostics(
+    tables: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    if not tables:
+        return []
+    return [
+        {
+            "level": "warning",
+            "code": "bootstrap-heuristic-dictionary-output-disabled",
+            "tables": list(tables),
+            "message": (
+                "target table names were supplied, but user.dict/tab.dict/col.dict "
+                "remain empty unless experimental heuristic dictionary output is "
+                "explicitly enabled; full dictionary bootstrap requires proven "
+                "row and data-type storage decoding first"
+            ),
+        }
+    ]
+
+
 def _table_dict_row(resolution: Any) -> dict[str, Any]:
     return {
         "dict_type": "table",
@@ -254,9 +284,12 @@ def _dictionary_dump_status(
     requested_tables: tuple[str, ...],
     table_rows: list[dict[str, Any]],
     diagnostics: list[dict[str, Any]],
+    experimental_heuristic_dicts: bool,
 ) -> str:
     if not requested_tables:
         return "not-requested"
+    if not experimental_heuristic_dicts:
+        return "blocked-by-type-decoding"
     if diagnostics:
         return "partial" if table_rows else "failed"
     return "heuristic-output"
@@ -296,6 +329,7 @@ def _bootstrap_diagnostics(
     *,
     control_ctl_manifest: dict[str, Any],
     requested_tables: tuple[str, ...],
+    experimental_heuristic_dicts: bool,
     table_diagnostics: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
@@ -310,7 +344,7 @@ def _bootstrap_diagnostics(
                 "message": "no DBF files were available for file.dict",
             }
         )
-    if requested_tables:
+    if requested_tables and experimental_heuristic_dicts:
         diagnostics.append(
             {
                 "level": "warning",
@@ -318,6 +352,8 @@ def _bootstrap_diagnostics(
                 "message": "user.dict, tab.dict, and col.dict were built from current SYSTEM.DBF heuristics; complete SYS row layouts are still not decoded",
             }
         )
+        diagnostics.extend(table_diagnostics)
+    elif requested_tables:
         diagnostics.extend(table_diagnostics)
     else:
         diagnostics.append(

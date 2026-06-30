@@ -69,14 +69,15 @@ def describe_observed_row_layout(row: ObservedRow, *, column_count: int) -> Obse
     """Describe the currently observed row prefix before user column payload.
 
     Controlled samples show a two-byte row length/status prefix, followed by
-    one metadata byte for <=4 columns and two metadata bytes for 5 columns. The
-    metadata bytes are zero in the supported non-NULL samples. Non-zero bytes
-    are kept visible for future NULL bitmap, column-directory, and MVCC work.
+    compact metadata bytes whose size currently tracks `ceil(column_count/4)`.
+    The metadata bytes are zero in the supported non-NULL samples. Non-zero
+    bytes are kept visible for future NULL bitmap, column-directory, and MVCC
+    work.
     """
 
     if column_count < 0:
         raise ValueError("column_count must be non-negative")
-    metadata_size = 2 if column_count >= 5 else 1
+    metadata_size = max(1, (column_count + 3) // 4)
     column_payload_offset = 2 + metadata_size
     if len(row.data) < column_payload_offset:
         raise ValueError(
