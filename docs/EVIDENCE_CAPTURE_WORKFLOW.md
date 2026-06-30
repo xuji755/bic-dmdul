@@ -173,6 +173,25 @@ proven from `dm.ctl`.
 manifest diagnostics in the extraction report so the final CSV artifact carries
 the upstream evidence-chain warnings.
 
+To explore a dictionary-table or ordinary-table data block with the same row
+and field tracing path:
+
+```sh
+PYTHONPATH=src python3 -m dmdul.cli analyze-block \
+  /dmdata/data/DAMENG/SYSTEM.DBF \
+  3059 \
+  --object-id 33629 \
+  --column ID:INT:4 \
+  --column NAME:VARCHAR:128
+```
+
+The output reports observed page type candidates, exact `OBJECT_ID` byte
+matches inside the scanned block prefix, physical row-chain entries, row
+length/delete flags, row-layout metadata bytes, and per-column raw slices.
+Known scalar types are decoded only when the current observed row decoder
+supports them; `DATE`, `TIMESTAMP`, `NUMBER`, and LOB values are traced as raw
+storage evidence until their encodings are proven.
+
 The extractor can consume that handoff file directly:
 
 ```sh

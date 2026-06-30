@@ -108,6 +108,10 @@ to explain the underlying database structure.
 - [ ] Decode transaction and visibility fields from data page headers, including
   page-level change counters, transaction references, and rollback/undo pointers
   if present.
+- [x] Add `analyze-block` exploration output that can be run on dictionary-table
+  pages and ordinary-table pages to report page type candidates, exact
+  `OBJECT_ID` byte matches, row chain entries, row layout metadata, and
+  per-column storage traces.
 - [ ] Decode page-level row count, free-space offset, slot directory offset, and
   object/storage id fields.
 - [ ] Decode file or extent bitmap pages enough to distinguish allocated and
@@ -271,6 +275,9 @@ to explain the underlying database structure.
 - [ ] Decode `FLOAT` precisely and distinguish DM `FLOAT` from double storage.
 - [ ] Decode LOB locator inline structure and decide when BLOB/CLOB data can be
   followed offline versus rejected as unsupported.
+- [x] Add a field-trace path that slices observed row payloads using dictionary
+  column metadata and records raw bytes for unsupported types such as
+  `NUMBER`, `DATE`, `TIMESTAMP`, and LOBs instead of silently decoding them.
 - [ ] Decode update and delete row status flags precisely.
 - [ ] Decode row transaction/MVCC fields:
   - inserting/updating transaction id

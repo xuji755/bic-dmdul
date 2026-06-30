@@ -5,6 +5,11 @@ import json
 import sys
 from pathlib import Path
 
+from .block import (
+    analyze_data_file_block,
+    load_column_meta_from_jsonl,
+    parse_column_specs,
+)
 from .bootstrap import build_bootstrap_dicts
 from .control_file import compare_control_files, summarize_control_file
 from .control_map import write_control_ctl
@@ -129,6 +134,22 @@ def _cmd_catalog_pages(args: argparse.Namespace) -> int:
         Path(args.output).write_text(payload + "\n", encoding="utf-8")
     else:
         print(payload)
+    return 0
+
+
+def _cmd_analyze_block(args: argparse.Namespace) -> int:
+    columns = _load_analysis_columns(args)
+    analysis = analyze_data_file_block(
+        path=Path(args.file),
+        page_no=args.page_no,
+        page_size=args.page_size,
+        object_id=args.object_id,
+        columns=columns,
+        row_start_offset=args.row_start_offset,
+        max_rows=args.max_rows,
+        candidate_scan_bytes=args.candidate_scan_bytes,
+    )
+    print(json.dumps(analysis, indent=2))
     return 0
 
 
@@ -319,6 +340,15 @@ def _read_json_file(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError(f"expected JSON object: {path}")
     return payload
+
+
+def _load_analysis_columns(args: argparse.Namespace):
+    columns = []
+    if args.column:
+        columns.extend(parse_column_specs(tuple(args.column)))
+    if args.columns_jsonl:
+        columns.extend(load_column_meta_from_jsonl(Path(args.columns_jsonl)))
+    return tuple(columns)
 
 
 def _manifest_diagnostics(payload: dict[str, object]) -> tuple[dict[str, object], ...]:
@@ -707,6 +737,31 @@ def build_parser() -> argparse.ArgumentParser:
     catalog_pages.add_argument("--sample-limit", type=int, default=32)
     catalog_pages.add_argument("--output")
     catalog_pages.set_defaults(func=_cmd_catalog_pages)
+
+    analyze_block = subparsers.add_parser(
+        "analyze-block",
+        help="analyze one data block with page header, object id, row, and field traces",
+    )
+    analyze_block.add_argument("file")
+    analyze_block.add_argument("page_no", type=int)
+    analyze_block.add_argument("--object-id", type=int)
+    analyze_block.add_argument(
+        "--column",
+        action="append",
+        help="column spec NAME:TYPE[:LENGTH], repeatable",
+    )
+    analyze_block.add_argument(
+        "--columns-jsonl",
+        help="read column rows from col.dict-style JSONL",
+    )
+    analyze_block.add_argument(
+        "--row-start-offset",
+        type=lambda value: int(value, 0),
+        default=0x62,
+    )
+    analyze_block.add_argument("--max-rows", type=int, default=128)
+    analyze_block.add_argument("--candidate-scan-bytes", type=int, default=512)
+    analyze_block.set_defaults(func=_cmd_analyze_block)
 
     summarize_database = subparsers.add_parser(
         "summarize-database",

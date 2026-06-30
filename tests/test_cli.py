@@ -171,6 +171,48 @@ class CliTest(unittest.TestCase):
             1,
         )
 
+    def test_analyze_block_writes_json_field_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            page = bytearray(8192)
+            page[0:4] = (6).to_bytes(4, "little")
+            page[4:8] = (0).to_bytes(4, "little")
+            page[20:24] = (0x14).to_bytes(4, "little")
+            page[40:44] = (33629).to_bytes(4, "little")
+            page[0x62:0x6a] = (
+                bytes.fromhex("00 08 00")
+                + (7).to_bytes(4, "little", signed=True)
+                + bytes([0x80])
+            )
+            data_file.write_bytes(bytes(page))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "analyze-block",
+                    str(data_file),
+                    "0",
+                    "--object-id",
+                    "33629",
+                    "--column",
+                    "ID:INT:4",
+                    "--column",
+                    "V:VARCHAR:20",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "dm-data-block-analysis")
+        self.assertEqual(payload["object_id_candidates"][0]["offset"], 40)
+        self.assertEqual(payload["rows"][0]["decoded_values"], [7, ""])
+
     def test_extract_csv_metadata_json_writes_report_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
