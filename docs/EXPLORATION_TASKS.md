@@ -108,6 +108,14 @@ to explain the underlying database structure.
 - [ ] Decode transaction and visibility fields from data page headers, including
   page-level change counters, transaction references, and rollback/undo pointers
   if present.
+- [ ] Confirm or reject an Oracle-style block-level ITL/transaction-slot array:
+  - compare page header and tail bytes before DML, during uncommitted DML, after
+    rollback, and after commit plus checkpoint
+  - compare row-head status bytes for committed and uncommitted insert, delete,
+    and update rows
+  - distinguish row-offset slot entries from any transaction-slot entries
+  - prove whether transaction state is block-level, row-level, undo-level, or a
+    combination of those
 - [x] Add `analyze-block` exploration output that can be run on dictionary-table
   pages and ordinary-table pages to report page type candidates, exact
   `OBJECT_ID` byte matches, row chain entries, row layout metadata, and
@@ -284,6 +292,7 @@ to explain the underlying database structure.
   - commit/visibility SCN or equivalent
   - lock/active transaction marker
   - undo pointer
+  - 19-byte row tail/control region observed after decoded payload
 - [ ] Distinguish row states in parser output:
   - visible live row
   - committed deleted row

@@ -322,6 +322,52 @@ BTREE/data pages. This is only a slot-directory candidate detector; real slot
 ordering, deleted-slot handling, and free-space compaction still need controlled
 fixtures.
 
+## Data-Page Transaction State Open Points
+
+There is not yet enough evidence to claim that DM8 data pages contain an
+Oracle-style block-level ITL/transaction-slot array. The current evidence proves
+that a page-tail row indicator list exists, but those entries are 2-byte row
+offsets, not decoded transaction slots.
+
+Transaction/MVCC state is still an open area. The strongest current candidate is
+the 19-byte row tail/control region observed after decoded column payloads. Clean
+inserted rows often carry a pattern containing `ff ff ff ff 7f ff ff`, while the
+delete/update sample on page `208` changes this region in rows affected by DML:
+
+| Row state | Row offset | Row tail/control bytes |
+| --- | ---: | --- |
+| live keep row | 98 | `01 00 00 00 00 00 ff ff ff ff 7f ff ff 31 d7 34 04 00 00` |
+| committed deleted row | 135 | `02 00 00 00 00 00 00 01 13 00 00 6a 00 32 d7 34 04 00 00` |
+| live updated-after row | 174 | `03 00 00 00 00 00 00 01 13 00 00 97 00 32 d7 34 04 00 00` |
+
+This looks transaction-related, possibly containing row ordinal/status plus a
+transaction id, commit marker, undo address, or row-version linkage, but the
+exact semantics are not decoded. It must not be treated as a complete visibility
+decision yet.
+
+The remaining unresolved data-page fields include:
+
+- page-header fields after `0x20`: active slot count, free-space boundaries,
+  physical-row boundary, object or segment identity, page change counters,
+  SCN/LSN/checkpoint fields, and checksum/validation fields;
+- complete slot-directory metadata: slot count, slot base, ordering, reusable
+  deleted slots, and compaction behavior;
+- row-head flags beyond length/deleted bit: lock flag, update-chain marker,
+  committed/uncommitted state, NULL metadata, and possible variable-column
+  directory flags;
+- row tail/control bytes: whether they contain transaction status, undo pointer,
+  commit visibility state, or row version-chain linkage;
+- mapping from any row/page transaction reference to rollback/undo files and
+  undo records.
+
+To confirm or reject an Oracle-like transaction-slot model, the next controlled
+fixtures must compare the same page while a transaction is still open:
+uncommitted insert, uncommitted delete, uncommitted update, rollback, commit
+after checkpoint, and slot reuse after delete. The comparison must include page
+header bytes, slot-tail bytes, row-head flags for both committed and
+uncommitted rows, row tail/control bytes, and the corresponding ROLL/undo file
+pages.
+
 Observed fixed-width values:
 
 - `INT 1` -> `01 00 00 00`
