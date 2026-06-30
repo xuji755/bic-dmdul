@@ -93,6 +93,30 @@ class SysDictHeuristicTest(unittest.TestCase):
         self.assertEqual(by_name["PAD"].length, 3000)
         self.assertEqual(by_name["PAD"].type_name, "VARCHAR")
 
+    def test_finds_syscolumns_from_calibrated_clean_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "SYSTEM.DBF"
+            object_id = 33712
+            row = _syscolumns_row(
+                object_id=object_id,
+                column_id=1,
+                length=1,
+                scale=0,
+                nullable="Y",
+                name="C_TINY",
+                type_name="TINYINT",
+            )
+            path.write_bytes(b"\0" * 8192 + row)
+
+            candidates = find_syscolumn_candidates(path, object_id)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].column_id, 1)
+        self.assertEqual(candidates[0].length, 1)
+        self.assertEqual(candidates[0].name, "C_TINY")
+        self.assertEqual(candidates[0].type_name, "TINYINT")
+        self.assertEqual(candidates[0].score, 140)
+
     def test_finds_sysindex_like_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "SYSTEM.DBF"
@@ -158,6 +182,33 @@ class SysDictHeuristicTest(unittest.TestCase):
         self.assertEqual(best.page_no, 1)
         self.assertIsNotNone(best.index_id_offset)
         self.assertGreaterEqual(best.score, 90)
+
+
+def _syscolumns_row(
+    *,
+    object_id: int,
+    column_id: int,
+    length: int,
+    scale: int,
+    nullable: str,
+    name: str,
+    type_name: str,
+) -> bytes:
+    body = (
+        bytes.fromhex("00000c")
+        + object_id.to_bytes(4, "little")
+        + column_id.to_bytes(2, "little")
+        + length.to_bytes(4, "little")
+        + scale.to_bytes(2, "little")
+        + nullable.encode("ascii")
+        + b"\0" * 4
+        + bytes([0x80 + len(name)])
+        + name.encode("ascii")
+        + bytes([0x80 + len(type_name)])
+        + type_name.encode("ascii")
+        + bytes.fromhex("ac1500000000ffffffff7fffff30d734040000")
+    )
+    return (len(body) + 2).to_bytes(2, "big") + body
 
 
 if __name__ == "__main__":

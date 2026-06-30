@@ -779,6 +779,53 @@ without UNDO support. The remaining blocker is the common row metadata and
 NULL-control interpretation, not the base field storage and not a separate
 dictionary-table storage format.
 
+The row-aware `SYS.SYSCOLUMNS` scanner now prefers this calibrated clean-row
+layout before falling back to the older nearby-string heuristic. A trial
+bootstrap against the checkpointed `SYSTEM.DBF` plus `DMDUL_TS01.DBF` produced:
+
+```bash
+PYTHONPATH=src python3 -m dmdul.cli bootstrap-dicts /tmp/dmdul_dbcopy \
+  --output-dir /tmp/dmdul_dict_try \
+  --table DMDUL_MOD2 \
+  --table DMDUL_TYPE_STORE \
+  --table DMDUL_NUM38_STORE \
+  --experimental-heuristic-dicts
+```
+
+Output row counts:
+
+| File | Rows |
+| --- | ---: |
+| `file.dict` | 2 |
+| `user.dict` | 1 |
+| `tab.dict` | 3 |
+| `col.dict` | 24 |
+
+The extracted column definitions for the expanded type table are now aligned
+with online SQL, including type names that previously confused the string
+heuristic:
+
+```text
+C_TINY  TINYINT   length 1
+C_SMALL SMALLINT  length 2
+C_INT   INT       length 4
+C_BIG   BIGINT    length 8
+C_NUM   NUMBER    length 30 scale not yet emitted
+C_DEC   DECIMAL   length 18 scale not yet emitted
+C_FLOAT FLOAT     length 8
+C_DATE  DATE      length 3
+C_TIME  TIME      length 5
+C_TS    TIMESTAMP length 8
+C_CLOB  CLOB      length 2147483647
+C_BLOB  BLOB      length 2147483647
+```
+
+Current limitation: resolving the system dictionary tables themselves through
+the same target-table resolver still fails for `SYSOBJECTS`, `SYSCOLUMNS`, and
+`SYSINDEXES` because their object ids are `0`, `1`, and `2`; scanning for those
+low ids is too noisy and needs a dedicated system-root/bootstrap path instead of
+the user-table object-id path.
+
 ## SYSINDEXES Offline Storage Root Observations
 
 For ordinary table storage, `SYS.SYSOBJECTS` contains an internal child object

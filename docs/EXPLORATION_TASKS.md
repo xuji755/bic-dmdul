@@ -221,9 +221,15 @@ to explain the underlying database structure.
   `DMDUL_DTTM2`, and `DMDUL_MOD2`.
 - [x] Query live `SYS.SYSCOLUMNS` structure and compare online column rows with
   copied `SYSTEM.DBF` raw rows after checkpoint.
+- [x] Add calibrated clean-row parsing for `SYS.SYSCOLUMNS` rows before falling
+  back to nearby-string heuristics.
+- [x] Generate trial `file.dict`, `user.dict`, `tab.dict`, and `col.dict` for
+  selected clean user tables from checkpointed offline files.
 - [ ] Replace the generic row payload offset with calibrated common
   row-metadata/NULL-control parsing, using both nullable user-table fixtures and
   `SYS.SYSCOLUMNS`.
+- [ ] Add a dedicated bootstrap path for system dictionary tables whose object
+  ids are low/noisy (`SYSOBJECTS=0`, `SYSINDEXES=1`, `SYSCOLUMNS=2`).
 - [x] Add heuristic offline scanner that finds SYSINDEXES-like candidates by
   storage index id directly in `SYSTEM.DBF`.
 - [x] Validate SYSINDEXES-like scanner against controlled storage indexes

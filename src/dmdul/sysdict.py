@@ -24,9 +24,11 @@ KNOWN_DM_TYPE_NAMES = frozenset(
         "NUMBER",
         "NUMERIC",
         "REAL",
+        "SMALLINT",
         "TEXT",
         "TIME",
         "TIMESTAMP",
+        "TINYINT",
         "VARBINARY",
         "VARCHAR",
         "VARCHAR2",
@@ -173,23 +175,118 @@ def find_syscolumn_candidates(
                 if index < 0:
                     break
                 absolute = offset - len(previous) + index
-                context_start = max(0, index - 32)
-                context_end = min(len(window), index + 180)
-                context = window[context_start:context_end]
-                local_object_offset = index - context_start
-                candidates.extend(
-                    _syscolumn_candidates_from_context(
-                        object_id=object_id,
-                        absolute=absolute,
-                        page_size=page_size,
-                        context=context,
-                        local_object_offset=local_object_offset,
-                    )
+                row_candidate = _syscolumn_candidate_from_row(
+                    object_id=object_id,
+                    absolute=absolute,
+                    page_size=page_size,
+                    window=window,
+                    local_object_offset=index,
                 )
+                if row_candidate is not None:
+                    candidates.append(row_candidate)
+                else:
+                    context_start = max(0, index - 32)
+                    context_end = min(len(window), index + 180)
+                    context = window[context_start:context_end]
+                    local_object_offset = index - context_start
+                    candidates.extend(
+                        _syscolumn_candidates_from_context(
+                            object_id=object_id,
+                            absolute=absolute,
+                            page_size=page_size,
+                            context=context,
+                            local_object_offset=local_object_offset,
+                        )
+                    )
                 search_from = index + 1
             previous = window[-overlap:]
             offset += len(chunk)
     return _dedupe_syscolumn_candidates(candidates)
+
+
+def _syscolumn_candidate_from_row(
+    *,
+    object_id: int,
+    absolute: int,
+    page_size: int,
+    window: bytes,
+    local_object_offset: int,
+) -> SysColumnCandidate | None:
+    """Decode the calibrated clean-row subset of SYS.SYSCOLUMNS.
+
+    Online/offline calibration currently shows the owning object id at row
+    relative offset 5 in clean SYSCOLUMNS rows:
+
+    len/status, 3 metadata bytes, ID, COLID, LENGTH$, SCALE, NULLABLE$,
+    4 nullable/control bytes, NAME, TYPE$, row-tail/control.
+    """
+
+    local_row_start = local_object_offset - 5
+    if local_row_start < 0 or local_row_start + 2 > len(window):
+        return None
+    raw_len_flags = int.from_bytes(window[local_row_start : local_row_start + 2], "big")
+    row_length = raw_len_flags & 0x7FFF
+    if raw_len_flags & 0x8000:
+        return None
+    if row_length < 32 or row_length > 4096:
+        return None
+    local_row_end = local_row_start + row_length
+    if local_row_end > len(window):
+        return None
+    row = window[local_row_start:local_row_end]
+    if row[5:9] != object_id.to_bytes(4, "little", signed=False):
+        return None
+    column_id = int.from_bytes(row[9:11], "little", signed=False)
+    length = int.from_bytes(row[11:15], "little", signed=False)
+    scale = int.from_bytes(row[15:17], "little", signed=False)
+    nullable = row[17:18]
+    if column_id > 4096 or length > 0x7FFFFFFF or scale > 10000:
+        return None
+    if nullable not in {b"N", b"Y"}:
+        return None
+    variable_offset = 22
+    try:
+        name_decoded = decode_observed_var_length(row[variable_offset:])
+    except ValueError:
+        return None
+    name_start = variable_offset + name_decoded.encoded_size
+    name_end = name_start + name_decoded.length
+    if name_end > len(row):
+        return None
+    try:
+        name = row[name_start:name_end].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    if not _is_printable_ascii_identifier(name.encode("ascii")):
+        return None
+    type_offset = name_end
+    try:
+        type_decoded = decode_observed_var_length(row[type_offset:])
+    except ValueError:
+        return None
+    type_start = type_offset + type_decoded.encoded_size
+    type_end = type_start + type_decoded.length
+    if type_end > len(row):
+        return None
+    try:
+        type_name = row[type_start:type_end].decode("ascii").upper()
+    except UnicodeDecodeError:
+        return None
+    if type_name not in KNOWN_DM_TYPE_NAMES:
+        return None
+    return SysColumnCandidate(
+        object_id=object_id,
+        offset=absolute,
+        page_no=absolute // page_size,
+        page_offset=absolute % page_size,
+        score=140,
+        column_id=column_id,
+        length=length,
+        name=name,
+        type_name=type_name,
+        name_offset=name_start,
+        type_offset=type_start,
+    )
 
 
 def find_sysindex_candidates(
