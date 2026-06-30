@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .block import (
     analyze_data_file_block,
+    dump_unknown_data_file_structures,
     load_column_meta_from_jsonl,
     parse_column_specs,
 )
@@ -150,6 +151,25 @@ def _cmd_analyze_block(args: argparse.Namespace) -> int:
         candidate_scan_bytes=args.candidate_scan_bytes,
     )
     print(json.dumps(analysis, indent=2))
+    return 0
+
+
+def _cmd_dump_unknown_structures(args: argparse.Namespace) -> int:
+    pages = parse_page_selection(args.pages)
+    payload = dump_unknown_data_file_structures(
+        path=Path(args.file),
+        pages=pages,
+        page_size=args.page_size,
+        row_start_offset=args.row_start_offset,
+        max_rows=args.max_rows,
+        tail_scan_bytes=args.tail_scan_bytes,
+        chunk_sizes=tuple(args.chunk_size),
+    )
+    output = json.dumps(payload, indent=2)
+    if args.output:
+        Path(args.output).write_text(output + "\n", encoding="utf-8")
+    else:
+        print(output)
     return 0
 
 
@@ -763,6 +783,33 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_block.add_argument("--max-rows", type=int, default=128)
     analyze_block.add_argument("--candidate-scan-bytes", type=int, default=512)
     analyze_block.set_defaults(func=_cmd_analyze_block)
+
+    dump_unknown = subparsers.add_parser(
+        "dump-unknown-structures",
+        help="dump anonymous page regions as candidate fixed-size structures",
+    )
+    dump_unknown.add_argument("file")
+    dump_unknown.add_argument(
+        "--pages",
+        required=True,
+        help="comma-separated page numbers and inclusive ranges, e.g. 208,224,288",
+    )
+    dump_unknown.add_argument(
+        "--row-start-offset",
+        type=lambda value: int(value, 0),
+        default=0x62,
+    )
+    dump_unknown.add_argument("--max-rows", type=int, default=128)
+    dump_unknown.add_argument("--tail-scan-bytes", type=int, default=512)
+    dump_unknown.add_argument(
+        "--chunk-size",
+        action="append",
+        type=int,
+        default=[8, 16, 24],
+        help="fixed-size chunk to emit; repeatable, default: 8,16,24",
+    )
+    dump_unknown.add_argument("--output")
+    dump_unknown.set_defaults(func=_cmd_dump_unknown_structures)
 
     summarize_database = subparsers.add_parser(
         "summarize-database",

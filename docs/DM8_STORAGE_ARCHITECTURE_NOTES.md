@@ -368,6 +368,101 @@ header bytes, slot-tail bytes, row-head flags for both committed and
 uncommitted rows, row tail/control bytes, and the corresponding ROLL/undo file
 pages.
 
+## Unknown-Structure Dump Findings
+
+The `dump-unknown-structures` command emits currently anonymous regions as raw
+hex plus 8/16/24-byte chunk interpretations:
+
+```bash
+PYTHONPATH=src python3 -m dmdul.cli dump-unknown-structures \
+  evidence/type_store/DMDUL_TS01.DBF \
+  --pages 144,160,176,192,208,224,288 \
+  --output /tmp/dmdul_unknown_control_pages.json
+```
+
+The first controlled run shows that the anonymous data is not random. Several
+fields line up across BTREE/data pages:
+
+| Page | `0x24` u16 | `0x26` u16 | active rows `0x2c` u16 | `0x2e` u16 | physical rows | row chain end |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 144 | 6 | 202 | 4 | `ffff` | 4 | 202 |
+| 160 | 6 | 270 | 4 | `ffff` | 4 | 270 |
+| 176 | 10 | 2097 | 8 | `ffff` | 8 | 2097 |
+| 192 | 5 | 224 | 3 | `ffff` | 3 | 224 |
+| 208 | 4 | 220 | 2 | 135 | 3 | 219 |
+| 224 | 6 | 359 | 4 | `ffff` | 4 | 359 |
+| 288 | 5 | 862 | 3 | `ffff` | 3 | 862 |
+
+Working interpretations to validate:
+
+- `0x24` looks like active row count plus two page/control rows in these samples.
+- `0x26` tracks the end of the physical row area or the next free offset. Page
+  `208` differs by one byte because the committed-delete/update sample has a
+  stray nonzero byte immediately after the physical row chain.
+- `0x2c` is the active row/slot count.
+- `0x2e` is `ffff` on normal pages and equals deleted-row offset `135` on page
+  `208`; it is a strong free/deleted-row-list candidate.
+
+The 24-byte windows in the page header show repeatable structure, not a single
+opaque blob. Examples:
+
+```text
+page 208 offset 0x18:
+cb4ba7605081a5a4 05000000 0400dc00 00000000 02008700
+
+page 224 offset 0x18:
+4333e4e280eaa9a4 05000000 06006701 00000000 0400ffff
+
+page 288 offset 0x18:
+625e4fad36e5a9a4 05000000 05005e03 00000000 0300ffff
+```
+
+The first 8 bytes at `0x18` change per page and are a candidate page-change
+number, checksum, or SCN-like value, but no ordering rule is proven yet. The
+next fields align with the counter/free-list candidates above.
+
+Another stable header candidate appears at offset `0x38` as a 6-byte
+little-endian reference-like value:
+
+```text
+page 144 offset 0x38: 0000d69f0002 => file 0, value 33595350
+page 160 offset 0x38: 0000d79f0002 => file 0, value 33595351
+page 176 offset 0x38: 0000d89f0002 => file 0, value 33595352
+page 192 offset 0x38: 0000d99f0002 => file 0, value 33595353
+page 208 offset 0x38: 0000da9f0002 => file 0, value 33595354
+```
+
+For these pages, the value matches the table storage/index identifier observed
+from dictionary evidence, so `0x38` is a strong object/storage-id candidate.
+
+The row tail/control region is 19 bytes in current samples, not 24 bytes. It has
+two obvious substructures:
+
+```text
+normal row:  <row ordinal u48le> ff ff ff ff 7f ff ff <6-byte candidate> 00
+DML row:     <row ordinal u48le> 00 01 13 00 00 <row/page-ish value> <6-byte candidate> 00
+```
+
+The final 6-byte candidate at relative offset `12` inside the row tail changes
+regularly and may be SCN-like or transaction-related:
+
+| Page | Row tail final candidate |
+| ---: | --- |
+| 144 | `ff29d7340400` |
+| 160 | `ff2bd7340400` |
+| 176 | `ff2dd7340400` |
+| 192 | `ff2fd7340400` |
+| 208 live keep row | `ff31d7340400` |
+| 208 committed deleted/updated rows | `0032d7340400` |
+| 224 | `ffb042350400` |
+| 288 | `ffb941350400` |
+
+The controlled pages `144..208` show a monotonic-looking sequence in this field.
+The delete/update page then shows affected DML rows with the next adjacent
+candidate value. This is the best current SCN-like candidate, but it must be
+validated against explicit transaction timestamps/SCN sources and uncommitted
+DML samples before being used for visibility decisions.
+
 Observed fixed-width values:
 
 - `INT 1` -> `01 00 00 00`

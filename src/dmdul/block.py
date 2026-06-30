@@ -11,6 +11,7 @@ from .row import (
     ObservedRow,
     decode_observed_var_length,
     describe_observed_row_layout,
+    find_observed_row_slots,
     scan_observed_row_chain,
 )
 from .storage import DataFile
@@ -101,6 +102,122 @@ def analyze_data_file_block(
     )
 
 
+def dump_unknown_page_structures(
+    *,
+    page: bytes,
+    page_no: int | None = None,
+    row_start_offset: int = 0x62,
+    max_rows: int = 128,
+    tail_scan_bytes: int = 512,
+    chunk_sizes: tuple[int, ...] = (8, 16, 24),
+) -> dict[str, Any]:
+    """Dump currently anonymous page regions for structure discovery.
+
+    This is an evidence tool, not a semantic decoder. It makes unknown bytes
+    comparable by slicing them into fixed-size chunks and exposing common
+    integer/page-reference interpretations.
+    """
+
+    header = ObservedPageHeader.from_page(page)
+    rows = scan_observed_row_chain(
+        page,
+        start_offset=row_start_offset,
+        max_rows=max_rows,
+    )
+    row_start_offsets = {row.page_offset for row in rows}
+    slot_offsets = find_observed_row_slots(
+        page,
+        row_start_offsets=row_start_offsets,
+        search_start_offset=max(0, len(page) - tail_scan_bytes),
+    )
+    row_chain_end = max((row.page_offset + row.length for row in rows), default=row_start_offset)
+
+    regions = [
+        _unknown_region(
+            name="page-header-anonymous",
+            page=page,
+            start=0x18,
+            end=min(len(page), row_start_offset),
+            chunk_sizes=chunk_sizes,
+        ),
+        _unknown_region(
+            name="post-row-chain-to-page-tail",
+            page=page,
+            start=min(row_chain_end, len(page)),
+            end=len(page),
+            chunk_sizes=chunk_sizes,
+            nonzero_runs_only=True,
+        ),
+    ]
+    for index, row in enumerate(rows):
+        tail_size = min(19, max(0, row.length - 2))
+        if tail_size <= 0:
+            continue
+        start = row.page_offset + row.length - tail_size
+        regions.append(
+            _unknown_region(
+                name=f"row-{index}-tail-control",
+                page=page,
+                start=start,
+                end=row.page_offset + row.length,
+                chunk_sizes=chunk_sizes,
+            )
+        )
+
+    return {
+        "mode": "dm-unknown-page-structure-dump",
+        "page_no": page_no,
+        "page_header": header.as_dict(),
+        "row_start_offset": row_start_offset,
+        "physical_rows": [
+            {
+                "index": index,
+                "offset": row.page_offset,
+                "length": row.length,
+                "deleted": row.is_deleted,
+                "raw_len_flags_hex": f"0x{row.header.raw_len_flags:04x}",
+            }
+            for index, row in enumerate(rows)
+        ],
+        "slot_row_offsets": slot_offsets,
+        "row_chain_end": row_chain_end,
+        "regions": regions,
+    }
+
+
+def dump_unknown_data_file_structures(
+    *,
+    path: Path,
+    pages: tuple[int, ...],
+    page_size: int = 8192,
+    row_start_offset: int = 0x62,
+    max_rows: int = 128,
+    tail_scan_bytes: int = 512,
+    chunk_sizes: tuple[int, ...] = (8, 16, 24),
+) -> dict[str, Any]:
+    data_file = DataFile(path, page_size=page_size)
+    page_dumps = [
+        dump_unknown_page_structures(
+            page=data_file.read_page(page_no),
+            page_no=page_no,
+            row_start_offset=row_start_offset,
+            max_rows=max_rows,
+            tail_scan_bytes=tail_scan_bytes,
+            chunk_sizes=chunk_sizes,
+        )
+        for page_no in pages
+    ]
+    return {
+        "mode": "dm-unknown-data-file-structure-dump",
+        "file": str(path),
+        "page_size": page_size,
+        "pages": list(pages),
+        "chunk_sizes": list(chunk_sizes),
+        "page_dumps": page_dumps,
+        "cross_page_summary": _unknown_cross_page_summary(page_dumps),
+    }
+
+
 def load_column_meta_from_jsonl(path: Path) -> tuple[ColumnMeta, ...]:
     columns: list[ColumnMeta] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -111,6 +228,153 @@ def load_column_meta_from_jsonl(path: Path) -> tuple[ColumnMeta, ...]:
             continue
         columns.append(_column_meta_from_mapping(payload))
     return tuple(columns)
+
+
+def _unknown_region(
+    *,
+    name: str,
+    page: bytes,
+    start: int,
+    end: int,
+    chunk_sizes: tuple[int, ...],
+    nonzero_runs_only: bool = False,
+) -> dict[str, Any]:
+    start = max(0, min(start, len(page)))
+    end = max(start, min(end, len(page)))
+    data = page[start:end]
+    runs = _nonzero_runs(data, base_offset=start) if nonzero_runs_only else [(start, end)]
+    return {
+        "name": name,
+        "start": start,
+        "end": end,
+        "length": end - start,
+        "nonzero_bytes": sum(1 for byte in data if byte),
+        "runs": [
+            {
+                "start": run_start,
+                "end": run_end,
+                "length": run_end - run_start,
+                "hex": page[run_start:run_end].hex(),
+                "chunks": {
+                    str(size): _chunks(
+                        page[run_start:run_end],
+                        base_offset=run_start,
+                        size=size,
+                    )
+                    for size in chunk_sizes
+                },
+            }
+            for run_start, run_end in runs
+            if run_end > run_start
+        ],
+    }
+
+
+def _nonzero_runs(data: bytes, *, base_offset: int) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, byte in enumerate(data):
+        if byte and start is None:
+            start = index
+        if start is not None and (byte == 0 or index == len(data) - 1):
+            end = index if byte == 0 else index + 1
+            runs.append((base_offset + start, base_offset + end))
+            start = None
+    return runs
+
+
+def _chunks(data: bytes, *, base_offset: int, size: int) -> list[dict[str, Any]]:
+    if size <= 0:
+        raise ValueError("chunk size must be positive")
+    items: list[dict[str, Any]] = []
+    for relative in range(0, len(data), size):
+        chunk = data[relative : relative + size]
+        if not chunk or all(byte == 0 for byte in chunk):
+            continue
+        items.append(_chunk_record(chunk, offset=base_offset + relative))
+    return items
+
+
+def _chunk_record(chunk: bytes, *, offset: int) -> dict[str, Any]:
+    return {
+        "offset": offset,
+        "length": len(chunk),
+        "hex": chunk.hex(),
+        "u16le": _ints(chunk, width=2),
+        "u32le": _ints(chunk, width=4),
+        "u64le": _ints(chunk, width=8),
+        "page_refs_6le": _page_refs_6le(chunk),
+        "ascii": "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in chunk),
+        "scn_like": _scn_like(chunk),
+    }
+
+
+def _ints(chunk: bytes, *, width: int) -> list[int]:
+    return [
+        int.from_bytes(chunk[index : index + width], "little")
+        for index in range(0, len(chunk) - width + 1, width)
+    ]
+
+
+def _page_refs_6le(chunk: bytes) -> list[dict[str, int | str]]:
+    refs: list[dict[str, int | str]] = []
+    for index in range(0, len(chunk) - 5, 6):
+        raw = chunk[index : index + 6]
+        refs.append(
+            {
+                "relative_offset": index,
+                "raw_hex": raw.hex(),
+                "file_no": int.from_bytes(raw[0:2], "little"),
+                "page_no": int.from_bytes(raw[2:6], "little"),
+            }
+        )
+    return refs
+
+
+def _scn_like(chunk: bytes) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for width in (6, 8):
+        if len(chunk) < width:
+            continue
+        for index in range(0, len(chunk) - width + 1, width):
+            raw = chunk[index : index + width]
+            value = int.from_bytes(raw, "little")
+            if value == 0 or raw == b"\xff" * width:
+                continue
+            candidates.append(
+                {
+                    "relative_offset": index,
+                    "width": width,
+                    "value": value,
+                    "hex": raw.hex(),
+                }
+            )
+    return candidates
+
+
+def _unknown_cross_page_summary(page_dumps: list[dict[str, Any]]) -> dict[str, Any]:
+    chunk_counts: dict[str, int] = {}
+    for page_dump in page_dumps:
+        for region in page_dump["regions"]:
+            for run in region["runs"]:
+                for chunks in run["chunks"].values():
+                    for chunk in chunks:
+                        key = f"{chunk['length']}:{chunk['hex']}"
+                        chunk_counts[key] = chunk_counts.get(key, 0) + 1
+    repeated = [
+        {
+            "length": int(key.split(":", 1)[0]),
+            "hex": key.split(":", 1)[1],
+            "count": count,
+        }
+        for key, count in chunk_counts.items()
+        if count > 1
+    ]
+    repeated.sort(key=lambda item: (-item["count"], item["length"], item["hex"]))
+    return {
+        "pages_analyzed": len(page_dumps),
+        "repeated_chunks": repeated[:64],
+    }
 
 
 def parse_column_specs(specs: tuple[str, ...]) -> tuple[ColumnMeta, ...]:

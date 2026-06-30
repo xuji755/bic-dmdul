@@ -1,6 +1,10 @@
 import unittest
 
-from dmdul.block import analyze_data_block, parse_column_specs
+from dmdul.block import (
+    analyze_data_block,
+    dump_unknown_page_structures,
+    parse_column_specs,
+)
 from dmdul.metadata import ColumnMeta
 
 
@@ -106,6 +110,34 @@ class DataBlockAnalysisTest(unittest.TestCase):
         self.assertEqual(trace[2]["raw_hex"], "80")
         self.assertEqual(trace[3]["text"], "X")
         self.assertEqual(trace[4]["text"], "YZ")
+
+    def test_dumps_unknown_page_structures(self) -> None:
+        page = bytearray(b"\0" * 8192)
+        page[0:4] = (6).to_bytes(4, "little")
+        page[4:8] = (208).to_bytes(4, "little")
+        page[20:24] = (0x14).to_bytes(4, "little")
+        page[0x18:0x30] = bytes.fromhex(
+            "01 02 03 04 05 06 07 08"
+            "09 0a 0b 0c 0d 0e 0f 10"
+            "11 12 13 14 15 16 17 18"
+        )
+        page[0x62:0x62 + 37] = (
+            bytes.fromhex("00 25 00")
+            + b"A" * 15
+            + bytes.fromhex("01 00 00 00 00 00 ff ff ff ff 7f ff ff 31 d7 34 04 00 00")
+        )
+        page[8190:8192] = (0x62).to_bytes(2, "little")
+
+        payload = dump_unknown_page_structures(page=bytes(page), page_no=208)
+
+        self.assertEqual(payload["mode"], "dm-unknown-page-structure-dump")
+        self.assertEqual(payload["slot_row_offsets"], [0x62])
+        header_region = payload["regions"][0]
+        self.assertEqual(header_region["name"], "page-header-anonymous")
+        self.assertEqual(header_region["runs"][0]["chunks"]["24"][0]["offset"], 0x18)
+        row_tail = payload["regions"][2]
+        self.assertEqual(row_tail["name"], "row-0-tail-control")
+        self.assertEqual(row_tail["length"], 19)
 
 
 class ColumnSpecTest(unittest.TestCase):

@@ -213,6 +213,42 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["object_id_candidates"][0]["offset"], 40)
         self.assertEqual(payload["rows"][0]["decoded_values"], [7, ""])
 
+    def test_dump_unknown_structures_writes_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            page = bytearray(8192)
+            page[0:4] = (6).to_bytes(4, "little")
+            page[4:8] = (224).to_bytes(4, "little")
+            page[20:24] = (0x14).to_bytes(4, "little")
+            page[0x18:0x30] = bytes(range(1, 25))
+            page[0x62:0x69] = bytes.fromhex("00 07 00 01 02 03 04")
+            data_file.write_bytes(bytes(page))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "dump-unknown-structures",
+                    str(data_file),
+                    "--pages",
+                    "0",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "dm-unknown-data-file-structure-dump")
+        self.assertEqual(payload["page_dumps"][0]["page_header"]["page_no"], 224)
+        self.assertEqual(
+            payload["page_dumps"][0]["regions"][0]["runs"][0]["chunks"]["24"][0]["offset"],
+            0x18,
+        )
+
     def test_extract_csv_metadata_json_writes_report_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

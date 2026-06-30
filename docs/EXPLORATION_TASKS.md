@@ -122,6 +122,13 @@ to explain the underlying database structure.
   per-column storage traces.
 - [ ] Decode page-level row count, free-space offset, slot directory offset, and
   object/storage id fields.
+- [x] Add unknown-structure dump output for anonymous page-header bytes, row
+  tail/control bytes, page-tail slot bytes, and 8/16/24-byte candidate chunks.
+- [ ] Validate candidate page-header fields from unknown-structure dumps:
+  - `0x24` as active-row-count plus control count
+  - `0x26` as row-area end or next free offset
+  - `0x2e` as deleted/free-row-list head
+  - `0x38` as object/storage/index identifier
 - [ ] Decode file or extent bitmap pages enough to distinguish allocated and
   free pages.
 - [ ] Decode page checksum or validation fields if present.
@@ -293,6 +300,8 @@ to explain the underlying database structure.
   - lock/active transaction marker
   - undo pointer
   - 19-byte row tail/control region observed after decoded payload
+  - 6-byte SCN-like candidate at relative offset `12` in the row tail/control
+    region
 - [ ] Distinguish row states in parser output:
   - visible live row
   - committed deleted row
