@@ -170,3 +170,24 @@ def scan_observed_row_chain(
         rows.append(ObservedRow(page_offset=offset, data=page[offset:end], header=header))
         offset = end
     return rows
+
+
+def find_observed_row_slots(
+    page: bytes,
+    *,
+    row_start_offsets: set[int],
+    search_start_offset: int = 0,
+) -> list[int]:
+    """Find page-tail slot entries that point to observed row starts.
+
+    Current evidence shows 2-byte little-endian page offsets near the page tail,
+    ordered from the last physical row back to the first. The caller supplies
+    known row starts so this remains an evidence probe, not a full slot decoder.
+    """
+
+    slots: list[tuple[int, int]] = []
+    for offset in range(search_start_offset, len(page) - 1, 2):
+        value = int.from_bytes(page[offset : offset + 2], "little")
+        if value in row_start_offsets:
+            slots.append((offset, value))
+    return [value for _, value in slots]

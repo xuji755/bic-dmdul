@@ -5,6 +5,7 @@ from dmdul.row import (
     ObservedRowHeader,
     decode_observed_var_length,
     describe_observed_row_layout,
+    find_observed_row_slots,
     iter_observed_rows,
     scan_observed_row_chain,
 )
@@ -137,6 +138,23 @@ class ObservedRowIteratorTest(unittest.TestCase):
             [0x62, 0x87, 0xAE],
         )
         self.assertEqual([row.is_deleted for row in scanned_rows], [False, True, False])
+
+
+class ObservedRowSlotTest(unittest.TestCase):
+    def test_finds_tail_slots_pointing_to_row_starts(self) -> None:
+        page = bytearray(b"\0" * 256)
+        page[0x62:0x66] = bytes.fromhex("00 04 01 02")
+        page[0x66:0x6A] = bytes.fromhex("00 04 03 04")
+        page[0xF8:0xFC] = bytes.fromhex("66 00 62 00")
+
+        rows = scan_observed_row_chain(bytes(page), max_rows=2)
+        slots = find_observed_row_slots(
+            bytes(page),
+            row_start_offsets={row.page_offset for row in rows},
+            search_start_offset=0xF0,
+        )
+
+        self.assertEqual(slots, [0x66, 0x62])
 
 
 def _observed_row(data: bytes) -> ObservedRow:

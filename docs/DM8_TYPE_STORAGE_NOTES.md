@@ -140,6 +140,33 @@ Open points before this becomes a complete row decoder:
   updated, compressed, or chained rows;
 - decode LOB locator fields rather than treating them as opaque variable values.
 
+## Row Slot Directory
+
+The tested BTREE/data pages do have a row indicator list near the page tail.
+Entries are 2-byte little-endian page offsets pointing to row heads.
+
+Observed page `224` (`DMDUL_NUM38_STORE`):
+
+```text
+row heads: 98, 158, 214, 286
+slot bytes at 8174: 1e 01 d6 00 9e 00 62 00
+decoded slots: 286, 214, 158, 98
+```
+
+Observed page `288` (`DMDUL_TYPE_STORE`):
+
+```text
+row heads: 98, 252, 557
+slot bytes at 8176: 2d 02 fc 00 62 00
+decoded slots: 557, 252, 98
+```
+
+The order is currently last physical row back to first physical row. This is
+consistent with a slot directory growing from the end of the page toward the
+free space. The surrounding slot metadata is not fully decoded yet, so this
+should be treated as a row-start pointer list, not yet a complete slot record
+format.
+
 ## NUMBER(38)
 
 `NUMBER(38)` is stored as a variable-length base-100 numeric payload.
