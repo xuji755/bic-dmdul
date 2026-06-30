@@ -219,6 +219,10 @@ to explain the underlying database structure.
 - [x] Validate SYSCOLUMNS-like scanner against controlled objects
   `DMDUL_MANY`, `DMDUL_ONE2`, `DMDUL_NULL2`, `DMDUL_VLEN2`,
   `DMDUL_DTTM2`, and `DMDUL_MOD2`.
+- [x] Query live `SYS.SYSCOLUMNS` structure and compare online column rows with
+  copied `SYSTEM.DBF` raw rows after checkpoint.
+- [ ] Replace the generic dictionary row payload offset with calibrated
+  row-metadata/NULL-control parsing for `SYS.SYSCOLUMNS`.
 - [x] Add heuristic offline scanner that finds SYSINDEXES-like candidates by
   storage index id directly in `SYSTEM.DBF`.
 - [x] Validate SYSINDEXES-like scanner against controlled storage indexes

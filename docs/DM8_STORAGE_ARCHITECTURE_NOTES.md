@@ -705,6 +705,78 @@ The following fields remain unresolved:
 - nullable flag and default value layout;
 - whether the observed zero-based column id holds for all table forms.
 
+### Online/Offline SYSCOLUMNS Calibration
+
+Because the test database is available, dictionary table layout should be
+calibrated by comparing online SQL results with the copied `SYSTEM.DBF`, not by
+raw byte guessing alone.
+
+The online definition of `SYS.SYSCOLUMNS` is:
+
+| COLID | Name | Type | Length | Scale | Nullable |
+| ---: | --- | --- | ---: | ---: | --- |
+| 0 | `NAME` | `VARCHAR` | 128 | 0 | N |
+| 1 | `ID` | `INT` | 4 | 0 | N |
+| 2 | `COLID` | `SMALLINT` | 2 | 0 | N |
+| 3 | `TYPE$` | `VARCHAR` | 128 | 0 | N |
+| 4 | `LENGTH$` | `INT` | 4 | 0 | N |
+| 5 | `SCALE` | `SMALLINT` | 2 | 0 | N |
+| 6 | `NULLABLE$` | `CHAR` | 1 | 0 | N |
+| 7 | `DEFVAL` | `VARCHAR` | 2048 | 0 | Y |
+| 8 | `INFO1` | `SMALLINT` | 2 | 0 | Y |
+| 9 | `INFO2` | `SMALLINT` | 2 | 0 | Y |
+
+For `DMDUL_MOD2`, online SQL reports object id `33634` and two column rows:
+
+| COLID | NAME | TYPE$ | LENGTH$ | SCALE | NULLABLE$ |
+| ---: | --- | --- | ---: | ---: | --- |
+| 0 | `ID` | `INT` | 4 | 0 | Y |
+| 1 | `V` | `VARCHAR` | 40 | 0 | Y |
+
+The corresponding offline scanner found:
+
+```text
+SYS.SYSCOLUMNS object_id=33634
+page 3059 offset 4395: COLID 0, NAME ID, TYPE$ INT, LENGTH$ 4
+page 3059 offset 4443: COLID 1, NAME V, TYPE$ VARCHAR, LENGTH$ 40
+```
+
+Raw page 3059 rows show the fixed fields are already aligned when using the
+online definition. Example row for `NAME='ID', TYPE$='INT'`:
+
+```text
+0030 00000c c2770000 0000 04000000 0000 4e00 0001 00
+82 4944 83 494e54 d81400000000ffffffff7fffff9f0516040000
+```
+
+Working split:
+
+| Relative offset | Bytes | Meaning |
+| ---: | --- | --- |
+| 0 | `0030` | row length/status |
+| 2 | `00000c` | row metadata/control, not decoded |
+| 5 | `c2770000` | `ID=30658` for this sample row |
+| 9 | `0000` | `COLID=0` |
+| 11 | `04000000` | `LENGTH$=4` |
+| 15 | `0000` | `SCALE=0` |
+| 17 | `4e00` | `INFO1`, observed `N`/`Y` code candidate |
+| 19 | `0001` | `INFO2` |
+| 21 | `00` | extra control/null byte before variable area |
+| 22 | `82 4944` | `NAME='ID'` |
+| 25 | `83 494e54` | `TYPE$='INT'` |
+| 29 | `d814...` | row tail/control begins after variable values |
+
+This proves the previous generic row model is still incomplete for dictionary
+tables: `ceil(column_count/4)` is not sufficient to locate variable fields when
+nullable dictionary columns are present. The next decoder must use the online
+schema comparison to calibrate the row metadata/NULL-control bytes, then parse
+fixed fields and variable strings from the correct offset.
+
+The practical result is positive: for clean `SYSCOLUMNS` rows, the online values
+and offline bytes are close enough to implement a real dictionary row decoder
+without UNDO support. The remaining blocker is row metadata and NULL-control
+interpretation, not the base field storage.
+
 ## SYSINDEXES Offline Storage Root Observations
 
 For ordinary table storage, `SYS.SYSOBJECTS` contains an internal child object
