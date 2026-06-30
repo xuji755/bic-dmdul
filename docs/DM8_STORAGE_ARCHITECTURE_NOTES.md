@@ -745,8 +745,8 @@ Raw page 3059 rows show the fixed fields are already aligned when using the
 online definition. Example row for `NAME='ID', TYPE$='INT'`:
 
 ```text
-0030 00000c c2770000 0000 04000000 0000 4e00 0001 00
-82 4944 83 494e54 d81400000000ffffffff7fffff9f0516040000
+0030 00000c 62830000 0000 04000000 0000 59 00000000
+82 4944 83 494e54 ac1500000000ffffffff7fffff30d734040000
 ```
 
 Working split:
@@ -755,27 +755,29 @@ Working split:
 | ---: | --- | --- |
 | 0 | `0030` | row length/status |
 | 2 | `00000c` | row metadata/control, not decoded |
-| 5 | `c2770000` | `ID=30658` for this sample row |
+| 5 | `62830000` | `ID=33634` |
 | 9 | `0000` | `COLID=0` |
 | 11 | `04000000` | `LENGTH$=4` |
 | 15 | `0000` | `SCALE=0` |
-| 17 | `4e00` | `INFO1`, observed `N`/`Y` code candidate |
-| 19 | `0001` | `INFO2` |
-| 21 | `00` | extra control/null byte before variable area |
+| 17 | `59` | `NULLABLE$='Y'` |
+| 18 | `00000000` | nullable/control bytes for `DEFVAL`, `INFO1`, and `INFO2`, not decoded |
 | 22 | `82 4944` | `NAME='ID'` |
 | 25 | `83 494e54` | `TYPE$='INT'` |
-| 29 | `d814...` | row tail/control begins after variable values |
+| 29 | `ac15...` | row tail/control begins after variable values |
 
-This proves the previous generic row model is still incomplete for dictionary
-tables: `ceil(column_count/4)` is not sufficient to locate variable fields when
-nullable dictionary columns are present. The next decoder must use the online
-schema comparison to calibrate the row metadata/NULL-control bytes, then parse
+This does not prove a dictionary-specific row format. It proves the previous
+generic row model is incomplete for nullable columns in general: `ceil(column_count/4)`
+is not sufficient to locate variable fields when nullable columns are present.
+The same issue is visible in controlled nullable user-table rows such as
+`DMDUL_NULL2`. The next decoder must use the online schema comparison and NULL
+fixtures to calibrate the common row metadata/NULL-control bytes, then parse
 fixed fields and variable strings from the correct offset.
 
 The practical result is positive: for clean `SYSCOLUMNS` rows, the online values
 and offline bytes are close enough to implement a real dictionary row decoder
-without UNDO support. The remaining blocker is row metadata and NULL-control
-interpretation, not the base field storage.
+without UNDO support. The remaining blocker is the common row metadata and
+NULL-control interpretation, not the base field storage and not a separate
+dictionary-table storage format.
 
 ## SYSINDEXES Offline Storage Root Observations
 
