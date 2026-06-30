@@ -463,6 +463,41 @@ candidate value. This is the best current SCN-like candidate, but it must be
 validated against explicit transaction timestamps/SCN sources and uncommitted
 DML samples before being used for visibility decisions.
 
+An online query later returned:
+
+```sql
+SELECT DBMS_FLASHBACK.GET_SYSTEM_CHANGE_NUMBER();
+-- 24237442891, hex 0x5a4aa074b
+```
+
+The direct byte encodings of this value were:
+
+```text
+le6 4b07aaa40500
+le8 4b07aaa405000000
+be6 0005a4aa074b
+be8 00000005a4aa074b
+```
+
+None of these byte patterns, nor the low 32-bit forms, were found in the copied
+`DMDUL_TS01.DBF` evidence file. The row-tail candidates are also not a direct
+numeric match:
+
+| Candidate bytes | u48 little-endian value | Delta from online SCN |
+| --- | ---: | ---: |
+| `ff29d7340400` | 18066385407 | -6171057484 |
+| `ff31d7340400` | 18066387455 | -6171055436 |
+| `0032d7340400` | 18066387456 | -6171055435 |
+| `ffb042350400` | 18073432319 | -6164010572 |
+| `ffb941350400` | 18073369087 | -6164073804 |
+
+This does not disprove an SCN relationship because the DBF copy and the online
+SCN query were not captured as one synchronized checkpoint experiment. It does
+mean the current evidence cannot claim that the row-tail candidate is the direct
+stored value of `DBMS_FLASHBACK.GET_SYSTEM_CHANGE_NUMBER()`. The next required
+test is to query the SCN, force checkpoint, copy the relevant data file, and
+search/dump the same page set immediately, then repeat after one controlled DML.
+
 Observed fixed-width values:
 
 - `INT 1` -> `01 00 00 00`

@@ -302,6 +302,13 @@ to explain the underlying database structure.
   - 19-byte row tail/control region observed after decoded payload
   - 6-byte SCN-like candidate at relative offset `12` in the row tail/control
     region
+- [ ] Run synchronized SCN evidence capture:
+  - query `DBMS_FLASHBACK.GET_SYSTEM_CHANGE_NUMBER()`
+  - force checkpoint
+  - copy the target DBF immediately
+  - search the DBF for direct SCN endian forms and dump affected page headers
+    and row tails
+  - repeat after one controlled insert/update/delete
 - [ ] Distinguish row states in parser output:
   - visible live row
   - committed deleted row
