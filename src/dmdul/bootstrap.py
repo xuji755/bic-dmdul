@@ -139,6 +139,7 @@ def build_bootstrap_dicts(
             owner=owner,
             page_size=page_size,
             scan_pages=scan_pages,
+            progress=progress,
         )
     else:
         _emit_progress(progress, "dictionary download not requested; writing empty user/tab/col dicts")
@@ -300,6 +301,7 @@ def _dictionary_rows_from_system_scan(
     owner: str | None,
     page_size: int,
     scan_pages: int,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     diagnostics: list[dict[str, Any]] = []
     system_file = _find_system_file(database_dir, page_size=page_size)
@@ -312,7 +314,9 @@ def _dictionary_rows_from_system_scan(
             }
         ]
 
-    sysobjects = dump_sysobject_rows(system_file, page_size=page_size)
+    _emit_progress(progress, f"SYSOBJECTS scan start: file={system_file}")
+    sysobjects = dump_sysobject_rows(system_file, page_size=page_size, progress=progress)
+    _emit_progress(progress, f"SYSOBJECTS scan rows={len(sysobjects)}")
     table_objects = [
         row
         for row in sysobjects
@@ -363,12 +367,16 @@ def _dictionary_rows_from_system_scan(
             },
         )
 
-    all_columns = dump_syscolumn_rows(system_file, page_size=page_size)
+    _emit_progress(progress, f"SYSCOLUMNS scan start: file={system_file}")
+    all_columns = dump_syscolumn_rows(system_file, page_size=page_size, progress=progress)
+    _emit_progress(progress, f"SYSCOLUMNS scan rows={len(all_columns)}")
     columns_by_object_id: dict[int, list[Any]] = {}
     for column in all_columns:
         columns_by_object_id.setdefault(column.object_id, []).append(column)
 
-    all_indexes = dump_sysindex_rows(system_file, page_size=page_size)
+    _emit_progress(progress, f"SYSINDEXES scan start: file={system_file}")
+    all_indexes = dump_sysindex_rows(system_file, page_size=page_size, progress=progress)
+    _emit_progress(progress, f"SYSINDEXES scan rows={len(all_indexes)}")
     sysindex_by_id = {index.index_id: index for index in all_indexes}
 
     table_rows: list[dict[str, Any]] = []

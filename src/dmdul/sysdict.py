@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .row import decode_observed_var_length
 
@@ -34,6 +35,8 @@ KNOWN_DM_TYPE_NAMES = frozenset(
         "VARCHAR2",
     }
 )
+
+SCAN_PROGRESS_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -310,13 +313,16 @@ def dump_syscolumn_rows(
     *,
     page_size: int = 8192,
     chunk_size: int = 1024 * 1024,
+    progress: Callable[[str], None] | None = None,
 ) -> list[SysColumnCandidate]:
     """Scan SYSTEM.DBF once for calibrated SYS.SYSCOLUMNS clean rows."""
 
     candidates: list[SysColumnCandidate] = []
+    file_size = system_file.stat().st_size
     overlap = 4096
     previous = b""
     offset = 0
+    _emit_scan_progress(progress, "SYSCOLUMNS", offset, file_size, len(candidates))
     with system_file.open("rb") as file:
         while True:
             chunk = file.read(chunk_size)
@@ -336,7 +342,10 @@ def dump_syscolumn_rows(
                     candidates.append(candidate)
             previous = window[-overlap:]
             offset += len(chunk)
-    return _dedupe_syscolumn_candidates(candidates)
+            _emit_scan_progress(progress, "SYSCOLUMNS", offset, file_size, len(candidates))
+    rows = _dedupe_syscolumn_candidates(candidates)
+    _emit_scan_progress(progress, "SYSCOLUMNS", file_size, file_size, len(rows), done=True)
+    return rows
 
 
 def _syscolumn_candidate_at_row_start(
@@ -423,14 +432,17 @@ def dump_sysindex_rows(
     *,
     page_size: int = 8192,
     chunk_size: int = 1024 * 1024,
+    progress: Callable[[str], None] | None = None,
 ) -> list[SysIndexCandidate]:
     """Scan SYSTEM.DBF once for SYS.SYSINDEXES-like storage rows."""
 
     candidates: list[SysIndexCandidate] = []
+    file_size = system_file.stat().st_size
     overlap = 64
     previous = b""
     offset = 0
     type_markers = (b"BT", b"RT", b"HT")
+    _emit_scan_progress(progress, "SYSINDEXES", offset, file_size, len(candidates))
     with system_file.open("rb") as file:
         while True:
             chunk = file.read(chunk_size)
@@ -463,7 +475,10 @@ def dump_sysindex_rows(
                     search_from = type_offset + 1
             previous = window[-overlap:]
             offset += len(chunk)
-    return _dedupe_sysindex_candidates(candidates)
+            _emit_scan_progress(progress, "SYSINDEXES", offset, file_size, len(candidates))
+    rows = _dedupe_sysindex_candidates(candidates)
+    _emit_scan_progress(progress, "SYSINDEXES", file_size, file_size, len(rows), done=True)
+    return rows
 
 
 def find_sysobject_index_child_candidates(
@@ -523,6 +538,7 @@ def dump_sysobject_rows(
     *,
     page_size: int = 8192,
     chunk_size: int = 1024 * 1024,
+    progress: Callable[[str], None] | None = None,
 ) -> list[SysObjectRowCandidate]:
     """Scan SYSTEM.DBF for the SYSOBJECTS rows needed for table bootstrap.
 
@@ -533,10 +549,12 @@ def dump_sysobject_rows(
     """
 
     candidates: list[SysObjectRowCandidate] = []
+    file_size = system_file.stat().st_size
     overlap = 512
     previous = b""
     offset = 0
     markers = (b"SCHOBJ", b"TABOBJ", b"SCH")
+    _emit_scan_progress(progress, "SYSOBJECTS", offset, file_size, len(candidates))
     with system_file.open("rb") as file:
         while True:
             chunk = file.read(chunk_size)
@@ -568,7 +586,31 @@ def dump_sysobject_rows(
                     search_from = index + 1
             previous = window[-overlap:]
             offset += len(chunk)
-    return _dedupe_sysobject_row_candidates(candidates)
+            _emit_scan_progress(progress, "SYSOBJECTS", offset, file_size, len(candidates))
+    rows = _dedupe_sysobject_row_candidates(candidates)
+    _emit_scan_progress(progress, "SYSOBJECTS", file_size, file_size, len(rows), done=True)
+    return rows
+
+
+def _emit_scan_progress(
+    progress: Callable[[str], None] | None,
+    name: str,
+    scanned: int,
+    total: int,
+    rows: int,
+    *,
+    done: bool = False,
+) -> None:
+    if progress is None:
+        return
+    if not done and scanned not in {0, total} and scanned % SCAN_PROGRESS_BYTES != 0:
+        return
+    percent = (scanned * 100.0 / total) if total else 0.0
+    status = "done" if done else "progress"
+    progress(
+        f"{name} scan {status}: bytes={min(scanned, total)}/{total} "
+        f"percent={percent:.1f} rows={rows}"
+    )
 
 
 def _sysobject_rows_from_context(
