@@ -12,6 +12,7 @@ from .resolver import OfflineResolveError, resolve_offline_table_metadata
 from .sysdict import (
     SysObjectRowCandidate,
     dump_syscolumn_rows,
+    dump_syscolumn_rows_from_storage,
     dump_sysindex_rows,
     dump_sysobject_rows,
     find_sysindex_candidates,
@@ -19,6 +20,15 @@ from .sysdict import (
 
 
 DICT_FILENAMES = ("file.dict", "user.dict", "tab.dict", "col.dict")
+
+SYSTEM_DICTIONARY_STORAGE_IDS = {
+    # Verified DM8 bootstrap roots in SYSTEM.DBF. These are used only for
+    # fixed system dictionary tables when SYSOBJECTS child-object heuristics
+    # produce an unverified storage child. The root still has to be confirmed
+    # through SYSINDEXES and the page header storage id.
+    2: 33554433,  # SYS.SYSCOLUMNS
+}
+
 
 DICT_FIELDNAMES = {
     "file.dict": (
@@ -140,6 +150,7 @@ def build_bootstrap_dicts(
             page_size=page_size,
             scan_pages=scan_pages,
             progress=progress,
+            output_dir=output_dir,
         )
     else:
         _emit_progress(progress, "dictionary download not requested; writing empty user/tab/col dicts")
@@ -302,6 +313,7 @@ def _dictionary_rows_from_system_scan(
     page_size: int,
     scan_pages: int,
     progress: Callable[[str], None] | None = None,
+    output_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     diagnostics: list[dict[str, Any]] = []
     system_file = _find_system_file(database_dir, page_size=page_size)
@@ -367,20 +379,66 @@ def _dictionary_rows_from_system_scan(
             },
         )
 
-    _emit_progress(progress, f"SYSCOLUMNS scan start: file={system_file}")
-    all_columns = dump_syscolumn_rows(system_file, page_size=page_size, progress=progress)
-    _emit_progress(progress, f"SYSCOLUMNS scan rows={len(all_columns)}")
-    columns_by_object_id: dict[int, list[Any]] = {}
-    for column in all_columns:
-        columns_by_object_id.setdefault(column.object_id, []).append(column)
-
     _emit_progress(progress, f"SYSINDEXES scan start: file={system_file}")
     all_indexes = dump_sysindex_rows(system_file, page_size=page_size, progress=progress)
     _emit_progress(progress, f"SYSINDEXES scan rows={len(all_indexes)}")
     sysindex_by_id = {index.index_id: index for index in all_indexes}
 
+    syscolumns_storage_id = SYSTEM_DICTIONARY_STORAGE_IDS.get(2)
+    syscolumns_storage_index = (
+        sysindex_by_id.get(syscolumns_storage_id)
+        if syscolumns_storage_id is not None
+        else None
+    )
+    if syscolumns_storage_index is None:
+        syscolumns_storage_child = storage_by_parent.get(2)
+        syscolumns_storage_id = (
+            syscolumns_storage_child.object_id
+            if syscolumns_storage_child is not None and syscolumns_storage_child.object_id is not None
+            else None
+        )
+        syscolumns_storage_index = (
+            sysindex_by_id.get(syscolumns_storage_id)
+            if syscolumns_storage_id is not None
+            else None
+        )
+    if (
+        syscolumns_storage_id is not None
+        and syscolumns_storage_index is not None
+        and syscolumns_storage_index.root_file is not None
+        and syscolumns_storage_index.root_page is not None
+    ):
+        failure_path = None if output_dir is None else output_dir / "syscolumns_failed.dict"
+        _emit_progress(
+            progress,
+            "SYSCOLUMNS storage download start: "
+            f"storage_id={syscolumns_storage_id} "
+            f"root_file={syscolumns_storage_index.root_file} "
+            f"root_page={syscolumns_storage_index.root_page} "
+            f"failure_file={failure_path}",
+        )
+        all_columns = dump_syscolumn_rows_from_storage(
+            system_file,
+            group_id=0 if syscolumns_storage_index.group_id is None else syscolumns_storage_index.group_id,
+            root_file=syscolumns_storage_index.root_file,
+            root_page=syscolumns_storage_index.root_page,
+            storage_id=syscolumns_storage_id,
+            page_size=page_size,
+            failure_path=failure_path,
+            progress=progress,
+        )
+        _emit_progress(progress, f"SYSCOLUMNS storage rows={len(all_columns)}")
+    else:
+        _emit_progress(progress, "SYSCOLUMNS storage root not found; fallback raw scan start")
+        all_columns = dump_syscolumn_rows(system_file, page_size=page_size, progress=progress)
+        _emit_progress(progress, f"SYSCOLUMNS fallback scan rows={len(all_columns)}")
+    columns_by_object_id: dict[int, list[Any]] = {}
+    for column in all_columns:
+        columns_by_object_id.setdefault(column.object_id, []).append(column)
+
     table_rows: list[dict[str, Any]] = []
     column_rows: list[dict[str, Any]] = []
+    emitted_column_object_ids: set[int] = set()
     for table in table_objects:
         assert table.object_id is not None
         storage_child = storage_by_parent.get(table.object_id)
@@ -436,13 +494,23 @@ def _dictionary_rows_from_system_scan(
                 },
             }
         )
-        column_rows.extend(
-            _column_dict_rows_from_system_scan(
-                columns=columns_by_object_id.get(table.object_id, []),
-                owner_name=owner_name,
-                table=table,
+        table_columns = columns_by_object_id.get(table.object_id, [])
+        if table_columns and table.object_id not in emitted_column_object_ids:
+            emitted_column_object_ids.add(table.object_id)
+            column_rows.extend(
+                _column_dict_rows_from_system_scan(
+                    columns=table_columns,
+                    owner_name=owner_name,
+                    table=table,
+                )
             )
+
+    column_rows.extend(
+        _unmatched_column_dict_rows_from_system_scan(
+            columns_by_object_id=columns_by_object_id,
+            matched_object_ids=emitted_column_object_ids,
         )
+    )
 
     table_rows.extend(
         _index_dict_rows_from_system_scan(
@@ -566,6 +634,43 @@ def _column_dict_rows_from_system_scan(
                 },
             }
         )
+    return rows
+
+
+
+
+def _unmatched_column_dict_rows_from_system_scan(
+    *,
+    columns_by_object_id: dict[int, list[Any]],
+    matched_object_ids: set[int],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for object_id in sorted(columns_by_object_id):
+        if object_id in matched_object_ids:
+            continue
+        columns = columns_by_object_id[object_id]
+        for ordinal, column in enumerate(columns, start=1):
+            rows.append(
+                {
+                    "dict_type": "column",
+                    "owner": "",
+                    "table_name": "",
+                    "qualified_table_name": "",
+                    "object_id": object_id,
+                    "column_id": column.column_id,
+                    "ordinal": ordinal,
+                    "name": column.name,
+                    "type_name": column.type_name,
+                    "length": column.length,
+                    "source": "syscolumns-storage-unmatched-table",
+                    "syscolumns": {
+                        "offset": column.offset,
+                        "page_no": column.page_no,
+                        "page_offset": column.page_offset,
+                        "score": column.score,
+                    },
+                }
+            )
     return rows
 
 

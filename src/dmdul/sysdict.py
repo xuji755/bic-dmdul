@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
-from .row import decode_observed_var_length
+from .extract import _build_root_page_plan
+from .metadata import StorageRoot, TableMeta
+from .page import ObservedPageHeader
+from .row import decode_observed_var_length, iter_observed_rows_by_slots, scan_observed_row_chain
+from .storage import DataFile
 
 
 KNOWN_DM_TYPE_NAMES = frozenset(
@@ -426,6 +431,185 @@ def find_sysindex_candidates(
     return _dedupe_sysindex_candidates(candidates)
 
 
+
+
+
+def dump_syscolumn_rows_from_storage(
+    system_file: Path,
+    *,
+    root_file: int,
+    root_page: int,
+    storage_id: int,
+    group_id: int = 0,
+    page_size: int = 8192,
+    failure_path: Path | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> list[SysColumnCandidate]:
+    """Read SYS.SYSCOLUMNS rows from its storage root and page slots.
+
+    This is the dictionary-download path: locate data pages from the storage
+    root, verify page headers, take rows from the page slot directory, and only
+    then decode SYSCOLUMNS fields. Rows that cannot be decoded are preserved in
+    the failure file instead of being silently filtered out.
+    """
+
+    data_file = DataFile(system_file, page_size=page_size)
+    table = TableMeta(
+        owner="SYS",
+        name="SYSCOLUMNS",
+        columns=(),
+        storage=StorageRoot(
+            group_id=group_id,
+            file_no=root_file,
+            root_page=root_page,
+            storage_id=storage_id,
+        ),
+    )
+    plan = _build_root_page_plan(table=table, data_files={root_file: data_file})
+    _emit_storage_progress(
+        progress,
+        "SYSCOLUMNS storage plan: "
+        f"root_file={root_file} root_page={root_page} storage_id={storage_id} "
+        f"pages={len(plan.pages)} diagnostics={len(plan.diagnostics)}",
+    )
+    candidates: list[SysColumnCandidate] = []
+    failures: list[dict[str, Any]] = []
+    pages_done = 0
+    rows_seen = 0
+    for page_ref in plan.pages:
+        pages_done += 1
+        try:
+            page = data_file.read_page(page_ref.page_no)
+            header = ObservedPageHeader.from_page(page)
+        except Exception as exc:  # pragma: no cover - defensive evidence path
+            failures.append(
+                _syscolumn_failure(
+                    reason=f"page-read-failed:{exc}",
+                    file_no=page_ref.file_no,
+                    page_no=page_ref.page_no,
+                )
+            )
+            continue
+        if header.page_kind_raw != 0x14:
+            failures.append(
+                _syscolumn_failure(
+                    reason=f"non-data-page-kind:0x{header.page_kind_raw:x}",
+                    file_no=page_ref.file_no,
+                    page_no=page_ref.page_no,
+                    raw=page[:128],
+                )
+            )
+            continue
+        if header.storage_id_candidate != storage_id:
+            failures.append(
+                _syscolumn_failure(
+                    reason=f"storage-id-mismatch:{header.storage_id_candidate}",
+                    file_no=page_ref.file_no,
+                    page_no=page_ref.page_no,
+                    raw=page[:128],
+                )
+            )
+            continue
+        physical_rows = scan_observed_row_chain(page)
+        slot_rows = iter_observed_rows_by_slots(page)
+        if header.observed_row_count and physical_rows and not slot_rows:
+            failures.append(
+                _syscolumn_failure(
+                    reason="slot-directory-not-decoded",
+                    file_no=page_ref.file_no,
+                    page_no=page_ref.page_no,
+                    raw=page[:256],
+                )
+            )
+        rows = slot_rows
+        rows_seen += len(rows)
+        for row in rows:
+            if row.is_deleted:
+                continue
+            if len(row.data) < 9:
+                failures.append(
+                    _syscolumn_failure(
+                        reason="row-too-short-for-object-id",
+                        file_no=page_ref.file_no,
+                        page_no=page_ref.page_no,
+                        page_offset=row.page_offset,
+                        row_length=row.length,
+                        raw=row.data,
+                    )
+                )
+                continue
+            object_id = int.from_bytes(row.data[5:9], "little", signed=False)
+            candidate = _syscolumn_candidate_from_row(
+                object_id=object_id,
+                absolute=(page_ref.page_no * page_size) + row.page_offset + 5,
+                page_size=page_size,
+                window=row.data,
+                local_object_offset=5,
+            )
+            if candidate is None:
+                failures.append(
+                    _syscolumn_failure(
+                        reason="row-field-decode-failed",
+                        file_no=page_ref.file_no,
+                        page_no=page_ref.page_no,
+                        page_offset=row.page_offset,
+                        row_length=row.length,
+                        raw=row.data,
+                    )
+                )
+                continue
+            candidates.append(candidate)
+        if pages_done == len(plan.pages) or pages_done % 64 == 0:
+            _emit_storage_progress(
+                progress,
+                "SYSCOLUMNS storage progress: "
+                f"pages={pages_done}/{len(plan.pages)} rows_seen={rows_seen} "
+                f"rows_decoded={len(candidates)} failures={len(failures)}",
+            )
+    rows = _dedupe_syscolumn_candidates(candidates)
+    if failure_path is not None:
+        _write_syscolumn_failures(failure_path, failures)
+    _emit_storage_progress(
+        progress,
+        "SYSCOLUMNS storage done: "
+        f"pages={pages_done}/{len(plan.pages)} rows_seen={rows_seen} "
+        f"rows_decoded={len(rows)} failures={len(failures)}"
+        + (f" failure_file={failure_path}" if failure_path is not None else ""),
+    )
+    return rows
+
+
+def _emit_storage_progress(progress: Callable[[str], None] | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
+
+
+def _syscolumn_failure(
+    *,
+    reason: str,
+    file_no: int,
+    page_no: int,
+    page_offset: int | None = None,
+    row_length: int | None = None,
+    raw: bytes = b"",
+) -> dict[str, Any]:
+    return {
+        "reason": reason,
+        "file_no": file_no,
+        "page_no": page_no,
+        "page_offset": "" if page_offset is None else page_offset,
+        "row_length": "" if row_length is None else row_length,
+        "raw_hex": raw.hex(),
+    }
+
+
+def _write_syscolumn_failures(path: Path, failures: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as file:
+        fieldnames = ("reason", "file_no", "page_no", "page_offset", "row_length", "raw_hex")
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(failures)
 
 def dump_sysindex_rows(
     system_file: Path,
