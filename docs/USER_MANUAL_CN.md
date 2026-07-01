@@ -188,7 +188,7 @@ prepare -> bootstrap -> dump-data
 
 ### 阶段 1：prepare
 
-生成 `init.dul` 和 `filelist.dul`。
+在 bootstrap 之前生成 `init.dul` 和 `filelist.dul`。优先使用 `dm.ctl` 取得数据库的数据文件清单；如果没有控制文件，再退回到目录扫描和 DBF 页头识别。
 
 ### 阶段 2：bootstrap
 
@@ -200,9 +200,63 @@ prepare -> bootstrap -> dump-data
 
 ## 5. 阶段 1：prepare
 
-### 5.1 从数据库目录生成 init.dul/filelist.dul
+### 5.1 从 dm.ctl 生成 init.dul/filelist.dul
 
-命令：
+这是推荐方式，应放在 bootstrap 之前执行。适用于大多数直接在故障数据库服务器或数据库文件拷贝目录上提取的场景。
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  prepare \
+  --control-file /recovery/dmcopy/dm.ctl \
+  --dirlist /recovery/dmcopy \
+  --init-output /recovery/work/init.dul \
+  --filelist-output /recovery/work/filelist.dul \
+  --output-dir /recovery/work/dulout \
+  --dict-dir /recovery/work/dict \
+  --parallel 4 \
+  --delimiter '|' \
+  --json
+```
+
+`dm.ctl` 中记录的是原数据库的数据文件路径。发布包会用这些路径中的 DBF 文件名去 `--dirlist` 指定目录中寻找当前可读取的数据文件，然后从 DBF page0 页头读取 `group_id/file_id`，生成 `filelist.dul`。这样可以兼容“原路径不可用，但文件已复制到恢复目录”的场景。
+
+也可以单独生成文件清单，便于检查：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  write-control-ctl \
+  --control-file /recovery/dmcopy/dm.ctl \
+  --dirlist /recovery/dmcopy \
+  --output /recovery/work/filelist.dul \
+  --json
+```
+
+参数说明：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--control-file` | 指定 `dm.ctl` 或控制文件路径。推荐在 prepare 阶段显式指定。 |
+| `--dirlist` | 存放 DBF 的目录清单，多个目录用逗号分隔。工具用控制文件里的 DBF 文件名到这些目录中匹配当前可读取文件。 |
+| `--database-dir` | 离线数据库文件目录。不指定 `--control-file` 时可用该参数扫描整个目录。 |
+| `--init-output` | 输出 `init.dul` 路径。默认当前目录 `init.dul`。 |
+| `--filelist-output` | 输出 `filelist.dul` 路径。默认当前目录 `filelist.dul`。 |
+| `--output-dir` | 后续表数据导出目录。 |
+| `--dict-dir` | 后续字典文件目录。未指定时使用 `output_dir`。 |
+| `--parallel` | 写入 init.dul 的并发度。 |
+| `--delimiter` | 写入 init.dul 的数据分隔符。 |
+| `--sample-limit` | 控制文件 DBF 路径扫描上限，默认 1000000，prepare 阶段按全量文件清单处理。 |
+| `--json` | 输出 JSON 结果，便于脚本判断。 |
+
+成功后会生成：
+
+```text
+/recovery/work/init.dul
+/recovery/work/filelist.dul
+```
+
+### 5.2 从数据库目录生成 init.dul/filelist.dul
+
+如果不显式指定 `--control-file`，也可以直接指定数据库目录。工具会扫描目录中的控制文件和 DBF，并生成 `filelist.dul`：
 
 ```sh
 TMPDIR=./tmp ./bin/dmdul \
@@ -217,29 +271,7 @@ TMPDIR=./tmp ./bin/dmdul \
   --json
 ```
 
-参数说明：
-
-| 参数 | 说明 |
-| --- | --- |
-| `--database-dir` | 离线数据库文件目录。工具会尝试基于控制文件/数据文件识别 group/file。 |
-| `--dirlist` | 如果不用 `--database-dir`，可给出多个目录，逗号分隔。 |
-| `--init-output` | 输出 `init.dul` 路径。默认当前目录 `init.dul`。 |
-| `--filelist-output` | 输出 `filelist.dul` 路径。默认当前目录 `filelist.dul`。 |
-| `--output-dir` | 后续表数据导出目录。 |
-| `--dict-dir` | 后续字典文件目录。未指定时使用 `output_dir`。 |
-| `--parallel` | 写入 init.dul 的并发度。 |
-| `--delimiter` | 写入 init.dul 的数据分隔符。 |
-| `--sample-limit` | 控制文件/目录扫描时的采样数量，默认 8。 |
-| `--json` | 输出 JSON 结果，便于脚本判断。 |
-
-成功后会生成：
-
-```text
-/recovery/work/init.dul
-/recovery/work/filelist.dul
-```
-
-### 5.2 没有控制文件时
+### 5.3 没有控制文件时
 
 如果没有控制文件，当前工具会根据目录中的数据文件页头进行识别：
 
@@ -256,7 +288,7 @@ TMPDIR=./tmp ./bin/dmdul \
 
 注意：如果页头损坏或文件不完整，自动识别结果可能需要人工校验 `filelist.dul`。
 
-### 5.3 校验 filelist.dul
+### 5.4 校验 filelist.dul
 
 `prepare` 会返回 diagnostics。如果出现：
 
@@ -267,6 +299,7 @@ filelist-duplicate-group-file
 ```
 
 需要先修正 `filelist.dul`。
+
 
 ## 6. 阶段 2：bootstrap 下载数据字典
 
@@ -709,7 +742,8 @@ export TMPDIR=./tmp
 ```sh
 ./bin/dmdul \
   prepare \
-  --database-dir /recovery/dmcopy \
+  --control-file /recovery/dmcopy/dm.ctl \
+  --dirlist /recovery/dmcopy \
   --init-output /recovery/work/init.dul \
   --filelist-output /recovery/work/filelist.dul \
   --output-dir /recovery/work/dulout \
@@ -899,7 +933,7 @@ TMPDIR=./tmp ./bin/dmdul --help
 当前阶段已验证：
 
 ```text
-125 tests OK
+127 tests OK
 ```
 
 ## 18. 快速命令清单
@@ -907,7 +941,8 @@ TMPDIR=./tmp ./bin/dmdul --help
 ```sh
 # 1. prepare
 ./bin/dmdul prepare \
-  --database-dir /recovery/dmcopy \
+  --control-file /recovery/dmcopy/dm.ctl \
+  --dirlist /recovery/dmcopy \
   --init-output /recovery/work/init.dul \
   --filelist-output /recovery/work/filelist.dul \
   --output-dir /recovery/work/dulout \

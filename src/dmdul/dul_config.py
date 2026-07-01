@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .control_map import build_control_ctl
-from .discovery import discover_data_files
+from .control_file import summarize_control_file
+from .discovery import DiscoveredDataFile, discover_data_files
 
 
 DEFAULT_INIT_VALUES = {
@@ -155,6 +156,37 @@ def build_filelist_from_dirs(
     return tuple(entries)
 
 
+def build_filelist_from_control_file(
+    *,
+    control_file: Path,
+    search_dirs: tuple[Path, ...],
+    page_size: int,
+    sample_limit: int = 128,
+) -> tuple[FileListEntry, ...]:
+    """Build filelist.dul entries from DBF path evidence in dm.ctl.
+
+    The control file defines the intended DBF set. The current implementation
+    resolves those paths against the copied database directories and reads the
+    group/file identity from DBF page0 headers.
+    """
+
+    summary = summarize_control_file(control_file, sample_limit=sample_limit)
+    paths = _control_file_local_dbf_paths(
+        control_file=control_file,
+        summary=summary,
+        search_dirs=search_dirs or (control_file.parent,),
+    )
+    discovered = _discover_specific_data_files(paths, page_size=page_size)
+    return tuple(
+        FileListEntry(
+            group_id=item.group_id,
+            file_id=item.file_no_hint,
+            path=item.path,
+        )
+        for item in discovered
+    )
+
+
 def build_filelist_from_database_dir(
     *,
     database_dir: Path,
@@ -173,6 +205,60 @@ def build_filelist_from_database_dir(
             path=Path(str(row["path"])),
         )
         for row in manifest["rows"]
+    )
+
+
+def _control_file_local_dbf_paths(
+    *,
+    control_file: Path,
+    summary: dict[str, Any],
+    search_dirs: tuple[Path, ...],
+) -> tuple[Path, ...]:
+    records = summary.get("dbf_path_occurrences") or summary.get("dbf_path_hint_records", ())
+    by_basename: dict[str, list[Path]] = {}
+    for directory in search_dirs:
+        if not directory.exists():
+            continue
+        for path in directory.rglob("*"):
+            if path.is_file() and path.suffix.lower() == ".dbf":
+                by_basename.setdefault(path.name.lower(), []).append(path)
+
+    result: list[Path] = []
+    seen: set[Path] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        text = str(record.get("text", ""))
+        basename = str(record.get("basename") or Path(text.replace("\\", "/")).name).lower()
+        candidates: list[Path] = []
+        original = Path(text)
+        if original.is_absolute() and original.exists():
+            candidates.append(original)
+        candidates.extend(by_basename.get(basename, ()))
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            result.append(candidate)
+            break
+    return tuple(result)
+
+
+def _discover_specific_data_files(
+    paths: tuple[Path, ...],
+    *,
+    page_size: int,
+) -> tuple[DiscoveredDataFile, ...]:
+    directories = sorted({path.parent for path in paths})
+    discovered_by_path: dict[Path, DiscoveredDataFile] = {}
+    for directory in directories:
+        for item in discover_data_files(directory, page_size=page_size):
+            discovered_by_path[item.path.resolve()] = item
+    return tuple(
+        discovered_by_path[path.resolve()]
+        for path in paths
+        if path.resolve() in discovered_by_path
     )
 
 

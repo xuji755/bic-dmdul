@@ -80,6 +80,50 @@ class CliTest(unittest.TestCase):
             ],
         )
 
+    def test_write_control_ctl_from_explicit_dm_ctl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            control = root / "dm.ctl"
+            output = root / "filelist.dul"
+            control.write_bytes(
+                b"\0DATAFILE=/original/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/original/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(_large_page0(group_raw=0, page_kind=0x13))
+            (root / "DMDUL_TS01.DBF").write_bytes(_large_page0(group_raw=6, page_kind=0x13))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "write-control-ctl",
+                    "--control-file",
+                    str(control),
+                    "--dirlist",
+                    str(root),
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+            rows = list(csv.reader(output.read_text(encoding="utf-8").splitlines()))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "dm-control-filelist")
+        self.assertEqual(payload["rows_total"], 2)
+        self.assertEqual(
+            rows,
+            [
+                ["0", "0", str(root / "SYSTEM.DBF")],
+                ["6", "0", str(root / "DMDUL_TS01.DBF")],
+            ],
+        )
+
     def test_write_control_ctl_without_dm_ctl_uses_dbf_headers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -568,6 +612,58 @@ class CliTest(unittest.TestCase):
         self.assertEqual(rows, [["0", "0", str(root / "SYSTEM.DBF")], ["6", "0", str(root / "DMDUL_TS01.DBF")]])
         self.assertIn("--filelist=", init_text)
         self.assertIn("--parallel=2", init_text)
+
+    def test_prepare_from_explicit_dm_ctl_writes_init_and_filelist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            control = root / "dm.ctl"
+            init_file = root / "init.dul"
+            filelist = root / "filelist.dul"
+            output_dir = root / "out"
+            control.write_bytes(
+                b"\0DATAFILE=/original/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/original/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(_large_page0(group_raw=0, page_kind=0x13))
+            (root / "DMDUL_TS01.DBF").write_bytes(_large_page0(group_raw=6, page_kind=0x13))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "prepare",
+                    "--control-file",
+                    str(control),
+                    "--dirlist",
+                    str(root),
+                    "--init-output",
+                    str(init_file),
+                    "--filelist-output",
+                    str(filelist),
+                    "--output-dir",
+                    str(output_dir),
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            rows = list(csv.reader(filelist.read_text(encoding="utf-8").splitlines()))
+            init_text = init_file.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["files_total"], 2)
+        self.assertEqual(
+            rows,
+            [
+                ["0", "0", str(root / "SYSTEM.DBF")],
+                ["6", "0", str(root / "DMDUL_TS01.DBF")],
+            ],
+        )
+        self.assertIn(f"--filelist={filelist}", init_text)
+        self.assertIn(f"--dirlist={root}", init_text)
 
     def test_dump_data_writes_sql_header_and_pipe_delimited_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

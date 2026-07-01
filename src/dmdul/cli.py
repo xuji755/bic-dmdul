@@ -16,6 +16,8 @@ from .bootstrap import build_bootstrap_dicts
 from .control_file import compare_control_files, summarize_control_file
 from .control_map import write_control_ctl
 from .dul_config import (
+    FileListEntry,
+    build_filelist_from_control_file,
     build_filelist_from_database_dir,
     build_filelist_from_dirs,
     load_runtime_config,
@@ -141,7 +143,20 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
     init_path = Path(args.init_output)
     filelist_path = Path(args.filelist_output)
     dirlist = tuple(Path(item.strip()) for item in (args.dirlist or "").split(",") if item.strip())
-    if args.database_dir:
+    if args.control_file:
+        control_file = Path(args.control_file)
+        if not dirlist:
+            if args.database_dir:
+                dirlist = (Path(args.database_dir),)
+            else:
+                dirlist = (control_file.parent,)
+        entries = build_filelist_from_control_file(
+            control_file=control_file,
+            search_dirs=dirlist,
+            page_size=args.page_size,
+            sample_limit=args.sample_limit,
+        )
+    elif args.database_dir:
         entries = build_filelist_from_database_dir(
             database_dir=Path(args.database_dir),
             page_size=args.page_size,
@@ -383,18 +398,68 @@ def _cmd_compare_control_files(args: argparse.Namespace) -> int:
 
 
 def _cmd_write_control_ctl(args: argparse.Namespace) -> int:
-    manifest = write_control_ctl(
-        database_dir=Path(args.database_dir),
-        output=Path(args.output),
-        page_size=args.page_size,
-        sample_limit=args.sample_limit,
-    )
+    if args.control_file:
+        dirlist = tuple(Path(item.strip()) for item in (args.dirlist or "").split(",") if item.strip())
+        if not dirlist:
+            if args.database_dir:
+                dirlist = (Path(args.database_dir),)
+            else:
+                dirlist = (Path(args.control_file).parent,)
+        entries = build_filelist_from_control_file(
+            control_file=Path(args.control_file),
+            search_dirs=dirlist,
+            page_size=args.page_size,
+            sample_limit=args.sample_limit,
+        )
+        write_filelist(Path(args.output), entries)
+        manifest = _filelist_manifest_from_entries(
+            mode="dm-control-filelist",
+            output=Path(args.output),
+            entries=entries,
+            diagnostics=validate_filelist(entries),
+        )
+    else:
+        if args.database_dir is None:
+            print(
+                "dmdul: write-control-ctl requires database_dir or --control-file",
+                file=sys.stderr,
+            )
+            return 2
+        manifest = write_control_ctl(
+            database_dir=Path(args.database_dir),
+            output=Path(args.output),
+            page_size=args.page_size,
+            sample_limit=args.sample_limit,
+        )
     if args.json:
         print(json.dumps(manifest, indent=2))
     else:
         print(f"output={manifest['output']}")
         print(f"rows={manifest['rows_total']}")
     return 0 if manifest["rows_total"] else 1
+
+
+def _filelist_manifest_from_entries(
+    *,
+    mode: str,
+    output: Path,
+    entries: tuple[FileListEntry, ...],
+    diagnostics: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "mode": mode,
+        "output": str(output),
+        "rows_total": len(entries),
+        "rows": [
+            {
+                "tablespace_id": entry.group_id,
+                "file_id": entry.file_id,
+                "path": str(entry.path),
+            }
+            for entry in entries
+        ],
+        "diagnostics": diagnostics,
+    }
 
 
 def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
@@ -1225,9 +1290,11 @@ def build_parser() -> argparse.ArgumentParser:
         "write-control-ctl",
         help="write extraction-time control.ctl as tablespace_id,file_id,path rows",
     )
-    write_control.add_argument("database_dir")
+    write_control.add_argument("database_dir", nargs="?")
+    write_control.add_argument("--control-file")
+    write_control.add_argument("--dirlist")
     write_control.add_argument("--output", required=True)
-    write_control.add_argument("--sample-limit", type=int, default=8)
+    write_control.add_argument("--sample-limit", type=int, default=1000000)
     write_control.add_argument("--json", action="store_true")
     write_control.set_defaults(func=_cmd_write_control_ctl)
 
@@ -1236,6 +1303,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="create init.dul and filelist.dul from control files or DBF page headers",
     )
     prepare.add_argument("--database-dir")
+    prepare.add_argument("--control-file")
     prepare.add_argument("--dirlist")
     prepare.add_argument("--init-output", default="init.dul")
     prepare.add_argument("--filelist-output", default="filelist.dul")
@@ -1243,7 +1311,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--dict-dir")
     prepare.add_argument("--parallel", type=int, default=1)
     prepare.add_argument("--delimiter", default="|")
-    prepare.add_argument("--sample-limit", type=int, default=8)
+    prepare.add_argument("--sample-limit", type=int, default=1000000)
     prepare.add_argument("--json", action="store_true")
     prepare.set_defaults(func=_cmd_prepare)
 
