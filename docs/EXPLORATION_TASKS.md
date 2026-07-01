@@ -79,13 +79,27 @@ to explain the underlying database structure.
   page-0 headers so the file can also be hand-written when `dm.ctl` is absent.
 - [x] Allow `bootstrap-dicts --table` to populate `user.dict`, `tab.dict`, and
   `col.dict` for a requested table using current SYSTEM.DBF heuristic scans.
-- [ ] Replace target-table heuristic bootstrap with full SYSTEM dictionary
-  extraction:
+- [x] Add `bootstrap` alias and `-b/--download-dictionaries` preprocessing
+  option that scans `SYSTEM.DBF` and writes first-stage `user.dict`, `tab.dict`,
+  and `col.dict` without requiring a target table name.
+  - Current output is marked `heuristic-system-scan`.
+  - `SYSOBJECTS` table rows recover table name, object id, type, and subtype.
+  - `SYSOBJECTS` `TABOBJ/INDEX` child rows recover storage/index id and the
+    parent object id when the calibrated pattern is present.
+  - `SYSCOLUMNS` clean rows are scanned once and grouped by table object id.
+- [ ] Replace first-stage heuristic SYSTEM dictionary extraction with complete
+  dictionary-table decoding:
   - locate USER/TABLE/COLUMN dictionary table segments from SYSTEM metadata
   - scan those dictionary table segments without a target table name
   - write complete `user.dict`, `tab.dict`, and `col.dict`
   - include table object id, storage index id, tablespace id, file id, root page,
     column id, type id/name, precision, scale, length, nullable, and ordering
+- [ ] Add concurrent user-table data download after dictionary preprocessing:
+  - read table tasks from `tab.dict` plus column metadata from `col.dict`
+  - split work by table first, then by page/extent ranges when a table is large
+  - validate each worker page by page-header `storage_id` before decoding rows
+  - write per-table outputs and worker diagnostics independently, then merge
+    manifests at the end
 
 ## B. Page Header And Space Management
 
@@ -128,11 +142,17 @@ to explain the underlying database structure.
   - `0x24` as active-row-count plus control count
   - `0x26` as row-area end or next free offset
   - `0x2e` as deleted/free-row-list head
-  - `0x38` as object/storage/index identifier
+- [x] Confirm page-header storage id candidate:
+  - `u32le(page[0x3a:0x3e])` matches `SYSINDEXES.ID`
+  - the same value appears in `SYSOBJECTS` as the `TABOBJ/INDEX` child object `ID`
+  - the value identifies a storage object, not the parent table `SYSOBJECTS.ID`
+- [ ] Decode the `0x38` two-byte storage prefix and its root/header versus leaf semantics.
 - [ ] Decode file or extent bitmap pages enough to distinguish allocated and
   free pages.
 - [ ] Decode page checksum or validation fields if present.
 - [ ] Decode page SCN/LSN/checkpoint fields if present.
+- [ ] Validate `u32le(page[0x1c:0x20])` as a page-change/SCN candidate with synchronized checkpoint and DML evidence.
+- [ ] Validate `u32le(page[0x18:0x1c])` as checksum/hash/validation candidate.
 - [x] Reject sampled pages whose header identity does not match their file/page
   position in preflight.
 - [x] Reject sampled same-file page references that point beyond the file page
@@ -252,13 +272,15 @@ to explain the underlying database structure.
   2. find the first SYSTEM tablespace file and dictionary table locations;
   3. dump dictionary information into `user.dict`, `tab.dict`, `col.dict`, and
      `file.dict`.
-- [ ] Decode enough `SYSOBJECTS` rows offline to recover object name/id/schema/type.
+- [ ] Decode enough `SYSOBJECTS` table rows offline to recover table name, object id, schema id, and type/subtype for `SCHOBJ` `UTAB`/`STAB` rows.
+- [ ] Decode enough `SYSOBJECTS` table-level child rows offline to recover `TABOBJ` `INDEX` rows, including `ID=storage_id` and `PID=parent table object id`.
 - [ ] Decode complete `SYSCOLUMNS` row layout offline, including scale,
   nullability, defaults, and exact column id base.
 - [ ] Decode complete `SYSINDEXES` row layout offline, including `KEYINFO` and
   extent allocation fields.
 - [ ] Decode complete `SYSOBJECTS` child-index row layout, including exact `PID`,
   `TYPE$`, and `SUBTYPE$` offsets.
+- [ ] Add fallback storage-object scanner for missing or damaged `SYSTEM.DBF`: group DBF pages by page-header storage id and emit `UNKNOWN_STORAGE_<storage_id>` manifests.
 - [ ] Remove hard-coded dictionary root pages by discovering them from file
   metadata or a reliable system bootstrap structure.
 - [ ] Decode schema/user dictionary metadata enough to resolve duplicate table

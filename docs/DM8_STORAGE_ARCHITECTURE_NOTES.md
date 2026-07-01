@@ -127,9 +127,14 @@ Examples:
 - `00 00 62 00 00 00` => file 0, page 98
 
 The page-header first field was initially treated as only `group_id`. Real
-multi-file tablespaces showed this was incomplete, and the first byte is now
-also recorded independently as `page_type_raw` because DM PAGE type is commonly
-stored at the beginning of the page:
+multi-file tablespaces showed this was incomplete, and the first byte was
+recorded independently as `page_type_raw` because DM PAGE type is commonly
+stored at the beginning of the page. Later SYSTEM/user-file scans refined that
+interpretation: in the tested files, the first byte is the low byte of
+`group_raw`, not a reliable page type. `SYSTEM.DBF` has first byte `0x00` on
+all nonzero pages because its group id is `0`; `DMDUL_TS01.DBF` has first byte
+`0x06` on all nonzero pages because its group id is `6`. The current page-role
+candidate remains the 4-byte `page_kind_raw` field at offset `0x14`.
 
 | File | Raw first field | Working split |
 | --- | ---: | --- |
@@ -176,6 +181,49 @@ Common `page_kind_raw` values observed at offset `0x14`:
 These names are tentative labels used in `ObservedPageHeader` and
 `catalog-pages` output. They are not final parser semantics.
 
+### Page Header Storage Id And Change Fields
+
+Scanning `evidence/system/SYSTEM.DBF` and
+`evidence/type_store/DMDUL_TS01.DBF` produced these stronger working
+interpretations for ordinary nonzero pages:
+
+| Offset | Size | Working name | Evidence |
+| ---: | ---: | --- | --- |
+| `0x18` | 4 | `page_checksum_or_hash_candidate` | changes per page and appears non-monotonic when interpreted as `u32le` |
+| `0x1c` | 4 | `page_change_scn_candidate` | the `u32le` high half of the 8-byte field at `0x18`; user-table BTREE pages show monotonic-looking values across linked/related pages |
+| `0x38` | 2 | `storage_prefix_candidate` | root/header pages may differ from leaf pages; exact meaning still unknown |
+| `0x3a` | 4 | `storage_id_candidate` | matches `SYS.SYSINDEXES.ID` and the `SYS.SYSOBJECTS` table-level `TABOBJ/INDEX` child object id |
+
+The 8-byte field at `0x18` should no longer be treated as one opaque SCN-like
+`u64`. In user-table BTREE pages, the low `u32` at `0x18` has hash-like or
+checksum-like behavior, while the high `u32` at `0x1c` has stronger page-change
+or SCN-like behavior. This still needs synchronized checkpoint/DML evidence
+before it can be promoted to a real SCN field.
+
+The storage id evidence is stronger. For `DMDUL_MANY`, the table object id is
+`33629`, but the root and leaf pages contain storage id `33595349` at
+`0x3a`:
+
+```text
+page 80  offset 0x38: 0100d59f0002 => prefix 1, storage id 33595349
+page 96  offset 0x38: 0000d59f0002 => prefix 0, storage id 33595349
+page 135 offset 0x38: 0000d59f0002 => prefix 0, storage id 33595349
+```
+
+Other controlled pages show the same relation:
+
+```text
+page 144 offset 0x38: 0000d69f0002 => storage id 33595350
+page 160 offset 0x38: 0000d79f0002 => storage id 33595351
+page 176 offset 0x38: 0000d89f0002 => storage id 33595352
+page 192 offset 0x38: 0000d99f0002 => storage id 33595353
+page 208 offset 0x38: 0000da9f0002 => storage id 33595354
+```
+
+The field therefore identifies the storage object, not the table object.
+For page ownership checks, compare page-header `storage_id_candidate` against
+`SYSINDEXES.ID`, not against `SYSOBJECTS.ID` for the parent table.
+
 ## Segment And Extent Findings
 
 `DBA_SEGMENTS` reports allocated segment blocks. For example:
@@ -213,6 +261,33 @@ entry with:
 - `ROOTFILE = 0`
 - `ROOTPAGE = table root/header block`
 - `GROUPID = tablespace id`
+
+
+The offline table-entry chain now has a clearer evidence-backed shape:
+
+```text
+SYSOBJECTS table object row
+  TYPE$='SCHOBJ', SUBTYPE$ in ('UTAB', 'STAB')
+  ID = table_object_id
+
+SYSOBJECTS table-level child row
+  TYPE$='TABOBJ', SUBTYPE$='INDEX'
+  PID = table_object_id
+  ID = storage_id
+  NAME = INDEX<storage_id>
+
+SYSINDEXES row
+  ID = storage_id
+  GROUPID, ROOTFILE, ROOTPAGE = physical entry
+
+PAGE HEADER
+  u32le(page[0x3a:0x3e]) = storage_id, used to validate page ownership
+```
+
+`SYSOBJECTS` table object rows contain the table identity (`NAME`, `ID`,
+`SCHID`, `TYPE$`, `SUBTYPE$`) but currently do not show direct
+`GROUPID/ROOTFILE/ROOTPAGE` values. Those physical entry fields are recovered
+from `SYSINDEXES` by way of the `TABOBJ/INDEX` child object.
 
 Even a table without a primary key (`DMDUL_HEAP`) has a BTREE storage object.
 This supports the initial assumption that ordinary DM row tables are BTREE
@@ -258,6 +333,29 @@ This validates the current transitional extraction strategy for non-NULL
 `INT, VARCHAR, VARCHAR` rows when the segment page range is supplied through
 calibrated metadata. The final extractor still needs to derive the range from
 offline dictionary/BTREE metadata instead of requiring it in JSON.
+
+## Storage-Id Scan Recovery When SYSTEM Is Missing
+
+Because ordinary table and index pages carry `storage_id_candidate` in the page
+header, a damaged or missing `SYSTEM.DBF` does not make all physical recovery
+impossible. Without SYS dictionary rows, names and column definitions are not
+reliably available, but the extractor can still group data pages by storage
+object:
+
+```text
+scan all DBF files
+  -> read nonzero page headers
+  -> group pages by u32le(page[0x3a:0x3e])
+  -> classify root/header, internal, leaf/data, empty, and metadata pages
+  -> follow same-storage next-page links where available
+  -> emit UNKNOWN_STORAGE_<storage_id> physical recovery candidates
+```
+
+This fallback can recover page ownership, root/header candidates, linked leaf
+chains, approximate row counts, and raw row samples for each storage object. It
+cannot by itself recover schema/table names, column names, exact types, or full
+transaction visibility semantics. Treat it as a second recovery route and a
+cross-check for dictionary-driven recovery.
 
 ## Row Format Observations
 
@@ -941,3 +1039,166 @@ for row/page decoder development but is not sufficient for DUL-style recovery.
 - Explore file header fields by comparing multiple tablespaces with different
   sizes and file numbers.
 - Determine how `SYS.V$DATAFILE` metadata is persisted on disk.
+## Segment Root / BTree Root Exploration - 2026-07-01
+
+This section records the current answer to the question: does a table's storage
+root page have bitmap pages after it, and can we parse the segment header enough
+to create an exact page plan?
+
+### Current Evidence
+
+Controlled table evidence from `evidence/type_store/DMDUL_TS01.DBF` shows two
+patterns.
+
+Small tables whose rows fit in one page usually have:
+
+```text
+root page     kind 0x14        BTREE data page
+root + 1      kind 0x1a1a001a  small internal metadata/anchor page
+root + 2...   kind 0xffff00ff  initialized empty pages
+```
+
+Examples: `DMDUL_ONE2`, `DMDUL_DTTM2`, `DMDUL_NUM38_STORE`,
+`DMDUL_TYPE_STORE`. For these tables, `root+1` is not a useful bitmap in the
+current evidence: it contains only header/anchor fields and a few tail bytes; the
+rest is zero.
+
+The larger table `TEST2.DMDUL_MANY` has a different root page:
+
+```text
+root page 80      kind 0x15        BTREE root/internal page
+root + 1 page 81  kind 0x1a1a001a  metadata/anchor page
+pages 82..95      kind 0xffff00ff  initialized empty pages
+data pages 96..135 kind 0x14       BTREE leaf/data pages, linked by prev/next
+```
+
+The data pages are not discovered from a bitmap after the root. They are
+discovered from the BTREE root/internal page itself.
+
+### DMDUL_MANY Root Page 80
+
+Important page 80 header fields observed:
+
+```text
+page kind                 0x15
+storage id                33595349
+entry count field          39
+leftmost child candidate   96   (offset 0x52 as u16)
+```
+
+The data page chain found by scanning page headers is exactly:
+
+```text
+96 -> 97 -> 98 -> ... -> 135
+```
+
+Page 80 explains that same chain without a fallback range scan:
+
+- offset `0x52` stores the leftmost child page: `96`;
+- the root page has 39 slot entries at the page tail;
+- each entry is currently observed as 15 bytes;
+- each entry contains a child page number and a separator key.
+
+Representative entries:
+
+```text
+entry off 3137: 00 0f 00 61 00 00 00 00 00 03 00 00 00 00 00
+                child page 97, separator key 3
+
+entry off   98: 00 0f 00 62 00 00 00 00 00 05 00 00 00 00 00
+                child page 98, separator key 5
+
+entry off 6176: 00 0f 00 63 00 00 00 00 00 07 00 00 00 00 00
+                child page 99, separator key 7
+
+...
+
+entry off 6716: 00 0f 00 87 00 00 00 00 00 4f 00 00 00 00 00
+                child page 135, separator key 79
+```
+
+This gives the exact child page list:
+
+```text
+[96] + [97, 98, 99, ..., 135]
+```
+
+This matches the actual BTREE leaf/data pages whose page headers have
+`storage_id = 33595349` and whose `prev/next` chain runs from page 96 to 135.
+
+### Root+1 Metadata Page
+
+The `0x1a1a001a` page after each root is stable but does not currently look like
+an extent bitmap. It has only a small number of nonzero fields. Current useful
+fields include:
+
+```text
+offset 0x3a: storage id
+offset 0x46: small-table value 1; DMDUL_MANY value 4; suspected allocation/extent count, unconfirmed
+offset 0x4a: total row count in current evidence; examples:
+             DMDUL_ONE2=4, DMDUL_DTTM2=3, DMDUL_TYPE_STORE=3, DMDUL_MANY=80
+```
+
+`offset 0x46` needs more samples before naming it. The current hypothesis is an
+allocation-unit or extent-related count because `DMDUL_MANY` is the only sample
+with value 4 while small one-page tables have value 1.
+
+### Current Answer
+
+No convincing extent bitmap has been found immediately after the table storage
+root in the current controlled evidence. The page after root is a small
+metadata/anchor page, not a populated bitmap.
+
+For a table whose root page is itself a data page (`kind 0x14`), the root page is
+the only data page in current small-table samples.
+
+For a table whose root page is an internal/root page (`kind 0x15`), the root page
+contains enough BTREE child-page entries to build an exact page plan. In the
+`DMDUL_MANY` sample, parsing offset `0x52` plus the 39 child entries gives all
+40 data pages precisely, avoiding the scan-range fallback.
+
+### Implementation Direction
+
+The next page-plan implementation should be:
+
+1. If explicit page refs exist, use them.
+2. Else read the root page.
+3. If root kind is `0x14`, treat root as a data page and verify storage id.
+4. If root kind is `0x15`, parse it as a BTREE internal/root page:
+   - read leftmost child page from offset `0x52`;
+   - read slot offsets from the page tail using the root entry count;
+   - parse each observed 15-byte child entry to collect child page numbers;
+   - verify each child page header has kind `0x14` and matching storage id;
+   - follow/validate the leaf `prev/next` chain.
+5. Keep storage-id scan as a fallback diagnostic only when root parsing is not
+understood.
+
+This is a stronger and more precise answer than looking for a bitmap in the
+post-root pages.
+
+### Table Storage BTree Versus Independent Index Segments
+
+This evidence should not be interpreted as every table having a separate index
+segment for its data. The observed `0x15` page is currently best described as a
+BTREE root/internal page inside the table storage object: root page 80, child
+pages 96..135, and all leaf pages share the same table `storage_id = 33595349`.
+
+Production systems may also have independent primary-key or secondary-index
+segments. Those must be identified through `SYSINDEXES` and their own storage
+ids/root pages. The downloader must therefore keep these concepts separate:
+
+- table storage object: the storage id used to recover table rows; it may be
+  organized as a BTREE with root/internal/leaf pages;
+- index storage object: a separate `SYSINDEXES` object with its own storage id,
+  root page, and entries pointing to keys/rows.
+
+For table data recovery, dmdul should first parse the table storage object's
+BTREE page plan. Index segments can be used later as auxiliary evidence or for
+index export, but should not be conflated with the table storage id unless
+`SYSINDEXES` proves that relationship.
+
+Production extent allocation must also be treated as non-contiguous. Child pages
+from a BTREE root and leaf `prev/next` links are safer than scanning a contiguous
+range because other objects' extents can appear between a table's extents. Every
+planned page must still be verified by page header identity and storage id.
+

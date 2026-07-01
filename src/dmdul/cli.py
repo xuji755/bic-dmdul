@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .block import (
@@ -14,6 +15,15 @@ from .block import (
 from .bootstrap import build_bootstrap_dicts
 from .control_file import compare_control_files, summarize_control_file
 from .control_map import write_control_ctl
+from .dul_config import (
+    build_filelist_from_database_dir,
+    build_filelist_from_dirs,
+    load_runtime_config,
+    read_filelist,
+    validate_filelist,
+    write_filelist,
+    write_init_dul,
+)
 from .database_summary import summarize_database_dir
 from .discovery import discover_data_files
 from .evidence import (
@@ -30,11 +40,148 @@ from .resolver import OfflineResolveError, resolve_offline_table_metadata
 from .row import iter_observed_rows, scan_observed_row_chain
 from .storage import DataFile
 from .sysdict import (
+    dump_sysobject_rows,
     find_syscolumn_candidates,
     find_sysindex_candidates,
     find_sysobject_candidates,
     find_sysobject_index_child_candidates,
 )
+
+
+
+
+def _read_init_dul(path: Path) -> dict[str, str]:
+    config: dict[str, str] = {}
+    if not path.exists():
+        return config
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith(";"):
+            continue
+        if "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if key.startswith("--"):
+            key = key[2:]
+        normalized_key = key.lower().replace("-", "_")
+        normalized_value = value.strip().strip('"').strip("'")
+        config[normalized_key] = normalized_value
+    return config
+
+
+def _bool_from_init(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _load_init_config(args: argparse.Namespace, argv: list[str]) -> dict[str, str]:
+    candidates: list[Path] = []
+    explicit_init = getattr(args, "init_file", None)
+    if explicit_init:
+        candidates.append(Path(explicit_init))
+    database_dir = getattr(args, "database_dir", None)
+    if database_dir:
+        candidates.append(Path(database_dir) / "init.dul")
+    candidates.append(Path("init.dul"))
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        config = _read_init_dul(candidate)
+        if config:
+            return config
+    return {}
+
+
+def _apply_init_config(args: argparse.Namespace, argv: list[str]) -> None:
+    config = _load_init_config(args, argv)
+    if not config:
+        return
+    explicit = set(argv)
+    if "--page-size" not in explicit and "page_size" in config:
+        args.page_size = int(config["page_size"])
+    if args.command in {"bootstrap", "bootstrap-dicts"}:
+        if getattr(args, "database_dir", None) is None and "database_dir" in config:
+            args.database_dir = config["database_dir"]
+        if getattr(args, "database_dir", None) is None and "dirlist" in config:
+            first_dir = next((item.strip() for item in config["dirlist"].split(",") if item.strip()), None)
+            if first_dir:
+                args.database_dir = first_dir
+        if getattr(args, "output_dir", None) is None and "dict_dir" in config:
+            args.output_dir = config["dict_dir"]
+        if getattr(args, "output_dir", None) is None and "output_dir" in config:
+            args.output_dir = config["output_dir"]
+        if not getattr(args, "download_dictionaries", False):
+            value = config.get("download_dictionaries") or config.get("bootstrap")
+            if value is not None:
+                args.download_dictionaries = _bool_from_init(value)
+        if getattr(args, "owner", None) is None and "owner" in config:
+            args.owner = config["owner"]
+        if "scan_pages" in config and "--scan-pages" not in explicit:
+            args.scan_pages = int(config["scan_pages"])
+        if "catalog_pages" in config and "--catalog-pages" not in explicit:
+            args.catalog_pages = int(config["catalog_pages"])
+        if "sample_limit" in config and "--sample-limit" not in explicit:
+            args.sample_limit = int(config["sample_limit"])
+        if not getattr(args, "table", None) and "tables" in config:
+            args.table = [item.strip() for item in config["tables"].split(",") if item.strip()]
+    if args.command in {"dump-data"}:
+        if getattr(args, "dict_dir", None) is None and "dict_dir" in config:
+            args.dict_dir = config["dict_dir"]
+        if getattr(args, "output_dir", None) is None and "output_dir" in config:
+            args.output_dir = config["output_dir"]
+        if getattr(args, "parallel", None) is None and "parallel" in config:
+            args.parallel = int(config["parallel"])
+        if getattr(args, "delimiter", None) is None and "data_delimiter" in config:
+            args.delimiter = config["data_delimiter"]
+
+
+def _cmd_prepare(args: argparse.Namespace) -> int:
+    init_path = Path(args.init_output)
+    filelist_path = Path(args.filelist_output)
+    dirlist = tuple(Path(item.strip()) for item in (args.dirlist or "").split(",") if item.strip())
+    if args.database_dir:
+        entries = build_filelist_from_database_dir(
+            database_dir=Path(args.database_dir),
+            page_size=args.page_size,
+            sample_limit=args.sample_limit,
+        )
+        if not dirlist:
+            dirlist = (Path(args.database_dir),)
+    else:
+        entries = build_filelist_from_dirs(
+            dirlist=dirlist or (Path("."),),
+            page_size=args.page_size,
+        )
+    write_filelist(filelist_path, entries)
+    write_init_dul(
+        init_path,
+        {
+            "filelist": str(filelist_path),
+            "dirlist": ",".join(str(item) for item in dirlist),
+            "output_dir": args.output_dir,
+            "dict_dir": args.dict_dir or args.output_dir,
+            "parallel": str(args.parallel),
+            "page_size": str(args.page_size),
+            "data_delimiter": args.delimiter,
+        },
+    )
+    diagnostics = validate_filelist(entries)
+    manifest = {
+        "mode": "dm-dul-prepare",
+        "init_file": str(init_path),
+        "filelist": str(filelist_path),
+        "files_total": len(entries),
+        "diagnostics": diagnostics,
+    }
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        print(f"init={init_path}")
+        print(f"filelist={filelist_path}")
+        print(f"files_total={len(entries)}")
+    return 0 if not any(item.get("level") == "error" for item in diagnostics) else 1
 
 
 def _cmd_file_info(args: argparse.Namespace) -> int:
@@ -251,6 +398,14 @@ def _cmd_write_control_ctl(args: argparse.Namespace) -> int:
 
 
 def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
+    if args.command == "bootstrap":
+        args.download_dictionaries = True
+    if args.database_dir is None or args.output_dir is None:
+        print(
+            "dmdul: bootstrap requires database_dir and --output-dir, either on the command line or in init.dul",
+            file=sys.stderr,
+        )
+        return 2
     manifest = build_bootstrap_dicts(
         database_dir=Path(args.database_dir),
         output_dir=Path(args.output_dir),
@@ -260,7 +415,7 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         tables=tuple(args.table or ()),
         owner=args.owner,
         scan_pages=args.scan_pages,
-        experimental_heuristic_dicts=args.experimental_heuristic_dicts,
+        experimental_heuristic_dicts=args.experimental_heuristic_dicts or args.download_dictionaries,
     )
     if args.json:
         print(json.dumps(manifest, indent=2))
@@ -269,6 +424,165 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         for name, path in manifest["dict_files"].items():
             print(f"{name}={path} rows={manifest['rows'][name]}")
     return 0
+
+
+
+def _cmd_dump_data(args: argparse.Namespace) -> int:
+    if args.dict_dir is None or args.output_dir is None:
+        runtime = load_runtime_config(Path(args.init_file) if args.init_file else None)
+        dict_dir = Path(args.dict_dir) if args.dict_dir else runtime.dict_dir
+        output_dir = Path(args.output_dir) if args.output_dir else runtime.output_dir
+        delimiter = args.delimiter or runtime.data_delimiter
+        workers = args.parallel or runtime.parallel
+    else:
+        dict_dir = Path(args.dict_dir)
+        output_dir = Path(args.output_dir)
+        delimiter = args.delimiter or "|"
+        workers = args.parallel or 1
+    metadata = CalibratedMetadata.from_dict_dir(dict_dir)
+    requested = {value.upper() for value in (args.table or ())}
+    requested_names = {value.split(".", 1)[-1] for value in requested}
+    requested_user = args.user.upper() if args.user else None
+    tables = [
+        table
+        for table in metadata.tables
+        if (
+            (not requested and requested_user is None)
+            or table.name.upper() in requested
+            or table.name.upper() in requested_names
+            or table.qualified_name.upper() in requested
+            or (requested_user is not None and table.owner.upper() == requested_user)
+        )
+    ]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    reports = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {
+            executor.submit(
+                extract_csv_with_calibrated_metadata,
+                metadata=metadata,
+                table_name=table.qualified_name,
+                output=output_dir / f"{_safe_output_name(table.qualified_name)}.dul",
+                page_plan_fallback_level="error" if args.strict_page_plan else "warning",
+                delimiter=delimiter,
+                include_sql_header=True,
+            ): table
+            for table in tables
+        }
+        for future in as_completed(futures):
+            table = futures[future]
+            try:
+                reports.append(future.result().as_dict())
+            except Exception as exc:  # pragma: no cover
+                reports.append(
+                    {
+                        "table": table.qualified_name,
+                        "ok": False,
+                        "output": str(output_dir / f"{_safe_output_name(table.qualified_name)}.dul"),
+                        "rows_written": 0,
+                        "diagnostics": [{"level": "error", "code": "dump-data-table-failed", "message": str(exc)}],
+                    }
+                )
+    reports.sort(key=lambda item: str(item["table"]))
+    manifest = {
+        "mode": "dm-dump-data",
+        "dict_dir": str(dict_dir),
+        "output_dir": str(output_dir),
+        "delimiter": delimiter,
+        "parallel": max(1, workers),
+        "tables_total": len(tables),
+        "tables_ok": sum(1 for item in reports if item.get("ok")),
+        "tables_failed": sum(1 for item in reports if not item.get("ok")),
+        "reports": reports,
+    }
+    if args.report_output:
+        Path(args.report_output).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        print(f"tables_total={manifest['tables_total']}")
+        print(f"tables_ok={manifest['tables_ok']}")
+        print(f"tables_failed={manifest['tables_failed']}")
+    return 0 if manifest["tables_failed"] == 0 else 1
+
+
+def _cmd_extract_dicts(args: argparse.Namespace) -> int:
+    metadata = CalibratedMetadata.from_dict_dir(Path(args.dict_dir))
+    requested = {value.upper() for value in (args.table or ())}
+    requested_names = {value.split(".", 1)[-1] for value in requested}
+    tables = [
+        table
+        for table in metadata.tables
+        if not requested
+        or table.name.upper() in requested
+        or table.name.upper() in requested_names
+        or table.qualified_name.upper() in requested
+    ]
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    reports = []
+    max_workers = max(1, args.workers)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                extract_csv_with_calibrated_metadata,
+                metadata=metadata,
+                table_name=table.qualified_name,
+                output=output_dir / f"{_safe_output_name(table.qualified_name)}.csv",
+                page_plan_fallback_level="error" if args.strict_page_plan else "warning",
+            ): table
+            for table in tables
+        }
+        for future in as_completed(futures):
+            table = futures[future]
+            try:
+                report = future.result()
+            except Exception as exc:  # pragma: no cover - defensive report path
+                reports.append(
+                    {
+                        "table": table.qualified_name,
+                        "ok": False,
+                        "output": str(output_dir / f"{_safe_output_name(table.qualified_name)}.csv"),
+                        "rows_written": 0,
+                        "diagnostics": [
+                            {
+                                "level": "error",
+                                "code": "extract-dicts-table-failed",
+                                "message": str(exc),
+                            }
+                        ],
+                        "mode": "extract-dicts-error",
+                    }
+                )
+                continue
+            reports.append(report.as_dict())
+    reports.sort(key=lambda item: str(item["table"]))
+    manifest = {
+        "mode": "dm-extract-dicts",
+        "dict_dir": str(args.dict_dir),
+        "output_dir": str(output_dir),
+        "workers": max_workers,
+        "tables_total": len(tables),
+        "tables_ok": sum(1 for item in reports if item.get("ok")),
+        "tables_failed": sum(1 for item in reports if not item.get("ok")),
+        "reports": reports,
+    }
+    if args.report_output:
+        Path(args.report_output).write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        print(f"tables_total={manifest['tables_total']}")
+        print(f"tables_ok={manifest['tables_ok']}")
+        print(f"tables_failed={manifest['tables_failed']}")
+    return 0 if manifest["tables_failed"] == 0 else 1
+
+
+def _safe_output_name(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in value)
 
 
 def _cmd_extract_csv(args: argparse.Namespace) -> int:
@@ -524,6 +838,48 @@ def _cmd_find_sysobject(args: argparse.Namespace) -> int:
     return 0 if candidates else 1
 
 
+def _cmd_dump_sysobjects(args: argparse.Namespace) -> int:
+    rows = dump_sysobject_rows(
+        Path(args.system_file),
+        page_size=args.page_size,
+    )
+    limited_rows = rows[: args.limit] if args.limit else rows
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "name": item.name,
+                        "object_id": item.object_id,
+                        "schema_id": item.schema_id,
+                        "parent_id": item.parent_id,
+                        "type_name": item.type_name,
+                        "subtype_name": item.subtype_name,
+                        "offset": item.offset,
+                        "page_no": item.page_no,
+                        "page_offset": item.page_offset,
+                        "score": item.score,
+                        "source": item.source,
+                    }
+                    for item in limited_rows
+                ],
+                indent=2,
+            )
+        )
+        return 0
+    for item in limited_rows:
+        object_id = "-" if item.object_id is None else str(item.object_id)
+        schema_id = "-" if item.schema_id is None else str(item.schema_id)
+        parent_id = "-" if item.parent_id is None else str(item.parent_id)
+        print(
+            f"score={item.score} type={item.type_name}/{item.subtype_name} "
+            f"name={item.name} object_id={object_id} schema_id={schema_id} "
+            f"parent_id={parent_id} offset={item.offset} "
+            f"page={item.page_no} page_offset={item.page_offset}"
+        )
+    return 0 if rows else 1
+
+
 def _cmd_find_syscolumns(args: argparse.Namespace) -> int:
     candidates = find_syscolumn_candidates(
         Path(args.system_file),
@@ -656,6 +1012,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=8192,
         help="DM data file page size in bytes, default: 8192",
     )
+    parser.add_argument(
+        "--init-file",
+        help="read DUL-style default parameters from this init.dul file",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -773,7 +1133,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analyze_block.add_argument(
         "--columns-jsonl",
-        help="read column rows from col.dict-style JSONL",
+        help="read column rows from col.dict CSV or legacy JSONL",
     )
     analyze_block.add_argument(
         "--row-start-offset",
@@ -871,12 +1231,29 @@ def build_parser() -> argparse.ArgumentParser:
     write_control.add_argument("--json", action="store_true")
     write_control.set_defaults(func=_cmd_write_control_ctl)
 
+    prepare = subparsers.add_parser(
+        "prepare",
+        help="create init.dul and filelist.dul from control files or DBF page headers",
+    )
+    prepare.add_argument("--database-dir")
+    prepare.add_argument("--dirlist")
+    prepare.add_argument("--init-output", default="init.dul")
+    prepare.add_argument("--filelist-output", default="filelist.dul")
+    prepare.add_argument("--output-dir", default="dulout")
+    prepare.add_argument("--dict-dir")
+    prepare.add_argument("--parallel", type=int, default=1)
+    prepare.add_argument("--delimiter", default="|")
+    prepare.add_argument("--sample-limit", type=int, default=8)
+    prepare.add_argument("--json", action="store_true")
+    prepare.set_defaults(func=_cmd_prepare)
+
     bootstrap_dicts = subparsers.add_parser(
         "bootstrap-dicts",
+        aliases=["bootstrap"],
         help="build bootstrap dictionary artifact files from an offline database copy",
     )
-    bootstrap_dicts.add_argument("database_dir")
-    bootstrap_dicts.add_argument("--output-dir", required=True)
+    bootstrap_dicts.add_argument("database_dir", nargs="?")
+    bootstrap_dicts.add_argument("--output-dir")
     bootstrap_dicts.add_argument(
         "--catalog-pages",
         type=int,
@@ -892,12 +1269,46 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap_dicts.add_argument("--owner")
     bootstrap_dicts.add_argument("--scan-pages", type=int, default=64)
     bootstrap_dicts.add_argument(
+        "-b",
+        "--download-dictionaries",
+        action="store_true",
+        help="preprocess SYSTEM.DBF and download SYS dictionary rows into user/tab/col dict artifacts",
+    )
+    bootstrap_dicts.add_argument(
         "--experimental-heuristic-dicts",
         action="store_true",
         help="write target-table heuristic user/tab/col dict rows; research only",
     )
     bootstrap_dicts.add_argument("--json", action="store_true")
     bootstrap_dicts.set_defaults(func=_cmd_bootstrap_dicts)
+
+    dump_data = subparsers.add_parser(
+        "dump-data",
+        help="dump one table or one user's tables using bootstrap dictionaries",
+    )
+    dump_data.add_argument("--dict-dir")
+    dump_data.add_argument("--output-dir")
+    dump_data.add_argument("--table", action="append")
+    dump_data.add_argument("--user")
+    dump_data.add_argument("--parallel", type=int)
+    dump_data.add_argument("--delimiter", choices=["|", "~"])
+    dump_data.add_argument("--report-output")
+    dump_data.add_argument("--strict-page-plan", action="store_true")
+    dump_data.add_argument("--json", action="store_true")
+    dump_data.set_defaults(func=_cmd_dump_data)
+
+    extract_dicts = subparsers.add_parser(
+        "extract-dicts",
+        help="extract tables using bootstrap CSV dictionary files",
+    )
+    extract_dicts.add_argument("--dict-dir", required=True)
+    extract_dicts.add_argument("--output-dir", required=True)
+    extract_dicts.add_argument("--table", action="append")
+    extract_dicts.add_argument("--workers", type=int, default=1)
+    extract_dicts.add_argument("--report-output")
+    extract_dicts.add_argument("--strict-page-plan", action="store_true")
+    extract_dicts.add_argument("--json", action="store_true")
+    extract_dicts.set_defaults(func=_cmd_extract_dicts)
 
     extract_csv = subparsers.add_parser(
         "extract-csv",
@@ -983,6 +1394,15 @@ def build_parser() -> argparse.ArgumentParser:
     find_sysobject.add_argument("--limit", type=int, default=10)
     find_sysobject.set_defaults(func=_cmd_find_sysobject)
 
+    dump_sysobjects = subparsers.add_parser(
+        "dump-sysobjects",
+        help="heuristically dump SYSOBJECTS table and storage child rows from SYSTEM.DBF",
+    )
+    dump_sysobjects.add_argument("system_file")
+    dump_sysobjects.add_argument("--json", action="store_true")
+    dump_sysobjects.add_argument("--limit", type=int, default=100)
+    dump_sysobjects.set_defaults(func=_cmd_dump_sysobjects)
+
     find_syscolumns = subparsers.add_parser(
         "find-syscolumns",
         help="heuristically find SYSCOLUMNS records in SYSTEM.DBF",
@@ -1018,7 +1438,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
+    _apply_init_config(args, raw_argv)
     try:
         return args.func(args)
     except OfflineResolveError as exc:

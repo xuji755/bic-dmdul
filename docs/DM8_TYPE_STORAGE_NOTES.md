@@ -266,3 +266,91 @@ For example:
 ```
 
 Timezone-bearing timestamp variants are not covered by this evidence.
+
+## Online `dump()` Calibration: `SYSDBA.DMDUL_DUMP_TYPES`
+
+Captured with `dump(col)` on the live DM8 test instance after creating
+`SYSDBA.DMDUL_DUMP_TYPES` and running `select checkpoint(0)`. The raw disql
+output is stored at `tmp/dmdul_dump_types.out`. This online evidence is useful
+for mapping SQL values to DM's reported internal type code and byte sequence;
+the DBF page layout can still differ in how row fixed/variable areas arrange
+those bytes.
+
+Fixture columns:
+
+```text
+ID INT PRIMARY KEY,
+C_TINY TINYINT,
+C_SMALL SMALLINT,
+C_INT INT,
+C_INTEGER INTEGER,
+C_BIG BIGINT,
+C_REAL REAL,
+C_FLOAT FLOAT,
+C_DOUBLE DOUBLE,
+C_NUMBER NUMBER(38),
+C_NUMERIC NUMERIC(30,10),
+C_DECIMAL DECIMAL(18,4),
+C_DATE DATE,
+C_TIME TIME(6),
+C_TIMESTAMP TIMESTAMP(6),
+C_DATETIME DATETIME(6),
+C_CHAR CHAR(8),
+C_VARCHAR VARCHAR(40),
+C_CLOB CLOB,
+C_BLOB BLOB
+```
+
+Observed `dump()` type codes and representative payloads:
+
+| SQL type | dump type | dump length | Observed bytes / meaning |
+| --- | ---: | ---: | --- |
+| TINYINT | 7 | 4 | `1` => `1,0,0,0`; `-128` => `128,255,255,255`; DM reports integer family as 4-byte little-endian in `dump()` |
+| SMALLINT | 7 | 4 | `2` => `2,0,0,0`; `-32768` => `0,128,255,255`; `32767` => `255,127,0,0` |
+| INT / INTEGER | 7 | 4 | little-endian signed 32-bit, e.g. `2147483647` => `255,255,255,127` |
+| BIGINT | 8 | 8 | little-endian signed 64-bit, e.g. `5` => `5,0,0,0,0,0,0,0` |
+| REAL | 10 | 4 | IEEE float little-endian, e.g. `1.25` => `0,0,160,63` |
+| FLOAT | 11 | 8 | IEEE double little-endian in this fixture, e.g. `1.5` => `0,0,0,0,0,0,248,63` |
+| DOUBLE | 11 | 8 | IEEE double little-endian, e.g. `2.25` => `0,0,0,0,0,0,2,64` |
+| NUMBER(38) | 9 | 1/20/21 | `0` => `128`; positive 38-digit integer begins `211,13,35,...`; negative form begins `44,...` and ends `102` |
+| NUMERIC(30,10) | 9 | 1/16/17 | same base-100 family as NUMBER, with scale preserved by exponent/byte count |
+| DECIMAL(18,4) | 9 | 1/10/11 | same base-100 family as NUMBER |
+| DATE | 14 | 13 | `2026-06-30` => `234,7,6,30,0,0,0,0,0,0,232,3,0`; `dump()` expands DATE to 13 bytes |
+| TIME(6) | 15 | 13 | `10:11:12.654321` => `108,7,1,1,10,11,12,104,37,0,232,3,39`; includes default date-like fields in `dump()` |
+| TIMESTAMP(6) | 16 | 13 | `2026-06-30 10:11:12.654321` => `234,7,6,30,10,11,12,104,37,0,232,3,39` |
+| DATETIME(6) | 16 | 13 | same dump code/shape as TIMESTAMP(6) |
+| CHAR(8) | 2 | 8 | padded bytes, e.g. `CH_A` => `67,72,95,65,32,32,32,32` |
+| VARCHAR(40) | 2 | value length | raw text bytes, e.g. `VARCHAR_A` => `86,65,82,67,72,65,82,95,65` |
+| CLOB | 19 | 64 | inline/locator structure; short text appears at the tail of the 64-byte payload in this fixture |
+| BLOB | 12 | 55 | inline/locator structure; short binary bytes appear at the tail of the 55-byte payload in this fixture |
+
+Important interpretation points:
+
+- `dump()` reports DM's logical/internal value representation, not necessarily
+the exact row-page byte layout. Prior DBF evidence shows page rows store DATE as
+3 bytes, TIME as 5 bytes, and TIMESTAMP/DATETIME as 8 bytes in ordinary table
+rows; `dump()` expands these to 13 bytes.
+- Integer `dump()` confirms little-endian signed numeric storage for the integer
+family. Page-row decoding should continue to use dictionary `DATA_LENGTH` or
+observed fixed-width layout to decide whether a column consumes 1/2/4/8 bytes in
+DBF rows.
+- NUMBER/NUMERIC/DECIMAL use the same variable-length base-100 family. Positive
+numbers use a high first byte, zero is `0x80`, and negative numbers use a low
+first byte with `0x66` terminator in the observed evidence.
+- CLOB/BLOB values in this short-row fixture are not plain text/raw bytes only;
+they include a locator/control prefix. The current offline decoder should treat
+LOB payloads as raw hex until LOB segment following is implemented.
+
+Dictionary metadata for the fixture confirmed official type names and lengths:
+
+```text
+NUMBER(38)       DATA_LENGTH=22, DATA_PRECISION=38, DATA_SCALE=0
+NUMERIC(30,10)   DATA_LENGTH=22, DATA_PRECISION=30, DATA_SCALE=10
+DECIMAL(18,4)    DATA_LENGTH=22, DATA_PRECISION=18, DATA_SCALE=4
+DATE             DATA_LENGTH=3
+TIME(6)          DATA_LENGTH=5, DATA_SCALE=6
+TIMESTAMP(6)     DATA_LENGTH=8, DATA_SCALE=6
+DATETIME(6)      DATA_LENGTH=8, DATA_SCALE=6
+CLOB/BLOB        DATA_LENGTH=2147483647
+```
+

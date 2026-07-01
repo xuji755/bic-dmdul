@@ -79,6 +79,87 @@ class ObservedRowDecodeTest(unittest.TestCase):
 
         self.assertAlmostEqual(values[0], 1.5)
 
+
+    def test_decode_small_integer_aliases(self) -> None:
+        data = bytes.fromhex("00 0a 00") + bytes([0x7f]) + (-1234).to_bytes(2, "little", signed=True) + (42).to_bytes(4, "little", signed=True)
+        row = ObservedRow(page_offset=0x62, data=data, header=ObservedRowHeader.from_bytes(data))
+
+        values = decode_observed_row_values(
+            row,
+            (
+                ColumnMeta(name="T", type_name="TINYINT"),
+                ColumnMeta(name="S", type_name="SMALLINT"),
+                ColumnMeta(name="I", type_name="INTEGER"),
+            ),
+        )
+
+        self.assertEqual(values, [127, -1234, 42])
+
+    def test_decode_date_time_timestamp(self) -> None:
+        date_raw = bytes.fromhex("ea 07 f3")
+        time_raw = bytes.fromhex("6a 61 e2 f7 13")
+        ts_raw = date_raw + time_raw
+        data = bytes.fromhex("00 14 00") + date_raw + time_raw + ts_raw
+        row = ObservedRow(page_offset=0x62, data=data, header=ObservedRowHeader.from_bytes(data))
+
+        values = decode_observed_row_values(
+            row,
+            (
+                ColumnMeta(name="D", type_name="DATE"),
+                ColumnMeta(name="T", type_name="TIME"),
+                ColumnMeta(name="TS", type_name="TIMESTAMP"),
+            ),
+        )
+
+        self.assertEqual(values, ["2026-06-30", "10:11:12.654321", "2026-06-30 10:11:12.654321"])
+
+    def test_decode_number_base100(self) -> None:
+        data = bytes.fromhex("00 1b 00 81 80 82 c1 02 94 d3 0d 23 39 4f 5b 0d 23 39 4f 5b 0d 23 39 4f 5b 0d 23 39 4f")
+        row = ObservedRow(page_offset=0x62, data=data, header=ObservedRowHeader.from_bytes(data))
+
+        values = decode_observed_row_values(
+            row,
+            (
+                ColumnMeta(name="Z", type_name="NUMBER"),
+                ColumnMeta(name="O", type_name="DECIMAL"),
+                ColumnMeta(name="N", type_name="NUMBER"),
+            ),
+        )
+
+        self.assertEqual(values, ["0", "1", "12345678901234567890123456789012345678"])
+
+    def test_decode_lob_locator_as_hex_payload(self) -> None:
+        data = bytes.fromhex("00 0b 00 84 ca fe ba be")
+        row = ObservedRow(page_offset=0x62, data=data, header=ObservedRowHeader.from_bytes(data))
+
+        values = decode_observed_row_values(row, (ColumnMeta(name="B", type_name="BLOB"),))
+
+        self.assertEqual(values, ["cafebabe"])
+
+    def test_decode_fixed_area_before_variable_area_returns_sql_order(self) -> None:
+        date_raw = bytes.fromhex("ea 07 f3")
+        data = (
+            bytes.fromhex("00 14 00")
+            + (7).to_bytes(4, "little", signed=True)
+            + date_raw
+            + bytes.fromhex("82 c1 02")
+            + bytes([0x86])
+            + b"MARKER"
+        )
+        row = ObservedRow(page_offset=0x62, data=data, header=ObservedRowHeader.from_bytes(data))
+
+        values = decode_observed_row_values(
+            row,
+            (
+                ColumnMeta(name="ID", type_name="INT"),
+                ColumnMeta(name="N", type_name="NUMBER"),
+                ColumnMeta(name="D", type_name="DATE"),
+                ColumnMeta(name="V", type_name="VARCHAR"),
+            ),
+        )
+
+        self.assertEqual(values, [7, "1", "2026-06-30", "MARKER"])
+
     def test_rejects_nonzero_row_metadata_before_column_payload(self) -> None:
         data = bytes.fromhex("00 0f 01") + (7).to_bytes(4, "little", signed=True)
         row = ObservedRow(

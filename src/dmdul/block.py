@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -24,11 +25,12 @@ FIXED_TRACE_LENGTHS = {
     "INTEGER": 4,
     "BIGINT": 8,
     "DOUBLE": 8,
-    "REAL": 8,
+    "REAL": 4,
     "FLOAT": None,
     "DATE": 3,
     "TIME": 5,
     "TIMESTAMP": 8,
+    "DATETIME": 8,
 }
 
 VARIABLE_TRACE_TYPES = {
@@ -219,12 +221,30 @@ def dump_unknown_data_file_structures(
 
 
 def load_column_meta_from_jsonl(path: Path) -> tuple[ColumnMeta, ...]:
+    text = path.read_text(encoding="utf-8")
+    first = text.lstrip()[:1]
+    if first == "{":
+        return _load_column_meta_from_jsonl_text(text)
+    return _load_column_meta_from_csv_text(text)
+
+
+def _load_column_meta_from_jsonl_text(text: str) -> tuple[ColumnMeta, ...]:
     columns: list[ColumnMeta] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if not line.strip():
             continue
         payload = json.loads(line)
         if not isinstance(payload, dict):
+            continue
+        columns.append(_column_meta_from_mapping(payload))
+    return tuple(columns)
+
+
+def _load_column_meta_from_csv_text(text: str) -> tuple[ColumnMeta, ...]:
+    columns: list[ColumnMeta] = []
+    reader = csv.DictReader(text.splitlines())
+    for payload in reader:
+        if not payload:
             continue
         columns.append(_column_meta_from_mapping(payload))
     return tuple(columns)

@@ -3,6 +3,9 @@ import unittest
 from pathlib import Path
 
 from dmdul.sysdict import (
+    dump_syscolumn_rows,
+    dump_sysindex_rows,
+    dump_sysobject_rows,
     find_syscolumn_candidates,
     find_sysindex_candidates,
     find_sysobject_candidates,
@@ -44,6 +47,46 @@ class SysDictHeuristicTest(unittest.TestCase):
         self.assertLess(best.object_ids.index(33630), 5)
         self.assertTrue(best.has_schobj)
         self.assertTrue(best.has_utab)
+
+    def test_dumps_sysobject_table_and_index_child_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "SYSTEM.DBF"
+            table_id = 33629
+            index_id = 33595349
+            index_name = f"INDEX{index_id}".encode("ascii")
+            payload = (
+                b"\0" * 8192
+                + table_id.to_bytes(4, "little")
+                + b"\0" * 16
+                + bytes([0x8A])
+                + b"DMDUL_MANY"
+                + bytes([0x86])
+                + b"SCHOBJ"
+                + bytes([0x84])
+                + b"UTAB"
+                + b"\0" * 64
+                + index_id.to_bytes(4, "little")
+                + b"\0" * 12
+                + table_id.to_bytes(4, "little")
+                + b"\0" * 8
+                + bytes([0x86])
+                + b"TABOBJ"
+                + bytes([0x80 + len(index_name)])
+                + index_name
+            )
+            path.write_bytes(payload)
+
+            rows = dump_sysobject_rows(path)
+
+        by_name = {row.name: row for row in rows}
+        self.assertEqual(by_name["DMDUL_MANY"].object_id, table_id)
+        self.assertEqual(by_name["DMDUL_MANY"].type_name, "SCHOBJ")
+        self.assertEqual(by_name["DMDUL_MANY"].subtype_name, "UTAB")
+        index_row = by_name[f"INDEX{index_id}"]
+        self.assertEqual(index_row.object_id, index_id)
+        self.assertEqual(index_row.parent_id, table_id)
+        self.assertEqual(index_row.type_name, "TABOBJ")
+        self.assertEqual(index_row.subtype_name, "INDEX")
 
     def test_finds_syscolumns_like_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -92,6 +135,40 @@ class SysDictHeuristicTest(unittest.TestCase):
         self.assertEqual(by_name["PAD"].column_id, 2)
         self.assertEqual(by_name["PAD"].length, 3000)
         self.assertEqual(by_name["PAD"].type_name, "VARCHAR")
+
+    def test_dumps_syscolumns_keeps_same_column_name_for_different_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "SYSTEM.DBF"
+            first_id = 33629
+            second_id = 33630
+            path.write_bytes(
+                b"\0" * 8192
+                + _syscolumns_row(
+                    object_id=first_id,
+                    column_id=0,
+                    length=4,
+                    scale=0,
+                    nullable="Y",
+                    name="ID",
+                    type_name="INT",
+                )
+                + _syscolumns_row(
+                    object_id=second_id,
+                    column_id=0,
+                    length=4,
+                    scale=0,
+                    nullable="Y",
+                    name="ID",
+                    type_name="INT",
+                )
+            )
+
+            rows = dump_syscolumn_rows(path)
+
+        by_object = {row.object_id: row for row in rows}
+        self.assertEqual(set(by_object), {first_id, second_id})
+        self.assertEqual(by_object[first_id].name, "ID")
+        self.assertEqual(by_object[second_id].name, "ID")
 
     def test_finds_syscolumns_from_calibrated_clean_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -149,6 +226,26 @@ class SysDictHeuristicTest(unittest.TestCase):
         self.assertEqual(best.flag, 1)
         self.assertGreaterEqual(best.score, 80)
 
+    def test_dumps_sysindex_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "SYSTEM.DBF"
+            first_id = 33595349
+            second_id = 33595350
+            payload = (
+                b"\0" * 8192
+                + _sysindex_row(first_id, root_page=80)
+                + b"\0" * 32
+                + _sysindex_row(second_id, root_page=144)
+            )
+            path.write_bytes(payload)
+
+            rows = dump_sysindex_rows(path)
+
+        by_id = {row.index_id: row for row in rows}
+        self.assertEqual(by_id[first_id].root_page, 80)
+        self.assertEqual(by_id[second_id].root_page, 144)
+        self.assertEqual(by_id[first_id].type_name, "BT")
+
     def test_finds_sysobject_index_child_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "SYSTEM.DBF"
@@ -182,6 +279,19 @@ class SysDictHeuristicTest(unittest.TestCase):
         self.assertEqual(best.page_no, 1)
         self.assertIsNotNone(best.index_id_offset)
         self.assertGreaterEqual(best.score, 90)
+
+
+def _sysindex_row(index_id: int, *, root_page: int) -> bytes:
+    return (
+        index_id.to_bytes(4, "little")
+        + b"N"
+        + (6).to_bytes(2, "little")
+        + (0).to_bytes(2, "little")
+        + root_page.to_bytes(4, "little")
+        + b"BT"
+        + (0).to_bytes(4, "little")
+        + (1).to_bytes(4, "little")
+    )
 
 
 def _syscolumns_row(

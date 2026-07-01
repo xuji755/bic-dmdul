@@ -108,6 +108,10 @@ class ObservedPageHeader:
         return int.from_bytes(self.raw[44:46], "little")
 
     @property
+    def storage_id_candidate(self) -> int:
+        return int.from_bytes(self.raw[58:62], "little")
+
+    @property
     def observed_row_count(self) -> int:
         return self.field_2c_u16le
 
@@ -122,6 +126,7 @@ class ObservedPageHeader:
             "next_page": str(self.next_page),
             "page_kind_raw": self.page_kind_raw,
             "page_kind_label": self.page_kind_label,
+            "storage_id_candidate": self.storage_id_candidate,
             "field_20_u32le": self.field_20_u32le,
             "field_24_u16le": self.field_24_u16le,
             "field_26_u16le": self.field_26_u16le,

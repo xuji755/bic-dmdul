@@ -93,6 +93,173 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["1", "ALIVE"], ["3", "AFTER!"]])
 
+    def test_filters_scan_range_by_storage_id_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [bytearray(b"\0" * 8192) for _ in range(2)]
+            for page_no, storage_id, value in ((0, 111, 7), (1, 222, 99)):
+                page = pages[page_no]
+                page[0:4] = (6).to_bytes(4, "little")
+                page[4:8] = page_no.to_bytes(4, "little")
+                page[8:14] = b"\xff" * 6
+                page[14:20] = b"\xff" * 6
+                page[20:24] = (0x14).to_bytes(4, "little")
+                page[0x3A:0x3E] = storage_id.to_bytes(4, "little")
+                page[0x62:0x73] = (
+                    bytes.fromhex("00 11 00")
+                    + value.to_bytes(4, "little", signed=True)
+                    + b"\0" * (0x11 - 2 - 1 - 4)
+                )
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "filtered.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_FILTER",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "scan_pages": 2,
+                                "storage_id": 111,
+                            },
+                            "columns": [{"name": "ID", "type_name": "INT"}],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_FILTER",
+                output=output_path,
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(report.rows_written, 1)
+        self.assertEqual(report.scanned_pages, (0,))
+        self.assertEqual(rows, [["ID"], ["7"]])
+        self.assertIn(
+            "page-plan-root-leaf-chain",
+            {item["code"] for item in report.diagnostics},
+        )
+
+    def test_plans_noncontiguous_leaf_pages_from_btree_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [bytearray(b"\0" * 8192) for _ in range(36)]
+            storage_id = 33595349
+
+            def init_header(page_no: int, kind: int, *, storage: int = storage_id) -> None:
+                page = pages[page_no]
+                page[0:4] = (6).to_bytes(4, "little")
+                page[4:8] = page_no.to_bytes(4, "little")
+                page[8:14] = b"\xff" * 6
+                page[14:20] = b"\xff" * 6
+                page[20:24] = kind.to_bytes(4, "little")
+                page[0x3A:0x3E] = storage.to_bytes(4, "little")
+
+            def page_ref(page_no: int | None) -> bytes:
+                if page_no is None:
+                    return b"\xff" * 6
+                return (0).to_bytes(2, "little") + page_no.to_bytes(4, "little")
+
+            def put_row(page_no: int, value: int) -> None:
+                page = pages[page_no]
+                page[0x62:0x71] = (
+                    bytes.fromhex("00 0f 00")
+                    + value.to_bytes(4, "little", signed=True)
+                    + b"\0" * (0x0F - 2 - 1 - 4)
+                )
+
+            init_header(0, 0x15)
+            pages[0][0x2C:0x2E] = (2).to_bytes(2, "little")
+            pages[0][0x52:0x56] = (10).to_bytes(4, "little")
+            for slot_offset, entry_offset, child_page, key in (
+                (8178, 0x100, 20, 3),
+                (8180, 0x110, 35, 5),
+            ):
+                pages[0][slot_offset:slot_offset + 2] = entry_offset.to_bytes(2, "little")
+                pages[0][entry_offset:entry_offset + 15] = (
+                    bytes.fromhex("00 0f 00")
+                    + child_page.to_bytes(4, "little")
+                    + b"\0\0"
+                    + key.to_bytes(4, "little")
+                    + b"\0\0"
+                )
+            for page_no, prev_page, next_page, value in (
+                (10, None, 20, 10),
+                (20, 10, 35, 20),
+                (35, 20, None, 35),
+            ):
+                init_header(page_no, 0x14)
+                pages[page_no][8:14] = page_ref(prev_page)
+                pages[page_no][14:20] = page_ref(next_page)
+                put_row(page_no, value)
+            pages[15][0:4] = (6).to_bytes(4, "little")
+            pages[15][4:8] = (15).to_bytes(4, "little")
+            pages[15][20:24] = (0x14).to_bytes(4, "little")
+            pages[15][0x3A:0x3E] = (999).to_bytes(4, "little")
+            put_row(15, 999)
+
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "btree.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_BTREE",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "scan_pages": 36,
+                                "storage_id": storage_id,
+                            },
+                            "columns": [{"name": "ID", "type_name": "INT"}],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_BTREE",
+                output=output_path,
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(report.rows_written, 3)
+        self.assertEqual(report.scanned_pages, (10, 20, 35))
+        self.assertEqual(rows, [["ID"], ["10"], ["20"], ["35"]])
+        self.assertIn(
+            "page-plan-btree-root-children",
+            {item["code"] for item in report.diagnostics},
+        )
+
     def test_scans_multiple_pages_from_calibrated_range(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -566,7 +733,7 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                                 "root_page": 0,
                             },
                             "columns": [
-                                {"name": "N", "type_name": "DECIMAL"},
+                                {"name": "N", "type_name": "UNKNOWN_TYPE"},
                             ],
                         }
                     ],
@@ -585,7 +752,7 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             self.assertEqual(report.diagnostics[0]["code"], "unsupported-column-type")
             self.assertEqual(
                 report.diagnostics[0]["columns"],
-                [{"name": "N", "type_name": "DECIMAL"}],
+                [{"name": "N", "type_name": "UNKNOWN_TYPE"}],
             )
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))

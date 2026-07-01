@@ -6,7 +6,12 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from dmdul.cli import build_parser
+from dmdul.cli import build_parser, main
+
+
+def _read_dict_csv(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as file:
+        return list(csv.DictReader(file))
 
 
 class CliTest(unittest.TestCase):
@@ -350,22 +355,10 @@ class CliTest(unittest.TestCase):
             with redirect_stdout(stdout):
                 exit_code = args.func(args)
             manifest = json.loads(stdout.getvalue())
-            file_rows = [
-                json.loads(line)
-                for line in (output_dir / "file.dict").read_text(encoding="utf-8").splitlines()
-            ]
-            user_rows = [
-                json.loads(line)
-                for line in (output_dir / "user.dict").read_text(encoding="utf-8").splitlines()
-            ]
-            table_rows = [
-                json.loads(line)
-                for line in (output_dir / "tab.dict").read_text(encoding="utf-8").splitlines()
-            ]
-            column_rows = [
-                json.loads(line)
-                for line in (output_dir / "col.dict").read_text(encoding="utf-8").splitlines()
-            ]
+            file_rows = _read_dict_csv(output_dir / "file.dict")
+            user_rows = _read_dict_csv(output_dir / "user.dict")
+            table_rows = _read_dict_csv(output_dir / "tab.dict")
+            column_rows = _read_dict_csv(output_dir / "col.dict")
             rows_by_name = {row["basename"]: row for row in file_rows}
             artifact_exists = {
                 name: (output_dir / name).exists()
@@ -396,20 +389,96 @@ class CliTest(unittest.TestCase):
             },
         )
         self.assertTrue(rows_by_name["SYSTEM.DBF"]["system_candidate"])
-        self.assertEqual(rows_by_name["DMDUL_TS01.DBF"]["group_id"], 6)
-        self.assertEqual(
-            rows_by_name["DMDUL_TS01.DBF"]["control_file_entries"][0]["basename"],
-            "dmdul_ts01.dbf",
-        )
+        self.assertEqual(rows_by_name["DMDUL_TS01.DBF"]["group_id"], "6")
+        self.assertEqual(rows_by_name["DMDUL_TS01.DBF"]["basename"], "DMDUL_TS01.DBF")
         self.assertEqual(user_rows[0]["owner"], "SYSDBA")
         self.assertEqual(table_rows[0]["qualified_name"], "SYSDBA.DMDUL_MANY")
-        self.assertEqual(table_rows[0]["root_page"], 80)
+        self.assertEqual(table_rows[0]["root_page"], "80")
         self.assertEqual(column_rows[0]["name"], "ID")
         self.assertEqual(column_rows[0]["type_name"], "INT")
         self.assertEqual(
             manifest["steps"][2]["status"],
             "heuristic-output",
         )
+
+    def test_bootstrap_reads_defaults_from_init_dul(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output_dir = root / "dicts"
+            init_file = root / "init.dul"
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(
+                _large_page0(group_raw=0, page_kind=0x13) + _system_payload()
+            )
+            (root / "DMDUL_TS01.DBF").write_bytes(_user_data_file_payload())
+            init_file.write_text(
+                f"DATABASE_DIR={root}\n"
+                f"OUTPUT_DIR={output_dir}\n"
+                "PAGE_SIZE=8192\n"
+                "DOWNLOAD_DICTIONARIES=YES\n",
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(["--init-file", str(init_file), "bootstrap", "--json"])
+            manifest = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["database_dir"], str(root))
+        self.assertEqual(manifest["rows"]["tab.dict"], 2)
+        self.assertEqual(manifest["rows"]["col.dict"], 1)
+
+    def test_bootstrap_alias_downloads_system_dictionaries_with_b_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output_dir = root / "dicts"
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(
+                _large_page0(group_raw=0, page_kind=0x13) + _system_payload()
+            )
+            (root / "DMDUL_TS01.DBF").write_bytes(_user_data_file_payload())
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "bootstrap",
+                    str(root),
+                    "--output-dir",
+                    str(output_dir),
+                    "-b",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            table_rows = _read_dict_csv(output_dir / "tab.dict")
+            column_rows = _read_dict_csv(output_dir / "col.dict")
+
+        self.assertEqual(exit_code, 0)
+        rows_by_kind = {row["object_kind"]: row for row in table_rows}
+        self.assertEqual(manifest["rows"]["tab.dict"], 2)
+        self.assertEqual(manifest["rows"]["col.dict"], 1)
+        self.assertEqual(manifest["steps"][2]["status"], "system-scan-output")
+        self.assertEqual(set(rows_by_kind), {"table", "index"})
+        self.assertEqual(rows_by_kind["table"]["name"], "DMDUL_MANY")
+        self.assertEqual(rows_by_kind["table"]["object_id"], "33629")
+        self.assertEqual(rows_by_kind["table"]["storage_index_id"], "33595349")
+        self.assertEqual(rows_by_kind["table"]["root_page"], "80")
+        self.assertEqual(rows_by_kind["index"]["parent_object_id"], "33629")
+        self.assertEqual(rows_by_kind["index"]["storage_index_id"], "33595349")
+        self.assertEqual(column_rows[0]["name"], "ID")
+        self.assertEqual(column_rows[0]["type_name"], "INT")
 
     def test_bootstrap_dicts_keeps_target_table_dicts_empty_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -455,6 +524,99 @@ class CliTest(unittest.TestCase):
             manifest["diagnostics"][0]["code"],
             "bootstrap-heuristic-dictionary-output-disabled",
         )
+
+
+    def test_prepare_writes_init_and_filelist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            init_file = root / "init.dul"
+            filelist = root / "filelist.dul"
+            output_dir = root / "out"
+            (root / "SYSTEM.DBF").write_bytes(_large_page0(group_raw=0, page_kind=0x13))
+            (root / "DMDUL_TS01.DBF").write_bytes(_large_page0(group_raw=6, page_kind=0x13))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "prepare",
+                    "--database-dir",
+                    str(root),
+                    "--init-output",
+                    str(init_file),
+                    "--filelist-output",
+                    str(filelist),
+                    "--output-dir",
+                    str(output_dir),
+                    "--parallel",
+                    "2",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            rows = list(csv.reader(filelist.read_text(encoding="utf-8").splitlines()))
+            init_text = init_file.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["files_total"], 2)
+        self.assertEqual(rows, [["0", "0", str(root / "SYSTEM.DBF")], ["6", "0", str(root / "DMDUL_TS01.DBF")]])
+        self.assertIn("--filelist=", init_text)
+        self.assertIn("--parallel=2", init_text)
+
+    def test_dump_data_writes_sql_header_and_pipe_delimited_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "dump"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            data_file.write_bytes(_leaf_page(page_no=0, value=7, storage_id=33595349))
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "page_type_raw", "page0_kind_raw", "page0_kind_label", "system_candidate"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 8192, "page_size": 8192, "pages": 1, "group_id": 6, "file_no": 0}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "parent_object_id", "schema_id", "subtype_name", "storage_index_id", "group_id", "root_file", "root_page", "scan_pages", "source"],
+                [{"dict_type": "table", "object_kind": "table", "owner": "SYSDBA", "name": "DMDUL_ONE", "qualified_name": "SYSDBA.DMDUL_ONE", "object_id": 33629, "storage_index_id": 33595349, "group_id": 6, "root_file": 0, "root_page": 0, "scan_pages": 1}],
+            )
+            _write_dict(
+                dict_dir / "col.dict",
+                ["dict_type", "owner", "table_name", "qualified_table_name", "object_id", "column_id", "ordinal", "name", "type_name", "length", "source"],
+                [{"dict_type": "column", "owner": "SYSDBA", "table_name": "DMDUL_ONE", "qualified_table_name": "SYSDBA.DMDUL_ONE", "object_id": 33629, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4}],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--table",
+                    "SYSDBA.DMDUL_ONE",
+                    "--delimiter",
+                    "|",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            dumped = (output_dir / "SYSDBA.DMDUL_ONE.dul").read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["tables_ok"], 1)
+        self.assertIn("CREATE TABLE SYSDBA.DMDUL_ONE", dumped)
+        self.assertIn("-- DATA", dumped)
+        self.assertIn("ID\n7\n", dumped)
 
     def test_resolve_table_writes_segment_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -801,6 +963,14 @@ def _segment_manifest_without_page_plan(data_file: Path) -> dict[str, object]:
     }
 
 
+def _write_dict(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
 def _large_page0(*, group_raw: int, page_kind: int) -> bytes:
     page = bytearray(8192)
     page[0:4] = group_raw.to_bytes(4, "little")
@@ -829,7 +999,7 @@ def _user_data_file_payload() -> bytes:
     pages.extend(bytes(8192) for _ in range(1, 80))
     pages.append(_segment_root_page(page_no=80, leaf_page=96))
     pages.extend(bytes(8192) for _ in range(81, 96))
-    pages.append(_leaf_page(page_no=96, value=7))
+    pages.append(_leaf_page(page_no=96, value=7, storage_id=33595349))
     pages.extend(bytes(8192) for _ in range(97, 144))
     return b"".join(pages)
 
@@ -850,8 +1020,9 @@ def _large_page(*, group_raw: int, page_no: int, page_kind: int) -> bytes:
     return bytes(page)
 
 
-def _leaf_page(*, page_no: int, value: int) -> bytes:
+def _leaf_page(*, page_no: int, value: int, storage_id: int) -> bytes:
     page = bytearray(_large_page(group_raw=6, page_no=page_no, page_kind=0x14))
+    page[0x3A:0x3E] = storage_id.to_bytes(4, "little")
     page[0x62:0x73] = (
         bytes.fromhex("00 11 00")
         + value.to_bytes(4, "little", signed=True)
@@ -884,17 +1055,21 @@ def _syscolumn(
     name: str,
     type_name: str,
 ) -> bytes:
-    return (
-        table_id.to_bytes(4, "little")
+    body = (
+        bytes.fromhex("00000c")
+        + table_id.to_bytes(4, "little")
         + column_id.to_bytes(2, "little")
         + length.to_bytes(4, "little")
-        + b"\0" * 8
+        + (0).to_bytes(2, "little")
+        + b"Y"
+        + b"\0" * 4
         + bytes([0x80 + len(name)])
         + name.encode("ascii")
         + bytes([0x80 + len(type_name)])
         + type_name.encode("ascii")
-        + b"\0" * 12
+        + bytes.fromhex("ac1500000000ffffffff7fffff30d734040000")
     )
+    return (len(body) + 2).to_bytes(2, "big") + body
 
 
 def _sysobject_index_child(*, parent_id: int, index_id: int) -> bytes:

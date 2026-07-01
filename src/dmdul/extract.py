@@ -58,6 +58,8 @@ def extract_csv_with_calibrated_metadata(
     output: Path,
     page_plan_fallback_level: str | None = None,
     initial_diagnostics: tuple[dict[str, Any], ...] = (),
+    delimiter: str = ",",
+    include_sql_header: bool = False,
 ) -> ExtractionReport:
     """Create a CSV for a table using calibrated metadata.
 
@@ -81,8 +83,11 @@ def extract_csv_with_calibrated_metadata(
     rows_written = 0
     rows_skipped_deleted = 0
     rows_skipped_decode_error = 0
+    pages_skipped_non_data = 0
+    pages_skipped_storage_mismatch = 0
     decode_errors: list[str] = []
     diagnostics: list[dict[str, Any]] = list(initial_diagnostics)
+    accepted_page_refs: list[StoragePageRef] = []
     page_plan = _build_page_plan(
         table,
         data_files,
@@ -103,7 +108,10 @@ def extract_csv_with_calibrated_metadata(
             }
         )
     with output.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
+        if include_sql_header:
+            file.write(_create_table_sql(table) + "\n")
+            file.write("-- DATA\n")
+        writer = csv.writer(file, delimiter=delimiter, lineterminator="\n")
         writer.writerow([column.name for column in table.columns])
         if unsupported_types:
             page_plan = PagePlan(pages=(), diagnostics=page_plan.diagnostics)
@@ -111,6 +119,15 @@ def extract_csv_with_calibrated_metadata(
             page_no = page_ref.page_no
             page_file = data_files[page_ref.file_no]
             page = page_file.read_page(page_no)
+            if table.storage.storage_id is not None:
+                header = ObservedPageHeader.from_page(page)
+                if header.page_kind_raw != 0x14:
+                    pages_skipped_non_data += 1
+                    continue
+                if header.storage_id_candidate != table.storage.storage_id:
+                    pages_skipped_storage_mismatch += 1
+                    continue
+            accepted_page_refs.append(page_ref)
             physical_rows = scan_observed_row_chain(page)
             rows_skipped_deleted += sum(1 for row in physical_rows if row.is_deleted)
             rows = iter_observed_rows_by_slots(page) or [
@@ -138,6 +155,26 @@ def extract_csv_with_calibrated_metadata(
                 writer.writerow(values)
                 rows_written += 1
 
+    if pages_skipped_non_data:
+        diagnostics.append(
+            {
+                "level": "info",
+                "code": "page-scan-skipped-non-data-pages",
+                "message": "one or more planned pages were not BTREE data pages and were skipped",
+                "count": pages_skipped_non_data,
+            }
+        )
+    if pages_skipped_storage_mismatch:
+        diagnostics.append(
+            {
+                "level": "info",
+                "code": "page-scan-skipped-storage-id-mismatch",
+                "message": "one or more planned pages did not match the table storage id and were skipped",
+                "count": pages_skipped_storage_mismatch,
+                "storage_id": table.storage.storage_id,
+            }
+        )
+
     return ExtractionReport(
         table=table.qualified_name,
         output=output,
@@ -146,10 +183,10 @@ def extract_csv_with_calibrated_metadata(
         rows_skipped_decode_error=rows_skipped_decode_error,
         decode_errors=tuple(decode_errors),
         diagnostics=tuple(diagnostics),
-        scanned_pages=tuple(page_ref.page_no for page_ref in page_plan.pages),
+        scanned_pages=tuple(page_ref.page_no for page_ref in accepted_page_refs),
         scanned_page_refs=tuple(
             {"file_no": page_ref.file_no, "page_no": page_ref.page_no}
-            for page_ref in page_plan.pages
+            for page_ref in accepted_page_refs
         ),
         mode=(
             "segment-manifest-page-ref-walk"
@@ -157,6 +194,22 @@ def extract_csv_with_calibrated_metadata(
             else "calibrated-metadata-page-range-scan"
         ),
     )
+
+
+def _create_table_sql(table: TableMeta) -> str:
+    owner_prefix = f"{table.owner}." if table.owner else ""
+    column_lines = []
+    for column in table.columns:
+        column_lines.append(f"  {column.name} {_ddl_type(column)}")
+    columns_sql = ",\n".join(column_lines)
+    return f"CREATE TABLE {owner_prefix}{table.name} (\n{columns_sql}\n);"
+
+
+def _ddl_type(column: ColumnMeta) -> str:
+    type_name = column.type_name.upper()
+    if column.length is not None and type_name in {"CHAR", "VARCHAR", "VARCHAR2", "BINARY", "VARBINARY"}:
+        return f"{type_name}({column.length})"
+    return type_name
 
 
 def _unsupported_column_types(table: TableMeta) -> tuple[ColumnMeta, ...]:
@@ -208,13 +261,22 @@ def _build_page_plan(
             file_no=table.storage.file_no,
             start_pages=table.storage.page_numbers,
         )
+    if table.storage.storage_id is not None:
+        root_plan = _build_root_page_plan(table=table, data_files=data_files)
+        if root_plan.pages or any(item.get("level") == "error" for item in root_plan.diagnostics):
+            return root_plan
+        storage_scan_plan = _build_storage_id_page_plan(table=table, data_files=data_files)
+        return PagePlan(
+            pages=storage_scan_plan.pages,
+            diagnostics=root_plan.diagnostics + storage_scan_plan.diagnostics,
+        )
     diagnostics: tuple[dict[str, Any], ...] = ()
     if fallback_level is not None:
         diagnostics = (
             {
                 "level": fallback_level,
                 "code": "page-plan-fallback-scan-range",
-                "message": "segment manifest has no page-reference plan; falling back to scan_pages from the root page",
+                "message": "segment manifest has no page-reference plan and no storage id; falling back to scan_pages from the root page",
                 "root_page": table.storage.root_page,
                 "scan_pages": table.storage.scan_pages,
             },
@@ -226,6 +288,237 @@ def _build_page_plan(
         ),
         diagnostics=diagnostics,
     )
+
+
+
+
+def _build_root_page_plan(
+    *,
+    table: TableMeta,
+    data_files: dict[int, DataFile],
+) -> PagePlan:
+    data_file = data_files.get(table.storage.file_no)
+    if data_file is None:
+        return PagePlan(
+            pages=(),
+            diagnostics=(
+                {
+                    "level": "error",
+                    "code": "page-plan-file-missing",
+                    "message": "storage root file is not present in metadata",
+                    "file_no": table.storage.file_no,
+                    "root_page": table.storage.root_page,
+                },
+            ),
+        )
+    pages_total = data_file.path.stat().st_size // data_file.page_size
+    root_page_no = table.storage.root_page
+    if root_page_no < 0 or root_page_no >= pages_total:
+        return PagePlan(
+            pages=(),
+            diagnostics=(
+                {
+                    "level": "error",
+                    "code": "page-plan-root-out-of-range",
+                    "message": "storage root page is outside the data file",
+                    "file_no": table.storage.file_no,
+                    "root_page": root_page_no,
+                    "pages_total": pages_total,
+                },
+            ),
+        )
+    root_page = data_file.read_page(root_page_no)
+    root_header = ObservedPageHeader.from_page(root_page)
+    if root_header.storage_id_candidate != table.storage.storage_id:
+        return PagePlan(
+            pages=(),
+            diagnostics=(
+                {
+                    "level": "warning",
+                    "code": "page-plan-root-storage-id-mismatch",
+                    "message": "root page storage id did not match table storage id; storage-id scan fallback is required",
+                    "root_page": root_page_no,
+                    "expected_storage_id": table.storage.storage_id,
+                    "observed_storage_id": root_header.storage_id_candidate,
+                },
+            ),
+        )
+    if root_header.page_kind_raw == 0x14:
+        plan = _walk_same_file_leaf_chain(
+            data_file=data_file,
+            file_no=table.storage.file_no,
+            start_pages=(root_page_no,),
+        )
+        return PagePlan(
+            pages=plan.pages,
+            diagnostics=(
+                {
+                    "level": "info",
+                    "code": "page-plan-root-leaf-chain",
+                    "message": "planned BTREE data pages by walking the root leaf page chain",
+                    "root_page": root_page_no,
+                    "storage_id": table.storage.storage_id,
+                    "pages_planned": len(plan.pages),
+                },
+            ) + plan.diagnostics,
+        )
+    if root_header.page_kind_raw == 0x15:
+        leftmost_child = _btree_root_leftmost_child(root_page)
+        entry_children = _btree_root_entry_child_pages(root_page, root_header.observed_row_count)
+        if leftmost_child is None:
+            return PagePlan(
+                pages=(),
+                diagnostics=(
+                    {
+                        "level": "warning",
+                        "code": "page-plan-btree-root-no-leftmost-child",
+                        "message": "BTREE root page did not contain a usable leftmost child pointer; storage-id scan fallback is required",
+                        "root_page": root_page_no,
+                        "storage_id": table.storage.storage_id,
+                        "entry_count": root_header.observed_row_count,
+                    },
+                ),
+            )
+        plan = _walk_same_file_leaf_chain(
+            data_file=data_file,
+            file_no=table.storage.file_no,
+            start_pages=(leftmost_child,),
+        )
+        planned_pages = tuple(page_ref.page_no for page_ref in plan.pages)
+        diagnostics: list[dict[str, Any]] = [
+            {
+                "level": "info",
+                "code": "page-plan-btree-root-children",
+                "message": "planned BTREE data pages from a BTREE root/internal page and leaf next-chain",
+                "root_page": root_page_no,
+                "storage_id": table.storage.storage_id,
+                "leftmost_child_page": leftmost_child,
+                "root_entry_count": root_header.observed_row_count,
+                "root_entry_child_pages": entry_children,
+                "pages_planned": len(plan.pages),
+            }
+        ]
+        entry_set = set(entry_children)
+        planned_set = set(planned_pages)
+        if entry_set and entry_set != planned_set - {leftmost_child}:
+            diagnostics.append(
+                {
+                    "level": "warning",
+                    "code": "page-plan-btree-root-entry-mismatch",
+                    "message": "BTREE root child entries did not exactly match the walked leaf chain",
+                    "root_page": root_page_no,
+                    "entry_child_pages": entry_children,
+                    "walked_pages": list(planned_pages),
+                }
+            )
+        diagnostics.extend(plan.diagnostics)
+        return PagePlan(pages=plan.pages, diagnostics=tuple(diagnostics))
+    return PagePlan(
+        pages=(),
+        diagnostics=(
+            {
+                "level": "info",
+                "code": "page-plan-root-kind-unhandled",
+                "message": "root page kind is not yet parsed; storage-id scan fallback is required",
+                "root_page": root_page_no,
+                "storage_id": table.storage.storage_id,
+                "page_kind_raw": root_header.page_kind_raw,
+            },
+        ),
+    )
+
+
+def _btree_root_leftmost_child(page: bytes) -> int | None:
+    if len(page) < 0x56:
+        return None
+    value = int.from_bytes(page[0x52:0x56], "little")
+    return value if value > 0 else None
+
+
+def _btree_root_entry_child_pages(page: bytes, entry_count: int) -> list[int]:
+    if entry_count <= 0:
+        return []
+    slot_start = len(page) - 10 - (entry_count * 2)
+    if slot_start < 0:
+        return []
+    child_pages: list[int] = []
+    for slot_offset in range(slot_start, slot_start + entry_count * 2, 2):
+        entry_offset = int.from_bytes(page[slot_offset : slot_offset + 2], "little")
+        if entry_offset <= 0 or entry_offset + 7 > len(page):
+            continue
+        child_page = int.from_bytes(page[entry_offset + 3 : entry_offset + 7], "little")
+        if child_page > 0:
+            child_pages.append(child_page)
+    child_pages.sort()
+    return child_pages
+
+
+def _build_storage_id_page_plan(
+    *,
+    table: TableMeta,
+    data_files: dict[int, DataFile],
+) -> PagePlan:
+    data_file = data_files.get(table.storage.file_no)
+    if data_file is None:
+        return PagePlan(
+            pages=(),
+            diagnostics=(
+                {
+                    "level": "error",
+                    "code": "page-plan-file-missing",
+                    "message": "storage root file is not present in metadata",
+                    "file_no": table.storage.file_no,
+                    "root_page": table.storage.root_page,
+                },
+            ),
+        )
+    pages_total = data_file.path.stat().st_size // data_file.page_size
+    planned: list[StoragePageRef] = []
+    skipped_non_data = 0
+    skipped_storage_mismatch = 0
+    for page_no in _iter_scan_pages(table):
+        if page_no < 0 or page_no >= pages_total:
+            break
+        page = data_file.read_page(page_no)
+        if not any(page):
+            continue
+        header = ObservedPageHeader.from_page(page)
+        if header.file_no_hint != table.storage.file_no or header.page_no != page_no:
+            continue
+        if header.page_kind_raw != 0x14:
+            skipped_non_data += 1
+            continue
+        if header.storage_id_candidate != table.storage.storage_id:
+            skipped_storage_mismatch += 1
+            continue
+        planned.append(StoragePageRef(file_no=table.storage.file_no, page_no=page_no))
+    diagnostics: list[dict[str, Any]] = []
+    if not planned:
+        diagnostics.append(
+            {
+                "level": "error",
+                "code": "page-plan-storage-id-no-data-pages",
+                "message": "no BTREE data pages matched the table storage id in the segment scan window",
+                "root_page": table.storage.root_page,
+                "scan_pages": table.storage.scan_pages,
+                "storage_id": table.storage.storage_id,
+            }
+        )
+    else:
+        diagnostics.append(
+            {
+                "level": "info",
+                "code": "page-plan-storage-id-scan",
+                "message": "planned BTREE data pages by matching page-header storage id in the segment window",
+                "root_page": table.storage.root_page,
+                "scan_pages": table.storage.scan_pages,
+                "storage_id": table.storage.storage_id,
+                "pages_planned": len(planned),
+                "skipped_non_data": skipped_non_data,
+                "skipped_storage_mismatch": skipped_storage_mismatch,
+            }
+        )
+    return PagePlan(pages=tuple(planned), diagnostics=tuple(diagnostics))
 
 
 def _iter_scan_pages(table: TableMeta) -> range:

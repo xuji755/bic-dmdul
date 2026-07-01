@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ class StorageRoot:
     file_no: int
     root_page: int
     scan_pages: int = 1
+    storage_id: int | None = None
     page_numbers: tuple[int, ...] = ()
     page_refs: tuple[StoragePageRef, ...] = ()
 
@@ -40,7 +42,7 @@ class TableMeta:
 
     @property
     def qualified_name(self) -> str:
-        return f"{self.owner}.{self.name}"
+        return f"{self.owner}.{self.name}" if self.owner else self.name
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,63 @@ class DataFileMeta:
 class CalibratedMetadata:
     data_files: tuple[DataFileMeta, ...]
     tables: tuple[TableMeta, ...]
+
+
+    @classmethod
+    def from_dict_dir(cls, dict_dir: Path) -> "CalibratedMetadata":
+        file_rows = _read_csv_dict(dict_dir / "file.dict")
+        table_rows = _read_csv_dict(dict_dir / "tab.dict")
+        column_rows = _read_csv_dict(dict_dir / "col.dict")
+        data_files = tuple(
+            DataFileMeta(
+                group_id=int(row["group_id"]),
+                file_no=int(row.get("file_no") or 0),
+                path=Path(row["path"]),
+                page_size=int(row.get("page_size") or 8192),
+            )
+            for row in file_rows
+            if row.get("path") and row.get("group_id") not in {None, ""}
+        )
+        columns_by_object_id: dict[int, list[ColumnMeta]] = {}
+        for row in column_rows:
+            object_id = _optional_int(row.get("object_id"))
+            if object_id is None:
+                continue
+            columns_by_object_id.setdefault(object_id, []).append(
+                ColumnMeta(
+                    name=str(row["name"]),
+                    type_name=str(row["type_name"]).upper(),
+                    length=_optional_int(row.get("length")),
+                    scale=_optional_int(row.get("scale")),
+                    nullable=_optional_bool(row.get("nullable"), default=True),
+                )
+            )
+        tables: list[TableMeta] = []
+        for row in table_rows:
+            if row.get("object_kind") != "table":
+                continue
+            object_id = _optional_int(row.get("object_id"))
+            group_id = _optional_int(row.get("group_id"))
+            root_file = _optional_int(row.get("root_file"))
+            root_page = _optional_int(row.get("root_page"))
+            if object_id is None or group_id is None or root_file is None or root_page is None:
+                continue
+            columns = tuple(columns_by_object_id.get(object_id, ()))
+            tables.append(
+                TableMeta(
+                    owner=str(row.get("owner") or ""),
+                    name=str(row["name"]),
+                    columns=columns,
+                    storage=StorageRoot(
+                        group_id=group_id,
+                        file_no=root_file,
+                        root_page=root_page,
+                        scan_pages=int(row.get("scan_pages") or 1),
+                        storage_id=_optional_int(row.get("storage_index_id")),
+                    ),
+                )
+            )
+        return cls(data_files=data_files, tables=tuple(tables))
 
     @classmethod
     def from_json_file(cls, path: Path) -> "CalibratedMetadata":
@@ -114,6 +173,7 @@ class CalibratedMetadata:
                 file_no=int(segment["root_file"]),
                 root_page=int(segment["root_page"]),
                 scan_pages=int(segment.get("scan_pages", 1)),
+                storage_id=_optional_int(segment.get("storage_index_id")),
                 page_numbers=_segment_manifest_page_numbers(payload),
                 page_refs=_segment_manifest_page_refs(payload),
             ),
@@ -155,6 +215,7 @@ def _table_from_dict(item: dict[str, Any]) -> TableMeta:
             file_no=int(storage["file_no"]),
             root_page=int(storage["root_page"]),
             scan_pages=int(storage.get("scan_pages", 1)),
+            storage_id=_optional_int(storage.get("storage_id") or storage.get("storage_index_id")),
             page_numbers=tuple(int(value) for value in storage.get("page_numbers", ())),
             page_refs=_storage_page_refs(storage),
         ),
@@ -162,7 +223,7 @@ def _table_from_dict(item: dict[str, Any]) -> TableMeta:
 
 
 def _optional_int(value: Any) -> int | None:
-    if value is None:
+    if value is None or value == "":
         return None
     return int(value)
 
@@ -249,3 +310,18 @@ def _storage_page_refs(storage: dict[str, Any]) -> tuple[StoragePageRef, ...]:
         StoragePageRef(file_no=file_no, page_no=int(page_no))
         for page_no in storage.get("page_numbers", ())
     )
+
+
+def _read_csv_dict(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as file:
+        return list(csv.DictReader(file))
+
+
+def _optional_bool(value: Any, *, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}

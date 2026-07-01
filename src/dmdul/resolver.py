@@ -193,6 +193,7 @@ def resolve_offline_table_metadata(
             file_no=_required_int(storage_index.root_file, "storage root file"),
             root_page=_required_int(storage_index.root_page, "storage root page"),
             scan_pages=scan_pages,
+            storage_id=index_child.index_id,
         ),
     )
     group_data_files = tuple(

@@ -1,15 +1,79 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
 
 from .control_map import write_control_ctl
 from .database_summary import summarize_database_dir
+from .discovery import discover_data_files
 from .resolver import OfflineResolveError, resolve_offline_table_metadata
+from .sysdict import (
+    SysObjectRowCandidate,
+    dump_syscolumn_rows,
+    dump_sysindex_rows,
+    dump_sysobject_rows,
+    find_sysindex_candidates,
+)
 
 
 DICT_FILENAMES = ("file.dict", "user.dict", "tab.dict", "col.dict")
+
+DICT_FIELDNAMES = {
+    "file.dict": (
+        "dict_type",
+        "ordinal",
+        "path",
+        "basename",
+        "bytes",
+        "page_size",
+        "pages",
+        "group_id",
+        "file_no",
+        "page_type_raw",
+        "page0_kind_raw",
+        "page0_kind_label",
+        "system_candidate",
+    ),
+    "user.dict": (
+        "dict_type",
+        "owner",
+        "schema_id",
+        "source",
+        "status",
+    ),
+    "tab.dict": (
+        "dict_type",
+        "object_kind",
+        "owner",
+        "name",
+        "qualified_name",
+        "object_id",
+        "parent_object_id",
+        "schema_id",
+        "subtype_name",
+        "storage_index_id",
+        "group_id",
+        "root_file",
+        "root_page",
+        "scan_pages",
+        "source",
+    ),
+    "col.dict": (
+        "dict_type",
+        "owner",
+        "table_name",
+        "qualified_table_name",
+        "object_id",
+        "column_id",
+        "ordinal",
+        "name",
+        "type_name",
+        "length",
+        "source",
+    ),
+}
 
 
 def build_bootstrap_dicts(
@@ -48,10 +112,17 @@ def build_bootstrap_dicts(
         sample_limit=sample_limit,
     )
     file_rows = _file_dict_rows(summary)
-    if experimental_heuristic_dicts:
+    if experimental_heuristic_dicts and tables:
         user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_for_tables(
             database_dir=database_dir,
             tables=tables,
+            owner=owner,
+            page_size=page_size,
+            scan_pages=scan_pages,
+        )
+    elif experimental_heuristic_dicts:
+        user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_from_system_scan(
+            database_dir=database_dir,
             owner=owner,
             page_size=page_size,
             scan_pages=scan_pages,
@@ -61,10 +132,10 @@ def build_bootstrap_dicts(
         table_rows = []
         column_rows = []
         table_diagnostics = _heuristic_dicts_disabled_diagnostics(tables)
-    _write_jsonl(dict_paths["file.dict"], file_rows)
-    _write_jsonl(dict_paths["user.dict"], user_rows)
-    _write_jsonl(dict_paths["tab.dict"], table_rows)
-    _write_jsonl(dict_paths["col.dict"], column_rows)
+    _write_csv_dict(dict_paths["file.dict"], file_rows, DICT_FIELDNAMES["file.dict"])
+    _write_csv_dict(dict_paths["user.dict"], user_rows, DICT_FIELDNAMES["user.dict"])
+    _write_csv_dict(dict_paths["tab.dict"], table_rows, DICT_FIELDNAMES["tab.dict"])
+    _write_csv_dict(dict_paths["col.dict"], column_rows, DICT_FIELDNAMES["col.dict"])
 
     manifest = {
         "mode": "dm-bootstrap-dicts",
@@ -195,6 +266,274 @@ def _dictionary_rows_for_tables(
     return list(user_by_owner.values()), table_rows, column_rows, diagnostics
 
 
+
+def _dictionary_rows_from_system_scan(
+    *,
+    database_dir: Path,
+    owner: str | None,
+    page_size: int,
+    scan_pages: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    diagnostics: list[dict[str, Any]] = []
+    system_file = _find_system_file(database_dir, page_size=page_size)
+    if system_file is None:
+        return [], [], [], [
+            {
+                "level": "error",
+                "code": "bootstrap-system-file-not-found",
+                "message": "no SYSTEM.DBF candidate was found for SYSOBJECTS scan",
+            }
+        ]
+
+    sysobjects = dump_sysobject_rows(system_file, page_size=page_size)
+    table_objects = [
+        row
+        for row in sysobjects
+        if row.type_name == "SCHOBJ"
+        and row.subtype_name in {"UTAB", "STAB"}
+        and row.object_id is not None
+    ]
+    storage_children = [
+        row
+        for row in sysobjects
+        if row.type_name == "TABOBJ"
+        and row.subtype_name == "INDEX"
+        and row.object_id is not None
+        and row.parent_id is not None
+    ]
+    storage_by_parent: dict[int, SysObjectRowCandidate] = {}
+    for row in storage_children:
+        assert row.parent_id is not None
+        existing = storage_by_parent.get(row.parent_id)
+        if existing is None or row.score > existing.score:
+            storage_by_parent[row.parent_id] = row
+
+    schema_rows = [
+        row
+        for row in sysobjects
+        if row.type_name == "SCH" and row.object_id is not None and row.name
+    ]
+    owner_by_schema_id = {row.object_id: row.name for row in schema_rows}
+    user_rows_by_schema_id: dict[int | str, dict[str, Any]] = {}
+    if owner:
+        user_rows_by_schema_id["override"] = {
+            "dict_type": "user",
+            "owner": owner,
+            "schema_id": "",
+            "source": "heuristic-system-scan",
+            "status": "owner-override",
+        }
+    for schema_row in schema_rows:
+        assert schema_row.object_id is not None
+        user_rows_by_schema_id.setdefault(
+            schema_row.object_id,
+            {
+                "dict_type": "user",
+                "owner": schema_row.name,
+                "schema_id": schema_row.object_id,
+                "source": "heuristic-system-scan",
+                "status": "sysobjects-schema-row",
+            },
+        )
+
+    all_columns = dump_syscolumn_rows(system_file, page_size=page_size)
+    columns_by_object_id: dict[int, list[Any]] = {}
+    for column in all_columns:
+        columns_by_object_id.setdefault(column.object_id, []).append(column)
+
+    all_indexes = dump_sysindex_rows(system_file, page_size=page_size)
+    sysindex_by_id = {index.index_id: index for index in all_indexes}
+
+    table_rows: list[dict[str, Any]] = []
+    column_rows: list[dict[str, Any]] = []
+    for table in table_objects:
+        assert table.object_id is not None
+        storage_child = storage_by_parent.get(table.object_id)
+        storage_index = None
+        if storage_child is not None and storage_child.object_id is not None:
+            storage_index = sysindex_by_id.get(storage_child.object_id)
+        owner_name = owner or (owner_by_schema_id.get(table.schema_id) if table.schema_id is not None else "") or ""
+        if table.schema_id is not None and owner_name and table.schema_id not in user_rows_by_schema_id:
+            user_rows_by_schema_id[table.schema_id] = {
+                "dict_type": "user",
+                "owner": owner_name,
+                "schema_id": table.schema_id,
+                "source": "heuristic-system-scan",
+                "status": "schema-id-owner-resolved",
+            }
+        qualified_name = f"{owner_name}.{table.name}" if owner_name else table.name
+        table_rows.append(
+            {
+                "dict_type": "table",
+                "object_kind": "table",
+                "owner": owner_name,
+                "name": table.name,
+                "qualified_name": qualified_name,
+                "object_id": table.object_id,
+                "schema_id": table.schema_id,
+                "subtype_name": table.subtype_name,
+                "storage_index_id": None if storage_child is None else storage_child.object_id,
+                "group_id": None if storage_index is None else storage_index.group_id,
+                "root_file": None if storage_index is None else storage_index.root_file,
+                "root_page": None if storage_index is None else storage_index.root_page,
+                "scan_pages": scan_pages,
+                "source": "heuristic-system-scan",
+                "sysobjects": {
+                    "offset": table.offset,
+                    "page_no": table.page_no,
+                    "page_offset": table.page_offset,
+                    "score": table.score,
+                },
+                "sysobject_index_child": None if storage_child is None else {
+                    "name": storage_child.name,
+                    "offset": storage_child.offset,
+                    "page_no": storage_child.page_no,
+                    "page_offset": storage_child.page_offset,
+                    "score": storage_child.score,
+                },
+                "sysindexes": None if storage_index is None else {
+                    "offset": storage_index.offset,
+                    "page_no": storage_index.page_no,
+                    "page_offset": storage_index.page_offset,
+                    "score": storage_index.score,
+                    "type_name": storage_index.type_name,
+                    "flag": storage_index.flag,
+                },
+            }
+        )
+        column_rows.extend(
+            _column_dict_rows_from_system_scan(
+                columns=columns_by_object_id.get(table.object_id, []),
+                owner_name=owner_name,
+                table=table,
+            )
+        )
+
+    table_rows.extend(
+        _index_dict_rows_from_system_scan(
+            owner_by_schema_id=owner_by_schema_id,
+            owner_override=owner,
+            storage_children=storage_children,
+            sysindex_by_id=sysindex_by_id,
+        )
+    )
+
+    diagnostics.append(
+        {
+            "level": "warning",
+            "code": "bootstrap-system-dictionary-scan-heuristic",
+            "message": "SYSOBJECTS/SYSCOLUMNS/SYSINDEXES were scanned directly from SYSTEM.DBF with current calibrated heuristics; schema/user rows are not yet fully decoded",
+            "system_file": str(system_file),
+            "sysobjects_rows": len(sysobjects),
+            "table_rows": len(table_objects),
+            "index_rows": len(storage_children),
+            "tab_dict_rows": len(table_rows),
+            "storage_child_rows": len(storage_children),
+            "syscolumns_rows": len(all_columns),
+            "sysindexes_rows": len(all_indexes),
+            "column_rows": len(column_rows),
+            "schema_rows": len(schema_rows),
+            "schema_owner_rows": len(user_rows_by_schema_id),
+        }
+    )
+    return list(user_rows_by_schema_id.values()), table_rows, column_rows, diagnostics
+
+
+
+def _index_dict_rows_from_system_scan(
+    *,
+    owner_by_schema_id: dict[int, str],
+    owner_override: str | None,
+    storage_children: list[SysObjectRowCandidate],
+    sysindex_by_id: dict[int, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for child in storage_children:
+        if child.object_id is None:
+            continue
+        storage_index = sysindex_by_id.get(child.object_id)
+        owner_name = owner_override or (owner_by_schema_id.get(child.schema_id) if child.schema_id is not None else "") or ""
+        rows.append(
+            {
+                "dict_type": "table",
+                "object_kind": "index",
+                "owner": owner_name,
+                "name": child.name,
+                "qualified_name": f"{owner_name}.{child.name}" if owner_name else child.name,
+                "object_id": child.object_id,
+                "parent_object_id": child.parent_id,
+                "schema_id": child.schema_id,
+                "subtype_name": child.subtype_name,
+                "storage_index_id": child.object_id,
+                "group_id": None if storage_index is None else storage_index.group_id,
+                "root_file": None if storage_index is None else storage_index.root_file,
+                "root_page": None if storage_index is None else storage_index.root_page,
+                "scan_pages": 1,
+                "source": "heuristic-system-scan",
+                "sysobjects": {
+                    "offset": child.offset,
+                    "page_no": child.page_no,
+                    "page_offset": child.page_offset,
+                    "score": child.score,
+                },
+                "sysindexes": None if storage_index is None else {
+                    "offset": storage_index.offset,
+                    "page_no": storage_index.page_no,
+                    "page_offset": storage_index.page_offset,
+                    "score": storage_index.score,
+                    "type_name": storage_index.type_name,
+                    "flag": storage_index.flag,
+                },
+            }
+        )
+    return rows
+
+
+def _find_system_file(database_dir: Path, *, page_size: int) -> Path | None:
+    files = discover_data_files(database_dir, page_size=page_size)
+    for item in files:
+        if item.is_system_candidate:
+            return item.path
+    for item in files:
+        if item.path.name.upper() == "SYSTEM.DBF":
+            return item.path
+    return None
+
+
+def _column_dict_rows_from_system_scan(
+    *,
+    columns: list[Any],
+    owner_name: str,
+    table: SysObjectRowCandidate,
+) -> list[dict[str, Any]]:
+    if table.object_id is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for ordinal, column in enumerate(columns, start=1):
+        rows.append(
+            {
+                "dict_type": "column",
+                "owner": owner_name,
+                "table_name": table.name,
+                "qualified_table_name": f"{owner_name}.{table.name}" if owner_name else table.name,
+                "object_id": table.object_id,
+                "column_id": column.column_id,
+                "ordinal": ordinal,
+                "name": column.name,
+                "type_name": column.type_name,
+                "length": column.length,
+                "source": "heuristic-system-scan",
+                "syscolumns": {
+                    "offset": column.offset,
+                    "page_no": column.page_no,
+                    "page_offset": column.page_offset,
+                    "score": column.score,
+                },
+            }
+        )
+    return rows
+
+
 def _heuristic_dicts_disabled_diagnostics(
     tables: tuple[str, ...],
 ) -> list[dict[str, Any]]:
@@ -218,6 +557,7 @@ def _heuristic_dicts_disabled_diagnostics(
 def _table_dict_row(resolution: Any) -> dict[str, Any]:
     return {
         "dict_type": "table",
+        "object_kind": "table",
         "owner": resolution.table.owner,
         "name": resolution.table.name,
         "qualified_name": resolution.table.qualified_name,
@@ -286,10 +626,12 @@ def _dictionary_dump_status(
     diagnostics: list[dict[str, Any]],
     experimental_heuristic_dicts: bool,
 ) -> str:
-    if not requested_tables:
-        return "not-requested"
     if not experimental_heuristic_dicts:
-        return "blocked-by-type-decoding"
+        return "blocked-by-type-decoding" if requested_tables else "not-requested"
+    if not requested_tables and table_rows:
+        return "system-scan-output"
+    if not requested_tables:
+        return "failed" if diagnostics else "not-requested"
     if diagnostics:
         return "partial" if table_rows else "failed"
     return "heuristic-output"
@@ -344,7 +686,7 @@ def _bootstrap_diagnostics(
                 "message": "no DBF files were available for file.dict",
             }
         )
-    if requested_tables and experimental_heuristic_dicts:
+    if experimental_heuristic_dicts:
         diagnostics.append(
             {
                 "level": "warning",
@@ -378,7 +720,21 @@ def _bootstrap_diagnostics(
     return diagnostics
 
 
-def _write_jsonl(path: Path, rows: tuple[dict[str, Any], ...] | list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as file:
+def _write_csv_dict(
+    path: Path,
+    rows: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+    fieldnames: tuple[str, ...],
+) -> None:
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
         for row in rows:
-            file.write(json.dumps(row, sort_keys=True) + "\n")
+            writer.writerow({key: _csv_scalar(row.get(key)) for key in fieldnames})
+
+
+def _csv_scalar(value: Any) -> str | int | bool:
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, bool)):
+        return value
+    return json.dumps(value, sort_keys=True)

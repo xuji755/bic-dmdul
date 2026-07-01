@@ -48,13 +48,13 @@ class DataBlockAnalysisTest(unittest.TestCase):
             [("ID", "fixed-width-trace"), ("V", "variable-length-trace")],
         )
 
-    def test_traces_fixed_temporal_types_without_decoding_values(self) -> None:
+    def test_traces_and_decodes_fixed_temporal_types(self) -> None:
         page = bytearray(b"\0" * 8192)
         page[20:24] = (0x14).to_bytes(4, "little")
         page[0x62:0x70] = (
             bytes.fromhex("00 0e 00")
-            + bytes.fromhex("01 02 03")
-            + bytes.fromhex("04 05 06 07 08 09 0a 0b")
+            + bytes.fromhex("ea 07 f3")
+            + bytes.fromhex("ea 07 f3 6a 61 e2 f7 13")
         )
 
         analysis = analyze_data_block(
@@ -66,9 +66,13 @@ class DataBlockAnalysisTest(unittest.TestCase):
         )
 
         row = analysis["rows"][0]
-        self.assertEqual(row["decode_status"], "row-decode-error")
-        self.assertEqual(row["field_trace"][0]["raw_hex"], "010203")
-        self.assertEqual(row["field_trace"][1]["raw_hex"], "0405060708090a0b")
+        self.assertEqual(row["decode_status"], "ok")
+        self.assertEqual(
+            row["decoded_values"],
+            ["2026-06-30", "2026-06-30 10:11:12.654321"],
+        )
+        self.assertEqual(row["field_trace"][0]["raw_hex"], "ea07f3")
+        self.assertEqual(row["field_trace"][1]["raw_hex"], "ea07f36a61e2f713")
 
     def test_traces_fixed_area_before_variable_area(self) -> None:
         page = bytearray(b"\0" * 8192)

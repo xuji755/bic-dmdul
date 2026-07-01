@@ -94,6 +94,21 @@ class SysObjectIndexChildCandidate:
     index_id_offset: int | None
 
 
+@dataclass(frozen=True)
+class SysObjectRowCandidate:
+    name: str
+    object_id: int | None
+    schema_id: int | None
+    parent_id: int | None
+    type_name: str
+    subtype_name: str
+    offset: int
+    page_no: int
+    page_offset: int
+    score: int
+    source: str
+
+
 def find_sysobject_candidates(
     system_file: Path,
     object_name: str,
@@ -289,6 +304,72 @@ def _syscolumn_candidate_from_row(
     )
 
 
+
+def dump_syscolumn_rows(
+    system_file: Path,
+    *,
+    page_size: int = 8192,
+    chunk_size: int = 1024 * 1024,
+) -> list[SysColumnCandidate]:
+    """Scan SYSTEM.DBF once for calibrated SYS.SYSCOLUMNS clean rows."""
+
+    candidates: list[SysColumnCandidate] = []
+    overlap = 4096
+    previous = b""
+    offset = 0
+    with system_file.open("rb") as file:
+        while True:
+            chunk = file.read(chunk_size)
+            if not chunk:
+                break
+            window = previous + chunk
+            base_absolute = offset - len(previous)
+            scan_limit = max(0, len(window) - 32)
+            for local_row_start in range(scan_limit):
+                candidate = _syscolumn_candidate_at_row_start(
+                    absolute_row_start=base_absolute + local_row_start,
+                    page_size=page_size,
+                    window=window,
+                    local_row_start=local_row_start,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+            previous = window[-overlap:]
+            offset += len(chunk)
+    return _dedupe_syscolumn_candidates(candidates)
+
+
+def _syscolumn_candidate_at_row_start(
+    *,
+    absolute_row_start: int,
+    page_size: int,
+    window: bytes,
+    local_row_start: int,
+) -> SysColumnCandidate | None:
+    if local_row_start + 22 > len(window):
+        return None
+    raw_len_flags = int.from_bytes(window[local_row_start : local_row_start + 2], "big")
+    row_length = raw_len_flags & 0x7FFF
+    if raw_len_flags & 0x8000:
+        return None
+    if row_length < 32 or row_length > 4096:
+        return None
+    local_row_end = local_row_start + row_length
+    if local_row_end > len(window):
+        return None
+    row = window[local_row_start:local_row_end]
+    object_id = int.from_bytes(row[5:9], "little", signed=False)
+    if object_id < 1 or object_id > 10_000_000:
+        return None
+    return _syscolumn_candidate_from_row(
+        object_id=object_id,
+        absolute=absolute_row_start + 5,
+        page_size=page_size,
+        window=window,
+        local_object_offset=local_row_start + 5,
+    )
+
+
 def find_sysindex_candidates(
     system_file: Path,
     index_id: int,
@@ -331,6 +412,55 @@ def find_sysindex_candidates(
                 if candidate is not None:
                     candidates.append(candidate)
                 search_from = index + 1
+            previous = window[-overlap:]
+            offset += len(chunk)
+    return _dedupe_sysindex_candidates(candidates)
+
+
+
+def dump_sysindex_rows(
+    system_file: Path,
+    *,
+    page_size: int = 8192,
+    chunk_size: int = 1024 * 1024,
+) -> list[SysIndexCandidate]:
+    """Scan SYSTEM.DBF once for SYS.SYSINDEXES-like storage rows."""
+
+    candidates: list[SysIndexCandidate] = []
+    overlap = 64
+    previous = b""
+    offset = 0
+    type_markers = (b"BT", b"RT", b"HT")
+    with system_file.open("rb") as file:
+        while True:
+            chunk = file.read(chunk_size)
+            if not chunk:
+                break
+            window = previous + chunk
+            base_absolute = offset - len(previous)
+            seen_offsets: set[int] = set()
+            for marker in type_markers:
+                search_from = 0
+                while True:
+                    type_offset = window.find(marker, search_from)
+                    if type_offset < 0:
+                        break
+                    id_offset = type_offset - 13
+                    if id_offset >= 0 and id_offset not in seen_offsets:
+                        seen_offsets.add(id_offset)
+                        context = window[id_offset : min(len(window), id_offset + 64)]
+                        if len(context) >= 23:
+                            index_id = int.from_bytes(context[0:4], "little", signed=False)
+                            if 1 <= index_id <= 100_000_000:
+                                candidate = _sysindex_candidate_from_context(
+                                    index_id=index_id,
+                                    absolute=base_absolute + id_offset,
+                                    page_size=page_size,
+                                    context=context,
+                                )
+                                if candidate is not None:
+                                    candidates.append(candidate)
+                    search_from = type_offset + 1
             previous = window[-overlap:]
             offset += len(chunk)
     return _dedupe_sysindex_candidates(candidates)
@@ -385,6 +515,381 @@ def find_sysobject_index_child_candidates(
             previous = window[-overlap:]
             offset += len(chunk)
     return _dedupe_sysobject_index_child_candidates(candidates)
+
+
+
+def dump_sysobject_rows(
+    system_file: Path,
+    *,
+    page_size: int = 8192,
+    chunk_size: int = 1024 * 1024,
+) -> list[SysObjectRowCandidate]:
+    """Scan SYSTEM.DBF for the SYSOBJECTS rows needed for table bootstrap.
+
+    This is a first-stage offline dictionary downloader. It decodes the stable
+    string markers observed in SYSOBJECTS (`SCHOBJ`/`TABOBJ`, `UTAB`/`STAB`, and
+    `INDEX<storage_id>`) and recovers nearby integer ids without requiring a
+    target table name from the user.
+    """
+
+    candidates: list[SysObjectRowCandidate] = []
+    overlap = 512
+    previous = b""
+    offset = 0
+    markers = (b"SCHOBJ", b"TABOBJ", b"SCH")
+    with system_file.open("rb") as file:
+        while True:
+            chunk = file.read(chunk_size)
+            if not chunk:
+                break
+            window = previous + chunk
+            seen_in_window: set[int] = set()
+            for marker in markers:
+                search_from = 0
+                while True:
+                    index = window.find(marker, search_from)
+                    if index < 0:
+                        break
+                    if index not in seen_in_window:
+                        seen_in_window.add(index)
+                        context_start = max(0, index - 180)
+                        context_end = min(len(window), index + 260)
+                        context = window[context_start:context_end]
+                        local_marker_offset = index - context_start
+                        absolute_context_start = offset - len(previous) + context_start
+                        candidates.extend(
+                            _sysobject_rows_from_context(
+                                context=context,
+                                absolute_context_start=absolute_context_start,
+                                page_size=page_size,
+                                local_marker_offset=local_marker_offset,
+                            )
+                        )
+                    search_from = index + 1
+            previous = window[-overlap:]
+            offset += len(chunk)
+    return _dedupe_sysobject_row_candidates(candidates)
+
+
+def _sysobject_rows_from_context(
+    *,
+    context: bytes,
+    absolute_context_start: int,
+    page_size: int,
+    local_marker_offset: int,
+) -> list[SysObjectRowCandidate]:
+    strings = _prefixed_ascii_strings(context)
+    rows: list[SysObjectRowCandidate] = []
+    for index, (string_offset, value) in enumerate(strings):
+        if value == "SCHOBJ":
+            rows.extend(
+                _sysobject_table_rows_from_strings(
+                    strings=strings,
+                    type_index=index,
+                    context=context,
+                    absolute_context_start=absolute_context_start,
+                    page_size=page_size,
+                    local_marker_offset=local_marker_offset,
+                )
+            )
+        elif value == "TABOBJ":
+            rows.extend(
+                _sysobject_index_rows_from_strings(
+                    strings=strings,
+                    type_index=index,
+                    context=context,
+                    absolute_context_start=absolute_context_start,
+                    page_size=page_size,
+                    local_marker_offset=local_marker_offset,
+                )
+            )
+        elif value == "SCH":
+            rows.extend(
+                _sysobject_schema_rows_from_strings(
+                    strings=strings,
+                    type_index=index,
+                    context=context,
+                    absolute_context_start=absolute_context_start,
+                    page_size=page_size,
+                    local_marker_offset=local_marker_offset,
+                )
+            )
+    return rows
+
+
+def _sysobject_schema_rows_from_strings(
+    *,
+    strings: list[tuple[int, str]],
+    type_index: int,
+    context: bytes,
+    absolute_context_start: int,
+    page_size: int,
+    local_marker_offset: int,
+) -> list[SysObjectRowCandidate]:
+    type_offset, _ = strings[type_index]
+    previous_names = [
+        (offset, value)
+        for offset, value in strings[max(0, type_index - 3) : type_index]
+        if _is_sysobject_name(value)
+    ]
+    if not previous_names:
+        return []
+    name_offset, name = previous_names[-1]
+    if type_offset - name_offset > 48:
+        return []
+    object_id = _sysobjects_schema_object_id_from_name_offset(context, name_offset)
+    if object_id is None:
+        return []
+    score = 60
+    if object_id is not None:
+        score += 30
+        if object_id <= 100:
+            score += 20
+    if 0 <= type_offset - name_offset <= 16:
+        score += 15
+    absolute = absolute_context_start + name_offset
+    return [
+        SysObjectRowCandidate(
+            name=name,
+            object_id=object_id,
+            schema_id=object_id,
+            parent_id=None,
+            type_name="SCH",
+            subtype_name="",
+            offset=absolute,
+            page_no=absolute // page_size,
+            page_offset=absolute % page_size,
+            score=score,
+            source="heuristic-system-scan",
+        )
+    ]
+
+
+def _sysobject_table_rows_from_strings(
+    *,
+    strings: list[tuple[int, str]],
+    type_index: int,
+    context: bytes,
+    absolute_context_start: int,
+    page_size: int,
+    local_marker_offset: int,
+) -> list[SysObjectRowCandidate]:
+    type_offset, _ = strings[type_index]
+    previous_names = [
+        (offset, value)
+        for offset, value in strings[max(0, type_index - 4) : type_index]
+        if _is_sysobject_name(value)
+    ]
+    if not previous_names:
+        return []
+    name_offset, name = previous_names[-1]
+    subtype_name = None
+    for subtype_offset, value in strings[type_index + 1 : type_index + 5]:
+        if subtype_offset - type_offset > 48:
+            break
+        if value in {"UTAB", "STAB"}:
+            subtype_name = value
+            break
+    if subtype_name is None:
+        return []
+    object_id_found = _nearest_plausible_id_before_with_offset(
+        context,
+        anchor_offset=name_offset,
+        start=max(0, name_offset - 96),
+        minimum=1,
+        maximum=10_000_000,
+    )
+    object_id_offset = None if object_id_found is None else object_id_found[0]
+    object_id = None if object_id_found is None else object_id_found[1]
+    schema_id = _sysobjects_schema_id_from_fixed_area(context, object_id_offset)
+    parent_id = _sysobjects_parent_id_from_fixed_area(context, object_id_offset)
+    score = 70
+    if object_id is not None:
+        score += 30
+        if 10_000 <= object_id <= 60_000:
+            score += 20
+    if 0 <= type_offset - name_offset <= 80:
+        score += 15
+    absolute = absolute_context_start + name_offset
+    return [
+        SysObjectRowCandidate(
+            name=name,
+            object_id=object_id,
+            schema_id=schema_id,
+            parent_id=parent_id,
+            type_name="SCHOBJ",
+            subtype_name=subtype_name,
+            offset=absolute,
+            page_no=absolute // page_size,
+            page_offset=absolute % page_size,
+            score=score,
+            source="heuristic-system-scan",
+        )
+    ]
+
+
+def _sysobject_index_rows_from_strings(
+    *,
+    strings: list[tuple[int, str]],
+    type_index: int,
+    context: bytes,
+    absolute_context_start: int,
+    page_size: int,
+    local_marker_offset: int,
+) -> list[SysObjectRowCandidate]:
+    type_offset, _ = strings[type_index]
+    for name_offset, name in strings[type_index + 1 : type_index + 6]:
+        if name_offset - type_offset > 96:
+            break
+        if not _is_index_object_name(name):
+            continue
+        index_id = int(name[5:])
+        index_id_offset = _nearest_bytes_offset(
+            context,
+            index_id.to_bytes(4, "little", signed=False),
+            anchor_offset=type_offset,
+            start=max(0, type_offset - 128),
+            end=min(len(context), name_offset + len(name) + 32),
+        )
+        schema_id = _sysobjects_schema_id_from_fixed_area(context, index_id_offset)
+        parent_id = _sysobjects_parent_id_from_fixed_area(context, index_id_offset)
+        if parent_id is None:
+            parent_id = _nearest_plausible_id_before(
+                context,
+                anchor_offset=type_offset,
+                start=max(0, type_offset - 96),
+                minimum=1,
+                maximum=10_000_000,
+                exclude={index_id},
+            )
+        score = 65
+        if parent_id is not None:
+            score += 25
+            if 10_000 <= parent_id <= 60_000:
+                score += 20
+        if index_id_offset is not None:
+            score += 15
+        absolute = absolute_context_start + name_offset
+        return [
+            SysObjectRowCandidate(
+                name=name,
+                object_id=index_id,
+                schema_id=schema_id,
+                parent_id=parent_id,
+                type_name="TABOBJ",
+                subtype_name="INDEX",
+                offset=absolute,
+                page_no=absolute // page_size,
+                page_offset=absolute % page_size,
+                score=score,
+                source="heuristic-system-scan",
+            )
+        ]
+    return []
+
+
+def _is_sysobject_name(value: str) -> bool:
+    if value in {"SCH", "SCHOBJ", "TABOBJ", "UR", "UTAB", "STAB", "INDEX"}:
+        return False
+    if value in KNOWN_DM_TYPE_NAMES:
+        return False
+    return bool(value) and _is_printable_ascii_identifier(value.encode("ascii"))
+
+
+def _nearest_plausible_id_before(
+    context: bytes,
+    *,
+    anchor_offset: int,
+    start: int,
+    minimum: int,
+    maximum: int,
+    exclude: set[int] | None = None,
+) -> int | None:
+    found = _nearest_plausible_id_before_with_offset(
+        context,
+        anchor_offset=anchor_offset,
+        start=start,
+        minimum=minimum,
+        maximum=maximum,
+        exclude=exclude,
+    )
+    return None if found is None else found[1]
+
+
+def _nearest_plausible_id_before_with_offset(
+    context: bytes,
+    *,
+    anchor_offset: int,
+    start: int,
+    minimum: int,
+    maximum: int,
+    exclude: set[int] | None = None,
+) -> tuple[int, int] | None:
+    excluded = exclude or set()
+    best: tuple[int, int, int, int] | None = None
+    for index in range(start, max(start, anchor_offset - 3)):
+        value = int.from_bytes(context[index : index + 4], "little", signed=False)
+        if value in excluded or value < minimum or value > maximum:
+            continue
+        distance = anchor_offset - index
+        preferred_rank = 0 if 10_000 <= value <= 60_000 else 1
+        rank = (preferred_rank, distance, value, index)
+        if best is None or rank < best:
+            best = rank
+    return None if best is None else (best[3], best[2])
+
+
+def _sysobjects_schema_id_from_fixed_area(context: bytes, object_id_offset: int | None) -> int | None:
+    if object_id_offset is None or object_id_offset + 5 > len(context):
+        return None
+    value = context[object_id_offset + 4]
+    return value if value != 0 else None
+
+
+def _sysobjects_parent_id_from_fixed_area(context: bytes, object_id_offset: int | None) -> int | None:
+    if object_id_offset is None or object_id_offset + 12 > len(context):
+        return None
+    value = int.from_bytes(context[object_id_offset + 8 : object_id_offset + 12], "little", signed=False)
+    if value == 0xFFFFFFFF or value == 0:
+        return None
+    return value
+
+
+def _sysobjects_schema_object_id_from_name_offset(context: bytes, name_offset: int) -> int | None:
+    # Clean SYSOBJECTS schema rows observed in SYSTEM.DBF store the schema id in
+    # the fixed area shortly before NAME. Keep this deliberately narrow so it is
+    # used only as an owner-name calibration signal.
+    offset = name_offset - 57
+    if offset < 0 or offset + 4 > len(context):
+        return None
+    value = int.from_bytes(context[offset : offset + 4], "little", signed=False)
+    if 1 <= value <= 10_000:
+        return value
+    return None
+
+
+def _dedupe_sysobject_row_candidates(
+    candidates: list[SysObjectRowCandidate],
+) -> list[SysObjectRowCandidate]:
+    best_by_key: dict[tuple[str, int | None, str, str, int | None], SysObjectRowCandidate] = {}
+    for candidate in candidates:
+        key = (
+            candidate.name,
+            candidate.object_id,
+            candidate.type_name,
+            candidate.subtype_name,
+            candidate.parent_id,
+        )
+        existing = best_by_key.get(key)
+        if existing is None or (candidate.score, -candidate.offset) > (
+            existing.score,
+            -existing.offset,
+        ):
+            best_by_key[key] = candidate
+    return sorted(
+        best_by_key.values(),
+        key=lambda item: (item.type_name != "SCHOBJ", -item.score, item.name, item.offset),
+    )
 
 
 def _candidate_from_context(
@@ -511,15 +1016,11 @@ def _observed_column_id_and_length(
 
 def _prefixed_ascii_strings(context: bytes) -> list[tuple[int, str]]:
     strings: list[tuple[int, str]] = []
-    for index in range(len(context)):
-        try:
-            decoded = decode_observed_var_length(context[index:])
-        except ValueError:
+    for index, first in enumerate(context):
+        if first < 0x81 or first > 0xC0:
             continue
-        length = decoded.length
-        if length < 1 or length > 64:
-            continue
-        start = index + decoded.encoded_size
+        length = first - 0x80
+        start = index + 1
         end = start + length
         if end > len(context):
             continue
@@ -569,9 +1070,10 @@ def _score_syscolumn_candidate(
 def _dedupe_syscolumn_candidates(
     candidates: list[SysColumnCandidate],
 ) -> list[SysColumnCandidate]:
-    best_by_key: dict[tuple[int | None, str, str, int | None], SysColumnCandidate] = {}
+    best_by_key: dict[tuple[int, int | None, str, str, int | None], SysColumnCandidate] = {}
     for candidate in candidates:
         key = (
+            candidate.object_id,
             candidate.column_id,
             candidate.name,
             candidate.type_name,
