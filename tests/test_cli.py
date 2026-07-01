@@ -447,6 +447,41 @@ class CliTest(unittest.TestCase):
             "heuristic-output",
         )
 
+    def test_bootstrap_prints_progress_in_non_json_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output_dir = root / "dicts"
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(
+                _large_page0(group_raw=0, page_kind=0x13) + _system_payload()
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "bootstrap",
+                    str(root),
+                    "--output-dir",
+                    str(output_dir),
+                    "-b",
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("manifest=", stdout.getvalue())
+        self.assertIn("[bootstrap] start:", stderr.getvalue())
+        self.assertIn("[bootstrap] scan database directory:", stderr.getvalue())
+        self.assertIn("[bootstrap] scan SYSTEM.DBF", stderr.getvalue())
+        self.assertIn("[bootstrap] bootstrap complete", stderr.getvalue())
+
     def test_bootstrap_reads_defaults_from_init_dul(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -715,6 +750,53 @@ class CliTest(unittest.TestCase):
         self.assertIn("CREATE TABLE SYSDBA.DMDUL_ONE", dumped)
         self.assertIn("-- DATA", dumped)
         self.assertIn("ID\n7\n", dumped)
+
+    def test_dump_data_prints_failed_table_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "dump"
+            missing_data_file = root / "MISSING.DBF"
+            dict_dir.mkdir()
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "page_type_raw", "page0_kind_raw", "page0_kind_label", "system_candidate"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(missing_data_file), "basename": missing_data_file.name, "bytes": 8192, "page_size": 8192, "pages": 1, "group_id": 6, "file_no": 0}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "parent_object_id", "schema_id", "subtype_name", "storage_index_id", "group_id", "root_file", "root_page", "scan_pages", "source"],
+                [{"dict_type": "table", "object_kind": "table", "owner": "TEST2", "name": "BMSQL_ITEM", "qualified_name": "TEST2.BMSQL_ITEM", "object_id": 33629, "storage_index_id": 33595349, "group_id": 6, "root_file": 0, "root_page": 0, "scan_pages": 1}],
+            )
+            _write_dict(
+                dict_dir / "col.dict",
+                ["dict_type", "owner", "table_name", "qualified_table_name", "object_id", "column_id", "ordinal", "name", "type_name", "length", "source"],
+                [{"dict_type": "column", "owner": "TEST2", "table_name": "BMSQL_ITEM", "qualified_table_name": "TEST2.BMSQL_ITEM", "object_id": 33629, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4}],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--table",
+                    "TEST2.BMSQL_ITEM",
+                    "--strict-page-plan",
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("tables_failed=1", stdout.getvalue())
+        self.assertIn("table_failed=TEST2.BMSQL_ITEM", stderr.getvalue())
+        self.assertIn("diagnostic=dump-data-table-failed", stderr.getvalue())
+        self.assertIn(str(missing_data_file), stderr.getvalue())
 
     def test_resolve_table_writes_segment_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -319,6 +319,20 @@ TMPDIR=./tmp ./bin/dmdul \
 
 `-b` / `--download-dictionaries` 表示下载系统字典。
 
+不使用 `--json` 时，bootstrap 会把执行进度输出到 stderr，例如：
+
+```text
+[bootstrap] start: database_dir=/recovery/dmcopy output_dir=/recovery/work/dict page_size=8192 download_dictionaries=True
+[bootstrap] scan database directory: /recovery/dmcopy
+[bootstrap] database scan complete: data_files=2 control_files=1
+[bootstrap] write control.ctl: /recovery/work/dict/control.ctl
+[bootstrap] scan SYSTEM.DBF for SYSOBJECTS/SYSCOLUMNS/SYSINDEXES
+[bootstrap] dictionary rows: user=1 tab=10 col=80
+[bootstrap] bootstrap complete
+```
+
+这些信息用于判断长时间执行时卡在目录扫描、`SYSTEM.DBF` 扫描还是字典写入阶段。使用 `--json` 时 stdout 保持为纯 JSON，不输出这些进度行。
+
 当前阶段 bootstrap 的核心任务：
 
 - 找到 SYSTEM 表空间的数据文件；
@@ -508,6 +522,17 @@ tables_failed
 每张表 diagnostics
 每张表 scanned_pages / scanned_page_refs
 ```
+
+不使用 `--json` 时，如果有失败表，工具会把失败详情输出到 stderr，例如：
+
+```text
+table_failed=TEST2.BMSQL_ITEM
+  output=/recovery/work/dulout/TEST2.BMSQL_ITEM.dul
+  rows_written=0
+  diagnostic=dump-data-table-failed level=error message=[Errno 2] No such file or directory: '/recovery/dmcopy/DMDUL_TS01.DBF'
+```
+
+如果看到 `tables_failed>0`，优先查看 stderr 中的 `table_failed`、`diagnostic` 和 `decode_error`。也可以同时加 `--report-output` 保存完整 JSON 报告。
 
 ### 7.6 strict page plan
 
@@ -933,7 +958,7 @@ TMPDIR=./tmp ./bin/dmdul --help
 当前阶段已验证：
 
 ```text
-127 tests OK
+129 tests OK
 ```
 
 ## 18. 快速命令清单

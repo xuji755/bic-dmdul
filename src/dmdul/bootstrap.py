@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .control_map import write_control_ctl
 from .database_summary import summarize_database_dir
@@ -87,6 +87,7 @@ def build_bootstrap_dicts(
     owner: str | None = None,
     scan_pages: int = 64,
     experimental_heuristic_dicts: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Write first-stage bootstrap dictionary artifacts.
 
@@ -95,24 +96,35 @@ def build_bootstrap_dicts(
     empty artifacts until SYSTEM dictionary rows are decoded without heuristics.
     """
 
+    _emit_progress(progress, f"scan database directory: {database_dir}")
     summary = summarize_database_dir(
         database_dir=database_dir,
         page_size=page_size,
         catalog_pages=catalog_pages,
         sample_limit=sample_limit,
     )
+    _emit_progress(
+        progress,
+        "database scan complete: "
+        f"data_files={summary.get('files_total')} "
+        f"control_files={summary.get('control_files_total')}",
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dict_paths = {name: output_dir / name for name in DICT_FILENAMES}
     control_ctl_path = output_dir / "control.ctl"
+    _emit_progress(progress, f"write control.ctl: {control_ctl_path}")
     control_ctl_manifest = write_control_ctl(
         database_dir=database_dir,
         output=control_ctl_path,
         page_size=page_size,
         sample_limit=sample_limit,
     )
+    _emit_progress(progress, f"control.ctl rows={control_ctl_manifest['rows_total']}")
     file_rows = _file_dict_rows(summary)
+    _emit_progress(progress, f"file.dict rows={len(file_rows)}")
     if experimental_heuristic_dicts and tables:
+        _emit_progress(progress, f"resolve requested table dictionaries: tables={len(tables)}")
         user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_for_tables(
             database_dir=database_dir,
             tables=tables,
@@ -121,6 +133,7 @@ def build_bootstrap_dicts(
             scan_pages=scan_pages,
         )
     elif experimental_heuristic_dicts:
+        _emit_progress(progress, "scan SYSTEM.DBF for SYSOBJECTS/SYSCOLUMNS/SYSINDEXES")
         user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_from_system_scan(
             database_dir=database_dir,
             owner=owner,
@@ -128,10 +141,17 @@ def build_bootstrap_dicts(
             scan_pages=scan_pages,
         )
     else:
+        _emit_progress(progress, "dictionary download not requested; writing empty user/tab/col dicts")
         user_rows = []
         table_rows = []
         column_rows = []
         table_diagnostics = _heuristic_dicts_disabled_diagnostics(tables)
+    _emit_progress(
+        progress,
+        "dictionary rows: "
+        f"user={len(user_rows)} tab={len(table_rows)} col={len(column_rows)}",
+    )
+    _emit_progress(progress, f"write dictionary files: {output_dir}")
     _write_csv_dict(dict_paths["file.dict"], file_rows, DICT_FIELDNAMES["file.dict"])
     _write_csv_dict(dict_paths["user.dict"], user_rows, DICT_FIELDNAMES["user.dict"])
     _write_csv_dict(dict_paths["tab.dict"], table_rows, DICT_FIELDNAMES["tab.dict"])
@@ -188,9 +208,16 @@ def build_bootstrap_dicts(
         "database_summary": summary,
     }
     manifest_path = output_dir / "bootstrap_manifest.json"
+    _emit_progress(progress, f"write bootstrap manifest: {manifest_path}")
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     manifest["manifest_path"] = str(manifest_path)
+    _emit_progress(progress, "bootstrap complete")
     return manifest
+
+
+def _emit_progress(progress: Callable[[str], None] | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
 
 
 def _file_dict_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:

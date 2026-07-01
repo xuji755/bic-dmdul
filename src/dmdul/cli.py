@@ -471,6 +471,15 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    progress = None if args.json else _bootstrap_progress_printer()
+    if progress is not None:
+        progress(
+            "start: "
+            f"database_dir={args.database_dir} "
+            f"output_dir={args.output_dir} "
+            f"page_size={args.page_size} "
+            f"download_dictionaries={args.experimental_heuristic_dicts or args.download_dictionaries}"
+        )
     manifest = build_bootstrap_dicts(
         database_dir=Path(args.database_dir),
         output_dir=Path(args.output_dir),
@@ -481,6 +490,7 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         owner=args.owner,
         scan_pages=args.scan_pages,
         experimental_heuristic_dicts=args.experimental_heuristic_dicts or args.download_dictionaries,
+        progress=progress,
     )
     if args.json:
         print(json.dumps(manifest, indent=2))
@@ -490,6 +500,13 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
             print(f"{name}={path} rows={manifest['rows'][name]}")
     return 0
 
+
+
+def _bootstrap_progress_printer():
+    def progress(message: str) -> None:
+        print(f"[bootstrap] {message}", file=sys.stderr, flush=True)
+
+    return progress
 
 
 def _cmd_dump_data(args: argparse.Namespace) -> int:
@@ -568,6 +585,7 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
         print(f"tables_total={manifest['tables_total']}")
         print(f"tables_ok={manifest['tables_ok']}")
         print(f"tables_failed={manifest['tables_failed']}")
+        _print_table_failure_details(reports)
     return 0 if manifest["tables_failed"] == 0 else 1
 
 
@@ -643,7 +661,31 @@ def _cmd_extract_dicts(args: argparse.Namespace) -> int:
         print(f"tables_total={manifest['tables_total']}")
         print(f"tables_ok={manifest['tables_ok']}")
         print(f"tables_failed={manifest['tables_failed']}")
+        _print_table_failure_details(reports)
     return 0 if manifest["tables_failed"] == 0 else 1
+
+
+def _print_table_failure_details(reports: list[dict[str, object]]) -> None:
+    for report in reports:
+        if report.get("ok"):
+            continue
+        print(f"table_failed={report.get('table')}", file=sys.stderr)
+        if report.get("output"):
+            print(f"  output={report.get('output')}", file=sys.stderr)
+        print(f"  rows_written={report.get('rows_written', 0)}", file=sys.stderr)
+        for diagnostic in report.get("diagnostics", ()) or ():
+            if not isinstance(diagnostic, dict):
+                continue
+            code = diagnostic.get("code", "")
+            level = diagnostic.get("level", "")
+            message = diagnostic.get("message", "")
+            print(
+                f"  diagnostic={code} level={level} message={message}",
+                file=sys.stderr,
+            )
+        for error in report.get("decode_errors", ()) or ():
+            print(f"  decode_error={error}", file=sys.stderr)
+
 
 
 def _safe_output_name(value: str) -> str:
