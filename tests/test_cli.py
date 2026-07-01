@@ -8,7 +8,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from dmdul.cli import build_parser, main
+from dmdul.cli import _dump_data_progress_printer, build_parser, main
 
 
 def _read_dict_csv(path: Path) -> list[dict[str, str]]:
@@ -750,6 +750,29 @@ class CliTest(unittest.TestCase):
         self.assertIn("CREATE TABLE SYSDBA.DMDUL_ONE", dumped)
         self.assertIn("-- DATA", dumped)
         self.assertIn("ID\n7\n", dumped)
+
+    def test_dump_data_formats_storage_scan_progress(self) -> None:
+        stderr = io.StringIO()
+        progress = _dump_data_progress_printer()
+        with redirect_stderr(stderr):
+            progress(
+                {
+                    "event": "storage_scan_progress",
+                    "table": "TEST2.BMSQL_ITEM",
+                    "file_no": 0,
+                    "pages_scanned": 65536,
+                    "pages_total": 3014656,
+                    "header_hits": 17,
+                    "pages_planned": 12,
+                }
+            )
+
+        text = stderr.getvalue()
+        self.assertIn("scan-storage-progress table=TEST2.BMSQL_ITEM", text)
+        self.assertIn("pages=65536/3014656", text)
+        self.assertIn("percent=2.2", text)
+        self.assertIn("header_hits=17", text)
+        self.assertIn("pages_planned=12", text)
 
     def test_dump_data_prints_progress_and_table_summary_for_non_json_dump(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

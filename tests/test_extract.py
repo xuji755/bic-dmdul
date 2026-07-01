@@ -206,10 +206,12 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 }
             )
 
+            progress_events = []
             report = extract_csv_with_calibrated_metadata(
                 metadata=metadata,
                 table_name="TEST2.BMSQL_ITEM",
                 output=output_path,
+                progress=progress_events.append,
             )
             with output_path.open(newline="", encoding="utf-8") as file:
                 rows = list(csv.reader(file))
@@ -222,6 +224,16 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             {item["code"] for item in report.diagnostics},
         )
         self.assertEqual(rows, [["ID"], ["123"]])
+        scan_progress = [
+            event
+            for event in progress_events
+            if event.get("event") == "storage_scan_progress"
+        ]
+        self.assertEqual(len(scan_progress), 1)
+        self.assertEqual(scan_progress[0]["pages_scanned"], 6)
+        self.assertEqual(scan_progress[0]["pages_total"], 6)
+        self.assertEqual(scan_progress[0]["header_hits"], 2)
+        self.assertEqual(scan_progress[0]["pages_planned"], 1)
 
     def test_plans_noncontiguous_leaf_pages_from_btree_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

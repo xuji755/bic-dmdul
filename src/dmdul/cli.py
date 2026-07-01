@@ -534,6 +534,21 @@ def _dump_data_progress_printer():
                 file=sys.stderr,
                 flush=True,
             )
+        elif kind == "storage_scan_progress":
+            pages_scanned = int(event.get("pages_scanned") or 0)
+            pages_total = int(event.get("pages_total") or 0)
+            percent = (pages_scanned * 100.0 / pages_total) if pages_total else 0.0
+            print(
+                "[dump-data] "
+                f"scan-storage-progress table={table} "
+                f"file_no={event.get('file_no')} "
+                f"pages={pages_scanned}/{pages_total} "
+                f"percent={percent:.1f} "
+                f"header_hits={event.get('header_hits')} "
+                f"pages_planned={event.get('pages_planned')}",
+                file=sys.stderr,
+                flush=True,
+            )
         elif kind == "plan":
             print(
                 "[dump-data] "

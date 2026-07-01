@@ -52,6 +52,9 @@ class ExtractionReport:
         }
 
 
+STORAGE_SCAN_PROGRESS_PAGES = 65536
+
+
 def extract_csv_with_calibrated_metadata(
     *,
     metadata: CalibratedMetadata,
@@ -612,7 +615,6 @@ def _build_storage_id_global_page_plan(
 ) -> PagePlan:
     if table.storage.storage_id is None:
         return PagePlan(pages=(), diagnostics=())
-    storage_bytes = table.storage.storage_id.to_bytes(4, "little", signed=False)
     planned: list[StoragePageRef] = []
     files_scanned = 0
     header_hits = 0
@@ -640,23 +642,40 @@ def _build_storage_id_global_page_plan(
         )
         with path.open("rb") as file:
             with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                offset = mm.find(storage_bytes)
-                while offset != -1:
-                    if offset % page_size == 0x3A:
-                        page_no = offset // page_size
-                        if 0 <= page_no < pages_total:
-                            page_start = page_no * page_size
-                            header_page_no = int.from_bytes(mm[page_start + 4 : page_start + 8], "little")
-                            header_file_no = int.from_bytes(mm[page_start : page_start + 4], "little") >> 16
-                            page_kind = int.from_bytes(mm[page_start + 0x14 : page_start + 0x18], "little")
-                            header_hits += 1
-                            if header_file_no != file_no or header_page_no != page_no:
-                                skipped_identity_mismatch += 1
-                            elif page_kind != 0x14:
-                                skipped_non_data += 1
-                            else:
-                                planned.append(StoragePageRef(file_no=file_no, page_no=page_no))
-                    offset = mm.find(storage_bytes, offset + 1)
+                for page_no in range(pages_total):
+                    page_start = page_no * page_size
+                    if int.from_bytes(mm[page_start + 0x3A : page_start + 0x3E], "little") != table.storage.storage_id:
+                        if _should_report_storage_scan_progress(page_no + 1, pages_total):
+                            _emit_storage_scan_progress(
+                                progress=progress,
+                                table=table,
+                                file_no=file_no,
+                                pages_scanned=page_no + 1,
+                                pages_total=pages_total,
+                                header_hits=header_hits - file_header_hits_before,
+                                pages_planned=len(planned) - file_pages_before,
+                            )
+                        continue
+                    header_page_no = int.from_bytes(mm[page_start + 4 : page_start + 8], "little")
+                    header_file_no = int.from_bytes(mm[page_start : page_start + 4], "little") >> 16
+                    page_kind = int.from_bytes(mm[page_start + 0x14 : page_start + 0x18], "little")
+                    header_hits += 1
+                    if header_file_no != file_no or header_page_no != page_no:
+                        skipped_identity_mismatch += 1
+                    elif page_kind != 0x14:
+                        skipped_non_data += 1
+                    else:
+                        planned.append(StoragePageRef(file_no=file_no, page_no=page_no))
+                    if _should_report_storage_scan_progress(page_no + 1, pages_total):
+                        _emit_storage_scan_progress(
+                            progress=progress,
+                            table=table,
+                            file_no=file_no,
+                            pages_scanned=page_no + 1,
+                            pages_total=pages_total,
+                            header_hits=header_hits - file_header_hits_before,
+                            pages_planned=len(planned) - file_pages_before,
+                        )
         _emit_extract_progress(
             progress,
             {
@@ -700,6 +719,34 @@ def _build_storage_id_global_page_plan(
         )
     return PagePlan(pages=tuple(planned), diagnostics=tuple(diagnostics))
 
+
+
+def _should_report_storage_scan_progress(pages_scanned: int, pages_total: int) -> bool:
+    return pages_scanned == pages_total or pages_scanned % STORAGE_SCAN_PROGRESS_PAGES == 0
+
+
+def _emit_storage_scan_progress(
+    *,
+    progress: Callable[[dict[str, Any]], None] | None,
+    table: TableMeta,
+    file_no: int,
+    pages_scanned: int,
+    pages_total: int,
+    header_hits: int,
+    pages_planned: int,
+) -> None:
+    _emit_extract_progress(
+        progress,
+        {
+            "event": "storage_scan_progress",
+            "table": table.qualified_name,
+            "file_no": file_no,
+            "pages_scanned": pages_scanned,
+            "pages_total": pages_total,
+            "header_hits": header_hits,
+            "pages_planned": pages_planned,
+        },
+    )
 
 
 def _iter_scan_pages(table: TableMeta) -> range:
