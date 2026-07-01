@@ -4,7 +4,7 @@ import csv
 import mmap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .decode import DecodeError, SUPPORTED_OBSERVED_TYPE_NAMES, decode_observed_row_values
 from .metadata import CalibratedMetadata, ColumnMeta, StoragePageRef, TableMeta
@@ -61,6 +61,8 @@ def extract_csv_with_calibrated_metadata(
     initial_diagnostics: tuple[dict[str, Any], ...] = (),
     delimiter: str = ",",
     include_sql_header: bool = False,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+    progress_interval_pages: int = 64,
 ) -> ExtractionReport:
     """Create a CSV for a table using calibrated metadata.
 
@@ -93,8 +95,18 @@ def extract_csv_with_calibrated_metadata(
         table,
         data_files,
         fallback_level=page_plan_fallback_level,
+        progress=progress,
     )
     diagnostics.extend(page_plan.diagnostics)
+    _emit_extract_progress(
+        progress,
+        {
+            "event": "plan",
+            "table": table.qualified_name,
+            "pages_total": len(page_plan.pages),
+            "output": str(output),
+        },
+    )
     unsupported_types = _unsupported_column_types(table)
     if unsupported_types:
         diagnostics.append(
@@ -116,7 +128,8 @@ def extract_csv_with_calibrated_metadata(
         writer.writerow([column.name for column in table.columns])
         if unsupported_types:
             page_plan = PagePlan(pages=(), diagnostics=page_plan.diagnostics)
-        for page_ref in page_plan.pages:
+        pages_total = len(page_plan.pages)
+        for pages_done, page_ref in enumerate(page_plan.pages, start=1):
             page_no = page_ref.page_no
             page_file = data_files[page_ref.file_no]
             page = page_file.read_page(page_no)
@@ -155,6 +168,25 @@ def extract_csv_with_calibrated_metadata(
                     continue
                 writer.writerow(values)
                 rows_written += 1
+            if _should_report_page_progress(
+                pages_done=pages_done,
+                pages_total=pages_total,
+                progress_interval_pages=progress_interval_pages,
+            ):
+                file.flush()
+                _emit_extract_progress(
+                    progress,
+                    {
+                        "event": "block",
+                        "table": table.qualified_name,
+                        "pages_done": pages_done,
+                        "pages_total": pages_total,
+                        "file_no": page_ref.file_no,
+                        "page_no": page_ref.page_no,
+                        "rows_written": rows_written,
+                        "output": str(output),
+                    },
+                )
 
     if pages_skipped_non_data:
         diagnostics.append(
@@ -176,7 +208,7 @@ def extract_csv_with_calibrated_metadata(
             }
         )
 
-    return ExtractionReport(
+    report = ExtractionReport(
         table=table.qualified_name,
         output=output,
         rows_written=rows_written,
@@ -195,6 +227,40 @@ def extract_csv_with_calibrated_metadata(
             else "calibrated-metadata-page-range-scan"
         ),
     )
+    _emit_extract_progress(
+        progress,
+        {
+            "event": "complete",
+            "table": report.table,
+            "ok": report.ok,
+            "rows_written": report.rows_written,
+            "rows_skipped_deleted": report.rows_skipped_deleted,
+            "rows_skipped_decode_error": report.rows_skipped_decode_error,
+            "pages_done": len(report.scanned_page_refs),
+            "output": str(report.output),
+        },
+    )
+    return report
+
+
+def _emit_extract_progress(
+    progress: Callable[[dict[str, Any]], None] | None,
+    event: dict[str, Any],
+) -> None:
+    if progress is not None:
+        progress(event)
+
+
+def _should_report_page_progress(
+    *,
+    pages_done: int,
+    pages_total: int,
+    progress_interval_pages: int,
+) -> bool:
+    if pages_total <= 0:
+        return False
+    interval = max(1, progress_interval_pages)
+    return pages_done == pages_total or pages_done % interval == 0
 
 
 def _create_table_sql(table: TableMeta) -> str:
@@ -250,6 +316,7 @@ def _build_page_plan(
     data_files: dict[int, DataFile],
     *,
     fallback_level: str | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> PagePlan:
     if table.storage.page_refs:
         return _walk_leaf_chain(
@@ -275,6 +342,7 @@ def _build_page_plan(
         global_scan_plan = _build_storage_id_global_page_plan(
             table=table,
             data_files=data_files,
+            progress=progress,
         )
         if global_scan_plan.pages:
             return PagePlan(
@@ -540,6 +608,7 @@ def _build_storage_id_global_page_plan(
     *,
     table: TableMeta,
     data_files: dict[int, DataFile],
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> PagePlan:
     if table.storage.storage_id is None:
         return PagePlan(pages=(), diagnostics=())
@@ -556,6 +625,19 @@ def _build_storage_id_global_page_plan(
         if pages_total <= 0:
             continue
         files_scanned += 1
+        file_header_hits_before = header_hits
+        file_pages_before = len(planned)
+        _emit_extract_progress(
+            progress,
+            {
+                "event": "storage_scan_file_start",
+                "table": table.qualified_name,
+                "file_no": file_no,
+                "path": str(path),
+                "pages_total": pages_total,
+                "storage_id": table.storage.storage_id,
+            },
+        )
         with path.open("rb") as file:
             with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                 offset = mm.find(storage_bytes)
@@ -575,6 +657,19 @@ def _build_storage_id_global_page_plan(
                             else:
                                 planned.append(StoragePageRef(file_no=file_no, page_no=page_no))
                     offset = mm.find(storage_bytes, offset + 1)
+        _emit_extract_progress(
+            progress,
+            {
+                "event": "storage_scan_file_done",
+                "table": table.qualified_name,
+                "file_no": file_no,
+                "path": str(path),
+                "header_hits": header_hits - file_header_hits_before,
+                "pages_planned": len(planned) - file_pages_before,
+                "pages_planned_total": len(planned),
+                "storage_id": table.storage.storage_id,
+            },
+        )
     diagnostics: list[dict[str, Any]] = []
     if planned:
         diagnostics.append(

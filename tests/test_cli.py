@@ -751,6 +751,64 @@ class CliTest(unittest.TestCase):
         self.assertIn("-- DATA", dumped)
         self.assertIn("ID\n7\n", dumped)
 
+    def test_dump_data_prints_progress_and_table_summary_for_non_json_dump(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "dump"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            data_file.write_bytes(_leaf_page(page_no=0, value=7, storage_id=33595349))
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "page_type_raw", "page0_kind_raw", "page0_kind_label", "system_candidate"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 8192, "page_size": 8192, "pages": 1, "group_id": 6, "file_no": 0}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "parent_object_id", "schema_id", "subtype_name", "storage_index_id", "group_id", "root_file", "root_page", "scan_pages", "source"],
+                [{"dict_type": "table", "object_kind": "table", "owner": "SYSDBA", "name": "DMDUL_ONE", "qualified_name": "SYSDBA.DMDUL_ONE", "object_id": 33629, "storage_index_id": 33595349, "group_id": 6, "root_file": 0, "root_page": 0, "scan_pages": 1}],
+            )
+            _write_dict(
+                dict_dir / "col.dict",
+                ["dict_type", "owner", "table_name", "qualified_table_name", "object_id", "column_id", "ordinal", "name", "type_name", "length", "source"],
+                [{"dict_type": "column", "owner": "SYSDBA", "table_name": "DMDUL_ONE", "qualified_table_name": "SYSDBA.DMDUL_ONE", "object_id": 33629, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4}],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--table",
+                    "sysdba.dmdul_one",
+                    "--delimiter",
+                    "|",
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+
+        self.assertEqual(exit_code, 0)
+        summary = stdout.getvalue()
+        self.assertIn("dump_data_summary", summary)
+        self.assertIn("tables_ok=1", summary)
+        self.assertIn("table=SYSDBA.DMDUL_ONE status=OK", summary)
+        self.assertIn("rows_written=1", summary)
+        self.assertIn("rows_skipped_deleted=0", summary)
+        self.assertIn("rows_skipped_decode_error=0", summary)
+        self.assertIn("pages_scanned=1", summary)
+        progress = stderr.getvalue()
+        self.assertIn("[dump-data] start tables_total=1", progress)
+        self.assertIn("[dump-data] plan table=SYSDBA.DMDUL_ONE pages_total=1", progress)
+        self.assertIn("[dump-data] block table=SYSDBA.DMDUL_ONE pages=1/1", progress)
+        self.assertIn("[dump-data] complete table=SYSDBA.DMDUL_ONE ok=true", progress)
+
     def test_dump_data_prints_failed_table_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -793,8 +851,11 @@ class CliTest(unittest.TestCase):
                 exit_code = args.func(args)
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("tables_failed=1", stdout.getvalue())
-        self.assertIn("table_failed=TEST2.BMSQL_ITEM", stderr.getvalue())
+        summary = stdout.getvalue()
+        self.assertIn("tables_failed=1", summary)
+        self.assertIn("table=TEST2.BMSQL_ITEM status=FAILED", summary)
+        self.assertIn("rows_written=0", summary)
+        self.assertIn("diagnostics_errors=1", summary)
         self.assertIn("diagnostic=dump-data-table-failed", stderr.getvalue())
         self.assertIn(str(missing_data_file), stderr.getvalue())
 

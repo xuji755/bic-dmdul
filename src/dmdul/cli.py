@@ -509,6 +509,67 @@ def _bootstrap_progress_printer():
     return progress
 
 
+def _dump_data_progress_printer():
+    def progress(event: dict[str, object]) -> None:
+        kind = str(event.get("event", ""))
+        table = str(event.get("table", "-"))
+        if kind == "storage_scan_file_start":
+            print(
+                "[dump-data] "
+                f"scan-storage table={table} "
+                f"file_no={event.get('file_no')} "
+                f"pages={event.get('pages_total')} "
+                f"path={event.get('path')}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif kind == "storage_scan_file_done":
+            print(
+                "[dump-data] "
+                f"scan-storage-done table={table} "
+                f"file_no={event.get('file_no')} "
+                f"header_hits={event.get('header_hits')} "
+                f"pages_planned={event.get('pages_planned')} "
+                f"pages_planned_total={event.get('pages_planned_total')}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif kind == "plan":
+            print(
+                "[dump-data] "
+                f"plan table={table} pages_total={event.get('pages_total')} "
+                f"output={event.get('output')}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif kind == "block":
+            print(
+                "[dump-data] "
+                f"block table={table} "
+                f"pages={event.get('pages_done')}/{event.get('pages_total')} "
+                f"file_no={event.get('file_no')} "
+                f"page_no={event.get('page_no')} "
+                f"rows={event.get('rows_written')} "
+                f"output={event.get('output')}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif kind == "complete":
+            print(
+                "[dump-data] "
+                f"complete table={table} ok={str(event.get('ok')).lower()} "
+                f"pages={event.get('pages_done')} "
+                f"rows={event.get('rows_written')} "
+                f"rows_skipped_deleted={event.get('rows_skipped_deleted')} "
+                f"rows_skipped_decode_error={event.get('rows_skipped_decode_error')} "
+                f"output={event.get('output')}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    return progress
+
+
 def _cmd_dump_data(args: argparse.Namespace) -> int:
     if args.dict_dir is None or args.output_dir is None:
         runtime = load_runtime_config(Path(args.init_file) if args.init_file else None)
@@ -537,6 +598,13 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
         )
     ]
     output_dir.mkdir(parents=True, exist_ok=True)
+    progress = None if args.json else _dump_data_progress_printer()
+    if progress is not None:
+        print(
+            f"[dump-data] start tables_total={len(tables)} parallel={max(1, workers)} output_dir={output_dir}",
+            file=sys.stderr,
+            flush=True,
+        )
     reports = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         futures = {
@@ -548,6 +616,7 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
                 page_plan_fallback_level="error" if args.strict_page_plan else "warning",
                 delimiter=delimiter,
                 include_sql_header=True,
+                progress=progress,
             ): table
             for table in tables
         }
@@ -582,10 +651,7 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(manifest, indent=2))
     else:
-        print(f"tables_total={manifest['tables_total']}")
-        print(f"tables_ok={manifest['tables_ok']}")
-        print(f"tables_failed={manifest['tables_failed']}")
-        _print_table_failure_details(reports)
+        _print_dump_data_summary(manifest)
     return 0 if manifest["tables_failed"] == 0 else 1
 
 
@@ -665,26 +731,52 @@ def _cmd_extract_dicts(args: argparse.Namespace) -> int:
     return 0 if manifest["tables_failed"] == 0 else 1
 
 
-def _print_table_failure_details(reports: list[dict[str, object]]) -> None:
+def _print_dump_data_summary(manifest: dict[str, object]) -> None:
+    reports = manifest.get("reports", ()) or ()
+    print("dump_data_summary")
+    print(f"  tables_total={manifest['tables_total']}")
+    print(f"  tables_ok={manifest['tables_ok']}")
+    print(f"  tables_failed={manifest['tables_failed']}")
     for report in reports:
-        if report.get("ok"):
+        if not isinstance(report, dict):
             continue
-        print(f"table_failed={report.get('table')}", file=sys.stderr)
-        if report.get("output"):
-            print(f"  output={report.get('output')}", file=sys.stderr)
-        print(f"  rows_written={report.get('rows_written', 0)}", file=sys.stderr)
-        for diagnostic in report.get("diagnostics", ()) or ():
-            if not isinstance(diagnostic, dict):
-                continue
-            code = diagnostic.get("code", "")
-            level = diagnostic.get("level", "")
-            message = diagnostic.get("message", "")
-            print(
-                f"  diagnostic={code} level={level} message={message}",
-                file=sys.stderr,
-            )
-        for error in report.get("decode_errors", ()) or ():
-            print(f"  decode_error={error}", file=sys.stderr)
+        status = "OK" if report.get("ok") else "FAILED"
+        print(f"table={report.get('table')} status={status}")
+        print(f"  output={report.get('output')}")
+        print(f"  rows_written={report.get('rows_written', 0)}")
+        print(f"  rows_skipped_deleted={report.get('rows_skipped_deleted', 0)}")
+        print(f"  rows_skipped_decode_error={report.get('rows_skipped_decode_error', 0)}")
+        print(f"  pages_scanned={len(report.get('scanned_page_refs', ()) or ())}")
+        diagnostics = report.get("diagnostics", ()) or ()
+        error_count = sum(
+            1
+            for item in diagnostics
+            if isinstance(item, dict) and item.get("level") == "error"
+        )
+        warning_count = sum(
+            1
+            for item in diagnostics
+            if isinstance(item, dict) and item.get("level") == "warning"
+        )
+        print(f"  diagnostics_errors={error_count}")
+        print(f"  diagnostics_warnings={warning_count}")
+        if not report.get("ok"):
+            _print_table_failure_details(report)
+
+
+def _print_table_failure_details(report: dict[str, object]) -> None:
+    for diagnostic in report.get("diagnostics", ()) or ():
+        if not isinstance(diagnostic, dict):
+            continue
+        code = diagnostic.get("code", "")
+        level = diagnostic.get("level", "")
+        message = diagnostic.get("message", "")
+        print(
+            f"  diagnostic={code} level={level} message={message}",
+            file=sys.stderr,
+        )
+    for error in report.get("decode_errors", ()) or ():
+        print(f"  decode_error={error}", file=sys.stderr)
 
 
 
