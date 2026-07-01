@@ -180,12 +180,63 @@ def iter_observed_rows_by_slots(
 ) -> list[ObservedRow]:
     """Return active rows using the observed page-tail slot directory.
 
-    The current slot decoder is deliberately conservative: it first scans the
-    physical row chain to know valid row starts, then accepts only tail slot
-    values that point to those starts. If no slot entries are found, callers can
-    still use `scan_observed_row_chain` as a fallback.
+    DM data pages store row offsets in a page-tail slot array. The row count
+    observed at page-header bytes 0x2c..0x2d gives the number of slot entries,
+    and the array starts at `page_size - 10 - row_count * 2`. Rows must be cut
+    from these slot offsets rather than guessed by scanning byte-by-byte or by
+    assuming a fully contiguous physical row chain.
     """
 
+    row_count = _observed_slot_count(page)
+    if row_count <= 0:
+        return _iter_observed_rows_by_discovered_slots(
+            page,
+            start_offset=start_offset,
+            max_rows=max_rows,
+        )
+    if row_count > max_rows:
+        return []
+    slot_start = len(page) - 10 - (row_count * 2)
+    if slot_start < 0:
+        return []
+    result: list[ObservedRow] = []
+    seen_offsets: set[int] = set()
+    for slot_index in range(row_count):
+        slot_offset = slot_start + (slot_index * 2)
+        row_offset = int.from_bytes(page[slot_offset : slot_offset + 2], "little")
+        if row_offset in seen_offsets:
+            continue
+        seen_offsets.add(row_offset)
+        if row_offset < start_offset or row_offset + 2 > len(page):
+            continue
+        header = ObservedRowHeader.from_bytes(page[row_offset : row_offset + 2])
+        if header.length < 2:
+            continue
+        row_end = row_offset + header.length
+        if row_end > len(page):
+            continue
+        row = ObservedRow(
+            page_offset=row_offset,
+            data=page[row_offset:row_end],
+            header=header,
+        )
+        if not row.is_deleted:
+            result.append(row)
+    return result
+
+
+def _observed_slot_count(page: bytes) -> int:
+    if len(page) < 0x2E:
+        return 0
+    return int.from_bytes(page[0x2C:0x2E], "little")
+
+
+def _iter_observed_rows_by_discovered_slots(
+    page: bytes,
+    *,
+    start_offset: int,
+    max_rows: int,
+) -> list[ObservedRow]:
     physical_rows = scan_observed_row_chain(
         page,
         start_offset=start_offset,
@@ -197,8 +248,6 @@ def iter_observed_rows_by_slots(
         row_start_offsets=set(rows_by_offset),
         search_start_offset=_slot_search_start_offset(page),
     )
-    if not slot_offsets:
-        return []
     result: list[ObservedRow] = []
     seen_offsets: set[int] = set()
     for offset in reversed(slot_offsets):

@@ -15,6 +15,15 @@ from .storage import DataFile
 KNOWN_DM_TYPE_NAMES = frozenset(
     {
         "BIGINT",
+        "TIME WITH TIME ZONE",
+        "TIMESTAMP WITH LOCAL TIME ZONE",
+        "TIMESTAMP WITH TIME ZONE",
+        "DATETIME WITH TIME ZONE",
+        "INTERVAL YEAR TO MONTH",
+        "INTERVAL DAY TO SECOND",
+        "INDTAB",
+        "ROWID",
+        "BYTE",
         "BINARY",
         "BLOB",
         "CHAR",
@@ -295,7 +304,7 @@ def _syscolumn_candidate_from_row(
         type_name = row[type_start:type_end].decode("ascii").upper()
     except UnicodeDecodeError:
         return None
-    if type_name not in KNOWN_DM_TYPE_NAMES:
+    if not _is_known_dm_type_name(type_name):
         return None
     return SysColumnCandidate(
         object_id=object_id,
@@ -1180,7 +1189,7 @@ def _syscolumn_candidates_from_context(
     useful_strings = [
         item
         for item in strings
-        if item[1].isidentifier() or item[1].upper() in KNOWN_DM_TYPE_NAMES
+        if item[1].isidentifier() or _is_known_dm_type_name(item[1])
     ]
     for name_index, (name_offset, name) in enumerate(useful_strings):
         if name.upper() in KNOWN_DM_TYPE_NAMES:
@@ -1189,7 +1198,7 @@ def _syscolumn_candidates_from_context(
             continue
         for type_offset, type_name in useful_strings[name_index + 1 : name_index + 5]:
             upper_type = type_name.upper()
-            if upper_type not in KNOWN_DM_TYPE_NAMES:
+            if not _is_known_dm_type_name(upper_type):
                 continue
             score = _score_syscolumn_candidate(
                 column_id=column_id,
@@ -1259,6 +1268,11 @@ def _prefixed_ascii_strings(context: bytes) -> list[tuple[int, str]]:
             continue
         strings.append((index, value))
     return strings
+
+
+def _is_known_dm_type_name(value: str) -> bool:
+    upper = value.upper()
+    return upper in KNOWN_DM_TYPE_NAMES or (upper.startswith("CLASS") and upper[5:].isdigit())
 
 
 def _is_printable_ascii_identifier(value: bytes) -> bool:
