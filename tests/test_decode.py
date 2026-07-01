@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import unittest
 
 from dmdul.decode import DecodeError, decode_observed_row_values

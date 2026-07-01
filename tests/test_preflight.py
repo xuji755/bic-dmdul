@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import unittest
 
 from dmdul.preflight import evaluate_database_summary_preflight

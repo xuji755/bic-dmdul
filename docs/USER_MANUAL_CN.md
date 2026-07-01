@@ -54,27 +54,26 @@
 建议在项目根目录执行命令：
 
 ```sh
-cd /home/loop/dmdul
+cd dmdul
 mkdir -p tmp
 ```
 
 本项目约定所有临时文件写入：
 
 ```text
-/home/loop/dmdul/tmp
+./tmp
 ```
 
-运行 Python 命令时建议显式设置：
+运行发布包命令时建议显式设置临时目录：
 
 ```sh
-export TMPDIR=/home/loop/dmdul/tmp
-export PYTHONPATH=src
+export TMPDIR=./tmp
 ```
 
-如果没有安装成系统命令，使用以下形式运行：
+使用以下形式运行：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli <command> ...
+TMPDIR=./tmp ./bin/dmdul <command> ...
 ```
 
 ### 2.2 数据文件准备
@@ -206,7 +205,7 @@ prepare -> bootstrap -> dump-data
 命令：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   prepare \
   --database-dir /recovery/dmcopy \
   --init-output /recovery/work/init.dul \
@@ -245,7 +244,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 如果没有控制文件，当前工具会根据目录中的数据文件页头进行识别：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   prepare \
   --dirlist /recovery/dmcopy,/recovery/more_dbs \
   --init-output /recovery/work/init.dul \
@@ -276,7 +275,7 @@ filelist-duplicate-group-file
 命令：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   --init-file /recovery/work/init.dul \
   bootstrap \
   -b \
@@ -303,7 +302,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 也可以直接指定数据库目录和输出目录：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   bootstrap \
   /recovery/dmcopy \
   --output-dir /recovery/work/dict \
@@ -354,7 +353,7 @@ head -5 /recovery/work/dict/col.dict
 命令：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BMSQL_ORDERS \
@@ -364,7 +363,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 如果不使用 init.dul：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   dump-data \
   --dict-dir /recovery/work/dict \
   --output-dir /recovery/work/dulout \
@@ -403,7 +402,7 @@ CREATE TABLE BMSQL.BMSQL_ORDERS (
 `--table` 可以重复：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BMSQL_ORDERS \
@@ -417,7 +416,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 命令：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --user BMSQL \
@@ -429,7 +428,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 当用户下表很多时，可以启用并发：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --user BMSQL \
@@ -456,7 +455,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 可以把 JSON 报告写入文件：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --user BMSQL \
@@ -484,7 +483,7 @@ tables_failed
 如果希望 page plan 不完整时直接失败：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BMSQL_ORDERS \
@@ -565,7 +564,7 @@ rows_written = 80
 ### 11.1 查看文件信息
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   file-info /recovery/dmcopy/SYSTEM.DBF
 ```
 
@@ -574,7 +573,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 ### 11.2 dump 单个 page
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   dump-page /recovery/dmcopy/DMDUL_TS01.DBF 80 --bytes 256
 ```
 
@@ -583,7 +582,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 ### 11.3 inspect page header
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   inspect-page /recovery/dmcopy/DMDUL_TS01.DBF 80 --rows --dump 128
 ```
 
@@ -592,7 +591,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 ### 11.4 查找字符串 marker
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   find /recovery/dmcopy/SYSTEM.DBF DMDUL_MANY
 ```
 
@@ -601,7 +600,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 ### 11.5 catalog pages
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   catalog-pages /recovery/dmcopy/DMDUL_TS01.DBF \
   --start-page 0 \
   --max-pages 512 \
@@ -613,7 +612,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 ### 11.6 analyze-block
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   analyze-block /recovery/dmcopy/DMDUL_TS01.DBF 224 \
   --column ID:INT:4 \
   --column N38:NUMBER:22 \
@@ -627,7 +626,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 也可以从 `col.dict` 读取列定义：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   analyze-block /recovery/dmcopy/DMDUL_TS01.DBF 224 \
   --columns-jsonl /recovery/work/dict/col.dict
 ```
@@ -635,7 +634,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 ### 11.7 dump unknown structures
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   dump-unknown-structures /recovery/dmcopy/DMDUL_TS01.DBF \
   --pages 80,81,96-98 \
   --output /recovery/work/unknown_pages.json
@@ -646,13 +645,13 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 ### 11.8 summarize / preflight
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   summarize-database /recovery/dmcopy \
   --output /recovery/work/summary.json
 ```
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   preflight-database /recovery/dmcopy \
   --output /recovery/work/preflight.json
 ```
@@ -668,7 +667,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 示例：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   extract-dicts \
   --dict-dir /recovery/work/dict \
   --output-dir /recovery/work/dulout \
@@ -684,7 +683,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 示例：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
+TMPDIR=./tmp ./bin/dmdul \
   extract-csv \
   --metadata-json /recovery/work/table_metadata.json \
   --table BMSQL.BMSQL_ORDERS \
@@ -700,16 +699,15 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli \
 ### 13.1 设置环境变量
 
 ```sh
-cd /home/loop/dmdul
+cd dmdul
 mkdir -p tmp /recovery/work/dict /recovery/work/dulout
-export TMPDIR=/home/loop/dmdul/tmp
-export PYTHONPATH=src
+export TMPDIR=./tmp
 ```
 
 ### 13.2 生成 init.dul 和 filelist.dul
 
 ```sh
-python3 -m dmdul.cli \
+./bin/dmdul \
   prepare \
   --database-dir /recovery/dmcopy \
   --init-output /recovery/work/init.dul \
@@ -739,7 +737,7 @@ cat /recovery/work/filelist.dul
 ### 13.4 下载字典
 
 ```sh
-python3 -m dmdul.cli \
+./bin/dmdul \
   --init-file /recovery/work/init.dul \
   bootstrap \
   -b \
@@ -758,7 +756,7 @@ head -5 /recovery/work/dict/col.dict
 ### 13.5 先导出一张表试跑
 
 ```sh
-python3 -m dmdul.cli \
+./bin/dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BMSQL_ORDERS \
@@ -783,7 +781,7 @@ cat /recovery/work/dulout/orders_report.json
 ### 13.6 导出用户所有表
 
 ```sh
-python3 -m dmdul.cli \
+./bin/dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --user BMSQL \
@@ -871,7 +869,7 @@ grep -i 'BMSQL_ORDERS' /recovery/work/dict/col.dict
 可以用：
 
 ```sh
-python3 -m dmdul.cli inspect-page /path/to/file.dbf <root_page> --dump 128
+./bin/dmdul inspect-page /path/to/file.dbf <root_page> --dump 128
 ```
 
 ### 16.3 发生 row-decode-error
@@ -879,7 +877,7 @@ python3 -m dmdul.cli inspect-page /path/to/file.dbf <root_page> --dump 128
 使用 report 中的 `page` 和 `offset` 定位：
 
 ```sh
-python3 -m dmdul.cli analyze-block /path/to/file.dbf <page_no> \
+./bin/dmdul analyze-block /path/to/file.dbf <page_no> \
   --columns-jsonl /recovery/work/dict/col.dict \
   --max-rows 10
 ```
@@ -892,10 +890,10 @@ python3 -m dmdul.cli analyze-block /path/to/file.dbf <page_no> \
 
 ## 17. 版本验证命令
 
-开发或修改后建议执行：
+部署后建议先执行入口检查：
 
 ```sh
-TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m unittest discover -s tests
+TMPDIR=./tmp ./bin/dmdul --help
 ```
 
 当前阶段已验证：
@@ -908,7 +906,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m unittest discover -s tests
 
 ```sh
 # 1. prepare
-python3 -m dmdul.cli prepare \
+./bin/dmdul prepare \
   --database-dir /recovery/dmcopy \
   --init-output /recovery/work/init.dul \
   --filelist-output /recovery/work/filelist.dul \
@@ -919,15 +917,15 @@ python3 -m dmdul.cli prepare \
   --json
 
 # 2. bootstrap
-python3 -m dmdul.cli --init-file /recovery/work/init.dul \
+./bin/dmdul --init-file /recovery/work/init.dul \
   bootstrap -b --json
 
 # 3. dump one table
-python3 -m dmdul.cli --init-file /recovery/work/init.dul \
+./bin/dmdul --init-file /recovery/work/init.dul \
   dump-data --table BMSQL.BMSQL_ORDERS --json
 
 # 4. dump one user with workers
-python3 -m dmdul.cli --init-file /recovery/work/init.dul \
+./bin/dmdul --init-file /recovery/work/init.dul \
   dump-data --user BMSQL --parallel 8 \
   --report-output /recovery/work/dulout/bmsql_report.json \
   --json
