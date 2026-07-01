@@ -449,36 +449,44 @@ def _build_root_page_plan(
             ) + plan.diagnostics,
         )
     if root_header.page_kind_raw == 0x15:
-        leftmost_child = _btree_root_leftmost_child(root_page)
+        descent = _btree_find_leftmost_leaf(
+            data_file=data_file,
+            start_page=root_page_no,
+            storage_id=table.storage.storage_id,
+            pages_total=pages_total,
+        )
         entry_children = _btree_root_entry_child_pages(root_page, root_header.observed_row_count)
-        if leftmost_child is None:
+        if descent.leaf_page is None:
             return PagePlan(
                 pages=(),
                 diagnostics=(
                     {
                         "level": "warning",
                         "code": "page-plan-btree-root-no-leftmost-child",
-                        "message": "BTREE root page did not contain a usable leftmost child pointer; storage-id scan fallback is required",
+                        "message": "BTREE root/internal pages did not contain a usable path to a leaf page; storage-id scan fallback is required",
                         "root_page": root_page_no,
                         "storage_id": table.storage.storage_id,
                         "entry_count": root_header.observed_row_count,
+                        "descent_pages": descent.pages,
+                        "stop_reason": descent.stop_reason,
                     },
                 ),
             )
         plan = _walk_same_file_leaf_chain(
             data_file=data_file,
             file_no=table.storage.file_no,
-            start_pages=(leftmost_child,),
+            start_pages=(descent.leaf_page,),
         )
         planned_pages = tuple(page_ref.page_no for page_ref in plan.pages)
         diagnostics: list[dict[str, Any]] = [
             {
                 "level": "info",
-                "code": "page-plan-btree-root-children",
-                "message": "planned BTREE data pages from a BTREE root/internal page and leaf next-chain",
+                "code": "page-plan-btree-internal-descent",
+                "message": "planned BTREE data pages by descending root/internal pages to the leftmost leaf and walking the leaf next-chain",
                 "root_page": root_page_no,
                 "storage_id": table.storage.storage_id,
-                "leftmost_child_page": leftmost_child,
+                "leftmost_leaf_page": descent.leaf_page,
+                "descent_pages": descent.pages,
                 "root_entry_count": root_header.observed_row_count,
                 "root_entry_child_pages": entry_children,
                 "pages_planned": len(plan.pages),
@@ -486,12 +494,12 @@ def _build_root_page_plan(
         ]
         entry_set = set(entry_children)
         planned_set = set(planned_pages)
-        if entry_set and entry_set != planned_set - {leftmost_child}:
+        if entry_set and not entry_set.issubset(planned_set | set(descent.pages)):
             diagnostics.append(
                 {
                     "level": "warning",
                     "code": "page-plan-btree-root-entry-mismatch",
-                    "message": "BTREE root child entries did not exactly match the walked leaf chain",
+                    "message": "BTREE root child entries were not all covered by the descent path or walked leaf chain",
                     "root_page": root_page_no,
                     "entry_child_pages": entry_children,
                     "walked_pages": list(planned_pages),
@@ -512,6 +520,130 @@ def _build_root_page_plan(
             },
         ),
     )
+
+
+@dataclass(frozen=True)
+class BTreeDescent:
+    leaf_page: int | None
+    pages: tuple[int, ...]
+    stop_reason: str
+
+
+def _btree_find_leftmost_leaf(
+    *,
+    data_file: DataFile,
+    start_page: int,
+    storage_id: int | None,
+    pages_total: int,
+) -> BTreeDescent:
+    descent = _btree_descend_leftmost_leaf(
+        data_file=data_file,
+        start_page=start_page,
+        storage_id=storage_id,
+        pages_total=pages_total,
+    )
+    if descent.leaf_page is not None:
+        return descent
+
+    # If the first internal page path cannot be followed, stay within the
+    # table BTree structure by trying internal siblings linked from the
+    # visited internal pages before any broader fallback is considered.
+    visited = list(descent.pages)
+    for sibling_page in _btree_internal_sibling_pages(
+        data_file=data_file,
+        start_pages=descent.pages,
+        storage_id=storage_id,
+        pages_total=pages_total,
+    ):
+        if sibling_page in visited:
+            continue
+        sibling_descent = _btree_descend_leftmost_leaf(
+            data_file=data_file,
+            start_page=sibling_page,
+            storage_id=storage_id,
+            pages_total=pages_total,
+        )
+        combined_pages = tuple(dict.fromkeys(tuple(visited) + sibling_descent.pages))
+        if sibling_descent.leaf_page is not None:
+            return BTreeDescent(sibling_descent.leaf_page, combined_pages, sibling_descent.stop_reason)
+        visited = list(combined_pages)
+    return BTreeDescent(None, tuple(visited), descent.stop_reason)
+
+
+def _btree_internal_sibling_pages(
+    *,
+    data_file: DataFile,
+    start_pages: tuple[int, ...],
+    storage_id: int | None,
+    pages_total: int,
+) -> tuple[int, ...]:
+    siblings: list[int] = []
+    seen: set[int] = set(start_pages)
+    for start_page in start_pages:
+        if start_page < 0 or start_page >= pages_total:
+            continue
+        page = data_file.read_page(start_page)
+        header = ObservedPageHeader.from_page(page)
+        if header.page_kind_raw != 0x15:
+            continue
+        next_page = _page_ref_page_no(page, 0x0E)
+        while next_page is not None:
+            if next_page < 0 or next_page >= pages_total or next_page in seen:
+                break
+            sibling = data_file.read_page(next_page)
+            sibling_header = ObservedPageHeader.from_page(sibling)
+            if sibling_header.page_no != next_page:
+                break
+            if storage_id is not None and sibling_header.storage_id_candidate != storage_id:
+                break
+            if sibling_header.page_kind_raw != 0x15:
+                break
+            siblings.append(next_page)
+            seen.add(next_page)
+            next_page = _page_ref_page_no(sibling, 0x0E)
+    return tuple(siblings)
+
+
+def _btree_descend_leftmost_leaf(
+    *,
+    data_file: DataFile,
+    start_page: int,
+    storage_id: int | None,
+    pages_total: int,
+) -> BTreeDescent:
+    current_page = start_page
+    visited: list[int] = []
+    seen: set[int] = set()
+    while True:
+        if current_page < 0 or current_page >= pages_total:
+            return BTreeDescent(None, tuple(visited), "page-out-of-range")
+        if current_page in seen:
+            return BTreeDescent(None, tuple(visited), "cycle-detected")
+        seen.add(current_page)
+        visited.append(current_page)
+        page = data_file.read_page(current_page)
+        header = ObservedPageHeader.from_page(page)
+        if header.page_no != current_page:
+            return BTreeDescent(None, tuple(visited), "page-identity-mismatch")
+        if storage_id is not None and header.storage_id_candidate != storage_id:
+            return BTreeDescent(None, tuple(visited), "storage-id-mismatch")
+        if header.page_kind_raw == 0x14:
+            return BTreeDescent(current_page, tuple(visited), "leaf")
+        if header.page_kind_raw != 0x15:
+            return BTreeDescent(None, tuple(visited), f"unexpected-kind-0x{header.page_kind_raw:x}")
+        child_page = _btree_root_leftmost_child(page)
+        if child_page is None:
+            return BTreeDescent(None, tuple(visited), "leftmost-child-missing")
+        current_page = child_page
+
+
+def _page_ref_page_no(page: bytes, offset: int) -> int | None:
+    if offset < 0 or offset + 6 > len(page):
+        return None
+    raw = page[offset : offset + 6]
+    if raw == b"\xff" * 6:
+        return None
+    return int.from_bytes(raw[2:6], "little")
 
 
 def _btree_root_leftmost_child(page: bytes) -> int | None:

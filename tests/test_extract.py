@@ -335,9 +335,147 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
         self.assertEqual(report.scanned_pages, (10, 20, 35))
         self.assertEqual(rows, [["ID"], ["10"], ["20"], ["35"]])
         self.assertIn(
-            "page-plan-btree-root-children",
+            "page-plan-btree-internal-descent",
             {item["code"] for item in report.diagnostics},
         )
+
+    def test_descends_multiple_btree_internal_levels_before_leaf_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [bytearray(b"\0" * 8192) for _ in range(16)]
+            storage_id = 33595349
+
+            def init_header(page_no: int, kind: int) -> None:
+                page = pages[page_no]
+                page[0:4] = (6).to_bytes(4, "little")
+                page[4:8] = page_no.to_bytes(4, "little")
+                page[8:14] = b"\xff" * 6
+                page[14:20] = b"\xff" * 6
+                page[20:24] = kind.to_bytes(4, "little")
+                page[0x3A:0x3E] = storage_id.to_bytes(4, "little")
+
+            def page_ref(page_no: int | None) -> bytes:
+                if page_no is None:
+                    return b"\xff" * 6
+                return (0).to_bytes(2, "little") + page_no.to_bytes(4, "little")
+
+            def put_row(page_no: int, value: int) -> None:
+                pages[page_no][0x62:0x71] = (
+                    bytes.fromhex("00 0f 00")
+                    + value.to_bytes(4, "little", signed=True)
+                    + b"\0" * (0x0F - 2 - 1 - 4)
+                )
+
+            init_header(0, 0x15)
+            pages[0][0x52:0x56] = (3).to_bytes(4, "little")
+            init_header(3, 0x15)
+            pages[3][0x52:0x56] = (7).to_bytes(4, "little")
+            for page_no, prev_page, next_page, value in ((7, None, 8, 7), (8, 7, None, 8)):
+                init_header(page_no, 0x14)
+                pages[page_no][8:14] = page_ref(prev_page)
+                pages[page_no][14:20] = page_ref(next_page)
+                put_row(page_no, value)
+
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "multi.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [{"group_id": 6, "file_no": 0, "path": str(data_file), "page_size": 8192}],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_MULTI_BTREE",
+                            "storage": {"group_id": 6, "file_no": 0, "root_page": 0, "scan_pages": 16, "storage_id": storage_id},
+                            "columns": [{"name": "ID", "type_name": "INT"}],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_MULTI_BTREE",
+                output=output_path,
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(report.rows_written, 2)
+        self.assertEqual(report.scanned_pages, (7, 8))
+        diagnostics = {item["code"]: item for item in report.diagnostics}
+        self.assertIn("page-plan-btree-internal-descent", diagnostics)
+        self.assertEqual(diagnostics["page-plan-btree-internal-descent"]["descent_pages"], (0, 3, 7))
+        self.assertEqual(rows, [["ID"], ["7"], ["8"]])
+
+    def test_tries_next_internal_page_before_global_storage_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [bytearray(b"\0" * 8192) for _ in range(16)]
+            storage_id = 33595349
+
+            def init_header(page_no: int, kind: int) -> None:
+                page = pages[page_no]
+                page[0:4] = (6).to_bytes(4, "little")
+                page[4:8] = page_no.to_bytes(4, "little")
+                page[8:14] = b"\xff" * 6
+                page[14:20] = b"\xff" * 6
+                page[20:24] = kind.to_bytes(4, "little")
+                page[0x3A:0x3E] = storage_id.to_bytes(4, "little")
+
+            def page_ref(page_no: int | None) -> bytes:
+                if page_no is None:
+                    return b"\xff" * 6
+                return (0).to_bytes(2, "little") + page_no.to_bytes(4, "little")
+
+            def put_row(page_no: int, value: int) -> None:
+                pages[page_no][0x62:0x71] = (
+                    bytes.fromhex("00 0f 00")
+                    + value.to_bytes(4, "little", signed=True)
+                    + b"\0" * (0x0F - 2 - 1 - 4)
+                )
+
+            init_header(0, 0x15)
+            pages[0][0x52:0x56] = (4).to_bytes(4, "little")
+            pages[0][14:20] = page_ref(1)
+            init_header(1, 0x15)
+            pages[1][8:14] = page_ref(0)
+            pages[1][0x52:0x56] = (7).to_bytes(4, "little")
+            # Page 4 exists but is not a BTREE page; the planner must try the
+            # next internal page rather than broad file scanning immediately.
+            init_header(4, 0x16)
+            init_header(7, 0x14)
+            put_row(7, 7)
+
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "sibling.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [{"group_id": 6, "file_no": 0, "path": str(data_file), "page_size": 8192}],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_SIBLING_BTREE",
+                            "storage": {"group_id": 6, "file_no": 0, "root_page": 0, "scan_pages": 16, "storage_id": storage_id},
+                            "columns": [{"name": "ID", "type_name": "INT"}],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_SIBLING_BTREE",
+                output=output_path,
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(report.rows_written, 1)
+        self.assertEqual(report.scanned_pages, (7,))
+        self.assertEqual(rows, [["ID"], ["7"]])
+        self.assertIn("page-plan-btree-internal-descent", {item["code"] for item in report.diagnostics})
 
     def test_scans_multiple_pages_from_calibrated_range(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

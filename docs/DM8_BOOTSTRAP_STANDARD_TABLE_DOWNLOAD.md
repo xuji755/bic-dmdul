@@ -1,0 +1,105 @@
+# DM8 Bootstrap 与标准表下载优化设计
+
+## 核心原则
+
+SYSOBJECTS/SYSINDEXES 中给出的 storage root 是访问表或索引的标准入口。该入口不能被解释为不可靠地址；如果入口页不是数据页，说明还需要继续解析 root/internal/segment 结构，而不是立即退回全文件扫描。
+
+当前已经确认的通用访问路径：
+
+```text
+SYSOBJECTS/SYSINDEXES storage root
+  -> root/internal page, page_kind = 0x15
+  -> child pointer, observed at offset 0x52
+  -> more internal page(s), page_kind = 0x15
+  -> first data/leaf page, page_kind = 0x14
+  -> follow leaf next-page chain at page header offset 0x0e
+```
+
+以测试库 `TEST2.BMSQL_ITEM` 为例：
+
+```text
+root_page = 374896
+storage_id = 33573582
+
+374896 kind=0x15 storage=33573582 child@0x52=374898
+374898 kind=0x15 storage=33573582 child@0x52=374832
+374832 kind=0x14 storage=33573582 prev=NULL next=374833
+374833 kind=0x14 storage=33573582 prev=374832 next=374834
+```
+
+因此标准表下载不需要扫描整个数据文件。它应当从 storage root 开始，递归或循环下降 internal page，找到第一个 0x14 数据页，再沿 next 链读取数据页。
+
+## page plan 优化规则
+
+生成 page plan 时按如下顺序处理：
+
+1. 如果字典中已有显式 page_refs/page_numbers，优先使用，并逐页校验 page header。
+2. 如果有 storage_id/root_page：
+   - 读取 root_page。
+   - 校验 page identity、storage_id。
+   - 如果 root page 是 0x14，直接沿 leaf next 链读取。
+   - 如果 root page 是 0x15，按 child pointer 下降。
+   - 如果某个 internal 页不能下降，先沿 internal 页自己的 next 链尝试同层下一个 internal 页。
+   - 直到找到 0x14 数据页，再沿 0x14 next 链读取。
+3. 只有上述入口结构解析失败，才允许进入 root 附近局部扫描。
+4. 全文件 storage_id scan 只能作为最后兜底，主要用于损坏或未知结构场景，不应作为正常路径。
+
+## Bootstrap 优化方向
+
+Bootstrap 当前不能把 SYSTEM.DBF 作为普通字节流长期全文件扫描。正确设计是：
+
+```text
+特殊入口定位 SYSOBJECTS
+  -> 按标准表下载 SYSOBJECTS
+  -> 从 SYSOBJECTS 中定位 SYSUSERS/SYSCOLUMNS/SYSINDEXES/SYSHPARTTABLEINFO 等字典表
+  -> 每张字典表继续按标准表下载
+  -> 生成 user.dict/tab.dict/col.dict/index.dict/partition.dict 等
+```
+
+也就是说，只有 SYSOBJECTS 的入口定位是 bootstrap 特殊逻辑。一旦 SYSOBJECTS 被下载成功，其余字典表不应再通过 marker 全文件扫描获取，而应使用 SYSOBJECTS 中的对象与 storage 子对象信息，进入标准表下载流程。
+
+
+## 已确认的核心字典对象入口证据
+
+在当前 DM8 测试库中，在线字典确认如下固定/核心对象关系：
+
+```text
+SYSOBJECTS        table object id = 0
+SYSINDEXES        table object id = 1
+SYSCOLUMNS        table object id = 2
+SYSHPARTTABLEINFO table object id = 19
+
+SYSINDEXSYSOBJECTS        storage/index id = 33554540 root = group 0 file 0 page 16
+SYSINDEXCOLUMNS           storage/index id = 33554433 root = group 0 file 0 page 80
+SYSINDEXINDEXES           storage/index id = 33554434 root = group 0 file 0 page 288
+SYSINDEXSYSHPARTTABLEINFO storage/index id = 33554548 root = group 0 file 0 page 240
+```
+
+其中 `SYSOBJECTS` 的表对象 ID 是 bootstrap 的根。实现上应优先通过固定系统对象入口定位 `SYSOBJECTS` 的 storage root，再按标准表下载路径读取 SYSOBJECTS；不要把扫描 SYSTEM.DBF 字符串 marker 作为主路径。
+
+## SYSOBJECTS 之后的字典下载流程
+
+下载 SYSOBJECTS 后：
+
+1. 在 SYSOBJECTS 行中查找需要的字典表对象：
+   - SYSUSERS
+   - SYSCOLUMNS
+   - SYSINDEXES
+   - SYSHPARTTABLEINFO
+   - 其他后续需要的系统表
+2. 对每张字典表查找对应 storage 子对象。
+3. 获取 storage_id、group_id、file_id、root_page。
+4. 复用标准 page plan：root -> internal -> leaf -> next chain。
+5. 解码该字典表行，并写入平面 `.dict` 文件。
+
+## 禁止的正常路径
+
+正常 bootstrap 或 dump-data 不应把以下操作作为主路径：
+
+```text
+扫描整个 DBF 文件寻找对象名字符串
+扫描整个 DBF 文件寻找 storage_id
+扫描整个 SYSTEM.DBF 寻找 SYSCOLUMNS/SYSINDEXES marker
+```
+
+这些只能作为最后 fallback，用于 SYSTEM 损坏、入口页损坏、字典不完整等异常场景。
