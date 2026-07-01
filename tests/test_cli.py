@@ -733,7 +733,7 @@ class CliTest(unittest.TestCase):
                     "--output-dir",
                     str(output_dir),
                     "--table",
-                    "SYSDBA.DMDUL_ONE",
+                    "sysdba.dmdul_one",
                     "--delimiter",
                     "|",
                     "--json",
@@ -797,6 +797,52 @@ class CliTest(unittest.TestCase):
         self.assertIn("table_failed=TEST2.BMSQL_ITEM", stderr.getvalue())
         self.assertIn("diagnostic=dump-data-table-failed", stderr.getvalue())
         self.assertIn(str(missing_data_file), stderr.getvalue())
+
+    def test_dump_data_matches_user_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "dump"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            data_file.write_bytes(_leaf_page(page_no=0, value=7, storage_id=33595349))
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "page_type_raw", "page0_kind_raw", "page0_kind_label", "system_candidate"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 8192, "page_size": 8192, "pages": 1, "group_id": 6, "file_no": 0}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "parent_object_id", "schema_id", "subtype_name", "storage_index_id", "group_id", "root_file", "root_page", "scan_pages", "source"],
+                [{"dict_type": "table", "object_kind": "table", "owner": "SYSDBA", "name": "DMDUL_ONE", "qualified_name": "SYSDBA.DMDUL_ONE", "object_id": 33629, "storage_index_id": 33595349, "group_id": 6, "root_file": 0, "root_page": 0, "scan_pages": 1}],
+            )
+            _write_dict(
+                dict_dir / "col.dict",
+                ["dict_type", "owner", "table_name", "qualified_table_name", "object_id", "column_id", "ordinal", "name", "type_name", "length", "source"],
+                [{"dict_type": "column", "owner": "SYSDBA", "table_name": "DMDUL_ONE", "qualified_table_name": "SYSDBA.DMDUL_ONE", "object_id": 33629, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4}],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--user",
+                    "sysdba",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["tables_total"], 1)
+        self.assertEqual(manifest["tables_ok"], 1)
 
     def test_resolve_table_writes_segment_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

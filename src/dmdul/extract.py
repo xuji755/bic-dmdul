@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import mmap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -266,9 +267,23 @@ def _build_page_plan(
         if root_plan.pages or any(item.get("level") == "error" for item in root_plan.diagnostics):
             return root_plan
         storage_scan_plan = _build_storage_id_page_plan(table=table, data_files=data_files)
+        if storage_scan_plan.pages:
+            return PagePlan(
+                pages=storage_scan_plan.pages,
+                diagnostics=root_plan.diagnostics + storage_scan_plan.diagnostics,
+            )
+        global_scan_plan = _build_storage_id_global_page_plan(
+            table=table,
+            data_files=data_files,
+        )
+        if global_scan_plan.pages:
+            return PagePlan(
+                pages=global_scan_plan.pages,
+                diagnostics=root_plan.diagnostics + global_scan_plan.diagnostics,
+            )
         return PagePlan(
-            pages=storage_scan_plan.pages,
-            diagnostics=root_plan.diagnostics + storage_scan_plan.diagnostics,
+            pages=(),
+            diagnostics=root_plan.diagnostics + storage_scan_plan.diagnostics + global_scan_plan.diagnostics,
         )
     diagnostics: tuple[dict[str, Any], ...] = ()
     if fallback_level is not None:
@@ -519,6 +534,77 @@ def _build_storage_id_page_plan(
             }
         )
     return PagePlan(pages=tuple(planned), diagnostics=tuple(diagnostics))
+
+
+def _build_storage_id_global_page_plan(
+    *,
+    table: TableMeta,
+    data_files: dict[int, DataFile],
+) -> PagePlan:
+    if table.storage.storage_id is None:
+        return PagePlan(pages=(), diagnostics=())
+    storage_bytes = table.storage.storage_id.to_bytes(4, "little", signed=False)
+    planned: list[StoragePageRef] = []
+    files_scanned = 0
+    header_hits = 0
+    skipped_non_data = 0
+    skipped_identity_mismatch = 0
+    for file_no, data_file in sorted(data_files.items()):
+        page_size = data_file.page_size
+        path = data_file.path
+        pages_total = path.stat().st_size // page_size
+        if pages_total <= 0:
+            continue
+        files_scanned += 1
+        with path.open("rb") as file:
+            with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                offset = mm.find(storage_bytes)
+                while offset != -1:
+                    if offset % page_size == 0x3A:
+                        page_no = offset // page_size
+                        if 0 <= page_no < pages_total:
+                            page_start = page_no * page_size
+                            header_page_no = int.from_bytes(mm[page_start + 4 : page_start + 8], "little")
+                            header_file_no = int.from_bytes(mm[page_start : page_start + 4], "little") >> 16
+                            page_kind = int.from_bytes(mm[page_start + 0x14 : page_start + 0x18], "little")
+                            header_hits += 1
+                            if header_file_no != file_no or header_page_no != page_no:
+                                skipped_identity_mismatch += 1
+                            elif page_kind != 0x14:
+                                skipped_non_data += 1
+                            else:
+                                planned.append(StoragePageRef(file_no=file_no, page_no=page_no))
+                    offset = mm.find(storage_bytes, offset + 1)
+    diagnostics: list[dict[str, Any]] = []
+    if planned:
+        diagnostics.append(
+            {
+                "level": "info",
+                "code": "page-plan-storage-id-global-scan",
+                "message": "planned BTREE data pages by scanning DBF page headers for the table storage id",
+                "storage_id": table.storage.storage_id,
+                "files_scanned": files_scanned,
+                "header_hits": header_hits,
+                "pages_planned": len(planned),
+                "skipped_non_data": skipped_non_data,
+                "skipped_identity_mismatch": skipped_identity_mismatch,
+            }
+        )
+    else:
+        diagnostics.append(
+            {
+                "level": "error",
+                "code": "page-plan-storage-id-global-no-data-pages",
+                "message": "no BTREE data pages matched the table storage id in any same-group data file",
+                "storage_id": table.storage.storage_id,
+                "files_scanned": files_scanned,
+                "header_hits": header_hits,
+                "skipped_non_data": skipped_non_data,
+                "skipped_identity_mismatch": skipped_identity_mismatch,
+            }
+        )
+    return PagePlan(pages=tuple(planned), diagnostics=tuple(diagnostics))
+
 
 
 def _iter_scan_pages(table: TableMeta) -> range:

@@ -126,6 +126,17 @@ class ObservedRowIteratorTest(unittest.TestCase):
         self.assertEqual([row.length for row in rows], [0x25, 0x27, 0x2D])
         self.assertEqual([row.is_deleted for row in rows], [False, True, False])
 
+    def test_slot_iterator_deduplicates_repeated_offsets(self) -> None:
+        page = bytearray(b"\0" * 8192)
+        page[0x62:0x73] = bytes.fromhex("00 11 00") + (7).to_bytes(4, "little") + b"\0" * 10
+        slot_start = len(page) - 10 - 4
+        page[slot_start:slot_start + 2] = (0x62).to_bytes(2, "little")
+        page[slot_start + 2:slot_start + 4] = (0x62).to_bytes(2, "little")
+
+        rows = iter_observed_rows_by_slots(bytes(page))
+
+        self.assertEqual([row.page_offset for row in rows], [0x62])
+
     def test_scans_physical_chain_beyond_active_row_count(self) -> None:
         page = bytearray(b"\0" * 256)
         page[0x62:0x87] = bytes.fromhex("00 25") + b"A" * (0x25 - 2)

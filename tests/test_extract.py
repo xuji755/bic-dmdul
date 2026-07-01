@@ -158,6 +158,71 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             {item["code"] for item in report.diagnostics},
         )
 
+    def test_global_storage_id_scan_finds_pages_before_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "MAIN.DBF"
+            storage_id = 33573582
+            pages = [bytearray(b"\0" * 8192) for _ in range(6)]
+            for page_no, kind in ((1, 0x14), (5, 0x15)):
+                page = pages[page_no]
+                page[0:4] = (4).to_bytes(4, "little")
+                page[4:8] = page_no.to_bytes(4, "little")
+                page[8:14] = b"\xff" * 6
+                page[14:20] = b"\xff" * 6
+                page[20:24] = kind.to_bytes(4, "little")
+                page[0x3A:0x3E] = storage_id.to_bytes(4, "little")
+            pages[1][0x62:0x73] = (
+                bytes.fromhex("00 11 00")
+                + (123).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x11 - 2 - 1 - 4)
+            )
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "item.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 4,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "TEST2",
+                            "name": "BMSQL_ITEM",
+                            "storage": {
+                                "group_id": 4,
+                                "file_no": 0,
+                                "root_page": 5,
+                                "scan_pages": 1,
+                                "storage_id": storage_id,
+                            },
+                            "columns": [{"name": "ID", "type_name": "INT"}],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="TEST2.BMSQL_ITEM",
+                output=output_path,
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+
+        self.assertTrue(report.ok)
+        self.assertEqual(report.rows_written, 1)
+        self.assertEqual(report.scanned_pages, (1,))
+        self.assertIn(
+            "page-plan-storage-id-global-scan",
+            {item["code"] for item in report.diagnostics},
+        )
+        self.assertEqual(rows, [["ID"], ["123"]])
+
     def test_plans_noncontiguous_leaf_pages_from_btree_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

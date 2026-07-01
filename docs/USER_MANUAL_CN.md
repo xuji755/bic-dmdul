@@ -44,6 +44,7 @@
 4. 如果 root page 是 `0x15`，解析 BTree root/internal child pages。
 5. 沿 leaf 页的 `next` 链导出数据页。
 6. 每个计划页都校验 page identity、page kind、`storage_id`。
+7. 如果 root/extent 解析还不能直接给出数据页，会按同 group 数据文件的页头 `storage_id` 做保守 fallback，找到 `0x14` 数据页后再导出。
 
 这样可以处理生产环境中 extent 不连续、中间夹杂其他对象 extent 的情况。
 
@@ -196,7 +197,7 @@ prepare -> bootstrap -> dump-data
 
 ### 阶段 3：dump-data
 
-使用 bootstrap 字典定位表 storage root，解析 page plan，导出表数据。
+使用 bootstrap 字典定位表 storage root，解析 page plan，导出表数据。`--table` 和 `--user` 匹配不区分大小写。
 
 ## 5. 阶段 1：prepare
 
@@ -407,6 +408,13 @@ TMPDIR=./tmp ./bin/dmdul \
   --json
 ```
 
+`--table` 不区分大小写，下面两种写法等价：
+
+```sh
+./bin/dmdul --init-file /recovery/work/init.dul dump-data --table BMSQL.BMSQL_ORDERS
+./bin/dmdul --init-file /recovery/work/init.dul dump-data --table bmsql.bmsql_orders
+```
+
 如果不使用 init.dul：
 
 ```sh
@@ -582,7 +590,8 @@ rows_written = 80
 | --- | --- | --- |
 | `page-plan-root-leaf-chain` | 从 `0x14` root leaf 链生成 page plan | 正常信息 |
 | `page-plan-btree-root-children` | 从 `0x15` BTree root/internal 页生成 page plan | 正常信息 |
-| `page-plan-storage-id-scan` | root 结构无法直接解析，退回 storage_id scan | 需要复核，但可能仍可导出 |
+| `page-plan-storage-id-scan` | root 结构无法直接解析，退回 root 附近 storage_id scan | 需要复核，但可能仍可导出 |
+| `page-plan-storage-id-global-scan` | root 附近没有数据页时，按同 group DBF 页头 storage_id 查找 `0x14` 数据页 | 保守 fallback，正确性优先但大文件较慢 |
 | `page-plan-fallback-scan-range` | 没有 storage_id/page refs，只能按 root 起扫窗口 | 风险较高，应补字典/root 信息 |
 | `page-plan-file-missing` | filelist 中缺少数据文件 | 修正 `filelist.dul` |
 | `page-plan-out-of-range` | 计划页超过文件大小 | 检查文件是否完整或字典是否错配 |
@@ -958,7 +967,7 @@ TMPDIR=./tmp ./bin/dmdul --help
 当前阶段已验证：
 
 ```text
-129 tests OK
+132 tests OK
 ```
 
 ## 18. 快速命令清单

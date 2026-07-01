@@ -199,11 +199,16 @@ def iter_observed_rows_by_slots(
     )
     if not slot_offsets:
         return []
-    return [
-        rows_by_offset[offset]
-        for offset in reversed(slot_offsets)
-        if offset in rows_by_offset and not rows_by_offset[offset].is_deleted
-    ]
+    result: list[ObservedRow] = []
+    seen_offsets: set[int] = set()
+    for offset in reversed(slot_offsets):
+        if offset in seen_offsets:
+            continue
+        seen_offsets.add(offset)
+        row = rows_by_offset.get(offset)
+        if row is not None and not row.is_deleted:
+            result.append(row)
+    return result
 
 
 def find_observed_row_slots(

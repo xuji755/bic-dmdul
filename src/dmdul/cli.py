@@ -522,18 +522,18 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
         delimiter = args.delimiter or "|"
         workers = args.parallel or 1
     metadata = CalibratedMetadata.from_dict_dir(dict_dir)
-    requested = {value.upper() for value in (args.table or ())}
+    requested = {_normalize_identifier(value) for value in (args.table or ())}
     requested_names = {value.split(".", 1)[-1] for value in requested}
-    requested_user = args.user.upper() if args.user else None
+    requested_user = _normalize_identifier(args.user) if args.user else None
     tables = [
         table
         for table in metadata.tables
         if (
             (not requested and requested_user is None)
-            or table.name.upper() in requested
-            or table.name.upper() in requested_names
-            or table.qualified_name.upper() in requested
-            or (requested_user is not None and table.owner.upper() == requested_user)
+            or _normalize_identifier(table.name) in requested
+            or _normalize_identifier(table.name) in requested_names
+            or _normalize_identifier(table.qualified_name) in requested
+            or (requested_user is not None and _normalize_identifier(table.owner) == requested_user)
         )
     ]
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -591,15 +591,15 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
 
 def _cmd_extract_dicts(args: argparse.Namespace) -> int:
     metadata = CalibratedMetadata.from_dict_dir(Path(args.dict_dir))
-    requested = {value.upper() for value in (args.table or ())}
+    requested = {_normalize_identifier(value) for value in (args.table or ())}
     requested_names = {value.split(".", 1)[-1] for value in requested}
     tables = [
         table
         for table in metadata.tables
         if not requested
-        or table.name.upper() in requested
-        or table.name.upper() in requested_names
-        or table.qualified_name.upper() in requested
+        or _normalize_identifier(table.name) in requested
+        or _normalize_identifier(table.name) in requested_names
+        or _normalize_identifier(table.qualified_name) in requested
     ]
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -685,6 +685,11 @@ def _print_table_failure_details(reports: list[dict[str, object]]) -> None:
             )
         for error in report.get("decode_errors", ()) or ():
             print(f"  decode_error={error}", file=sys.stderr)
+
+
+
+def _normalize_identifier(value: str) -> str:
+    return value.strip().strip('"').casefold()
 
 
 
