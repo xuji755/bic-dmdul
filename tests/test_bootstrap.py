@@ -9,9 +9,11 @@ from dmdul.bootstrap import (
     DICT_FIELDNAMES,
     DM_BUILTIN_SCHEMA_NAMES_BY_ID,
     _dictionary_rows_from_existing_dicts,
+    _leaf_partition_objects_for_table,
     _owner_for_schema_id,
     _system_dictionary_storage_entry,
 )
+from dmdul.sysdict import SysObjectRowCandidate
 
 
 class BootstrapTest(unittest.TestCase):
@@ -127,6 +129,21 @@ class BootstrapTest(unittest.TestCase):
         self.assertEqual(entry["storage_id"], storage_id)
         self.assertTrue(any("SYSOBJECTS root discovered from SYSTEM file header" in item for item in progress))
 
+    def test_leaf_partition_objects_tolerates_cycles(self) -> None:
+        table = _sysobject_row("T", 100, None)
+        p1 = _sysobject_row("P1", 101, 100)
+        p2 = _sysobject_row("P2", 102, 101)
+        p1_cycle = _sysobject_row("P1", 101, 102)
+        self_cycle = _sysobject_row("SELF", 103, 103)
+        p3 = _sysobject_row("P3", 104, 100)
+
+        leaves = _leaf_partition_objects_for_table(
+            table_objects=[table, p1, p2, p1_cycle, self_cycle, p3],
+            table=table,
+        )
+
+        self.assertEqual([(item.object_id, item.name) for item in leaves], [(104, "P3")])
+
 
 def _write_dict(path: Path, fieldnames: tuple[str, ...], rows: list[dict[str, str]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as file:
@@ -143,6 +160,26 @@ def _header_page(*, page_no: int, kind: int, storage_id: int) -> bytes:
     page[20:24] = kind.to_bytes(4, "little")
     page[58:62] = storage_id.to_bytes(4, "little")
     return bytes(page)
+
+
+def _sysobject_row(
+    name: str,
+    object_id: int,
+    parent_id: int | None,
+) -> SysObjectRowCandidate:
+    return SysObjectRowCandidate(
+        name=name,
+        object_id=object_id,
+        schema_id=0x09000001,
+        parent_id=parent_id,
+        type_name="SCHOBJ",
+        subtype_name="UTAB",
+        offset=object_id,
+        page_no=0,
+        page_offset=object_id,
+        score=150,
+        source="test",
+    )
 
 
 if __name__ == "__main__":

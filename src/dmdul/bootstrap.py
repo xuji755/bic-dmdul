@@ -881,20 +881,33 @@ def _leaf_partition_objects_for_table(
     for row in table_objects:
         if row.object_id is None or row.parent_id is None:
             continue
+        if row.object_id == row.parent_id:
+            continue
         children_by_parent.setdefault(row.parent_id, []).append(row)
-    leaves: list[SysObjectRowCandidate] = []
-
-    def visit(object_id: int) -> None:
-        children = children_by_parent.get(object_id, [])
-        for child in children:
+    leaves_by_id: dict[int, SysObjectRowCandidate] = {}
+    visited: set[int] = set()
+    visiting: set[int] = set()
+    stack: list[tuple[int, bool]] = [(table.object_id, False)]
+    while stack:
+        object_id, expanded = stack.pop()
+        if expanded:
+            visiting.discard(object_id)
+            visited.add(object_id)
+            continue
+        if object_id in visited or object_id in visiting:
+            continue
+        visiting.add(object_id)
+        stack.append((object_id, True))
+        for child in reversed(children_by_parent.get(object_id, [])):
             assert child.object_id is not None
-            if child.object_id in children_by_parent:
-                visit(child.object_id)
+            child_id = child.object_id
+            if child_id in visiting:
+                continue
+            if child_id in children_by_parent:
+                stack.append((child_id, False))
             else:
-                leaves.append(child)
-
-    visit(table.object_id)
-    return sorted(leaves, key=lambda item: (item.object_id or 0, item.name))
+                leaves_by_id.setdefault(child_id, child)
+    return sorted(leaves_by_id.values(), key=lambda item: (item.object_id or 0, item.name))
 
 
 def _page_refs_from_storage_indexes(storage_indexes: list[Any]) -> str:
