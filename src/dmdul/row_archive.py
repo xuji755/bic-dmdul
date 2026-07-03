@@ -17,6 +17,10 @@ ROW_TAG = b"R"
 LOB_TAG = b"L"
 END_TAG = b"E"
 NONE_I32 = -1
+SQL_STRING_LITERAL_CHUNK_CHARS = 1000
+SQL_BLOCK_TEXT_THRESHOLD_CHARS = 2000
+SQL_BLOCK_TEXT_CHUNK_CHARS = 500
+SQL_BLOCK_BLOB_HEX_CHUNK_CHARS = 1000
 
 
 @dataclass(frozen=True)
@@ -286,7 +290,13 @@ def import_parts_manifest_to_sql(
     output_sql.parent.mkdir(parents=True, exist_ok=True)
     with output_sql.open("w", encoding="utf-8") as output_file:
         if include_create_table:
-            output_file.write(str(manifest["create_sql"]).rstrip().rstrip(";") + ";\n\n")
+            output_file.write(
+                _create_sql_for_target(
+                    str(manifest["create_sql"]),
+                    target_table=target_table,
+                )
+                + ";\n\n"
+            )
         for part_path in manifest["parts"]:
             if manifest["format"] == "row":
                 _part_table, part_rows = _write_row_archive_sql(
@@ -326,8 +336,14 @@ def _write_row_archive_sql(
         reader = RowArchiveReader(input_file)
         target_table = table_name or reader.table.qualified_name
         if include_create_table:
-            output_file.write(reader.create_table_sql.rstrip() + ";\n\n")
-        column_names = ", ".join(column.name for column in reader.table.columns)
+            output_file.write(
+                _create_sql_for_target(
+                    reader.create_table_sql,
+                    target_table=target_table,
+                )
+                + ";\n\n"
+            )
+        column_names = [column.name for column in reader.table.columns]
         for record in reader.records():
             row = ObservedRow(
                 page_offset=record.row_offset,
@@ -339,17 +355,42 @@ def _write_row_archive_sql(
                 reader.table.columns,
                 external_lobs=True,
             )
-            sql_values = [
-                _sql_value(
+            sql_values: list[str] = []
+            block_texts: dict[int, tuple[ColumnMeta, str]] = {}
+            block_blobs: dict[int, bytes] = {}
+            for index, (column, value) in enumerate(zip(reader.table.columns, values)):
+                blob_value = _block_blob_value(
                     column=column,
                     value=value,
                     lob_payload=record.lob_payloads.get(column.name),
                 )
-                for column, value in zip(reader.table.columns, values)
-            ]
-            output_file.write(
-                f"INSERT INTO {target_table} ({column_names}) VALUES "
-                f"({', '.join(sql_values)});\n"
+                if blob_value is not None and len(blob_value.hex()) > SQL_BLOCK_TEXT_THRESHOLD_CHARS:
+                    sql_values.append(_block_var_name(index))
+                    block_blobs[index] = blob_value
+                    continue
+                text_value = _block_text_value(
+                    column=column,
+                    value=value,
+                    lob_payload=record.lob_payloads.get(column.name),
+                )
+                if text_value is not None and len(text_value) > SQL_BLOCK_TEXT_THRESHOLD_CHARS:
+                    sql_values.append(_block_var_name(index))
+                    block_texts[index] = (column, text_value)
+                else:
+                    sql_values.append(
+                        _sql_value(
+                            column=column,
+                            value=value,
+                            lob_payload=record.lob_payloads.get(column.name),
+                        )
+                    )
+            _write_insert(
+                output_file,
+                target_table=target_table,
+                column_names=column_names,
+                sql_values=sql_values,
+                block_texts=block_texts,
+                block_blobs=block_blobs,
             )
             rows += 1
     return target_table, rows
@@ -370,11 +411,17 @@ def _write_dul_text_sql(
     data_delimiter = delimiter or _detect_delimiter(data_lines[0] if data_lines else "")
     rows = 0
     if include_create_table:
-        output_file.write(create_sql.rstrip().rstrip(";") + ";\n\n")
+        output_file.write(
+            _create_sql_for_target(
+                create_sql,
+                target_table=target_table,
+            )
+            + ";\n\n"
+        )
     if data_lines:
         reader = csv.reader(data_lines, delimiter=data_delimiter)
         csv_columns = next(reader, [])
-        column_names = ", ".join(csv_columns)
+        column_names = list(csv_columns)
         column_types = {
             column_name: type_name
             for column_name, type_name in columns
@@ -382,20 +429,183 @@ def _write_dul_text_sql(
         for csv_row in reader:
             if not csv_row:
                 continue
-            values = [
-                _dul_sql_value(
+            values: list[str] = []
+            block_texts: dict[int, tuple[ColumnMeta, str]] = {}
+            block_blobs: dict[int, bytes] = {}
+            for index, (column_name, value) in enumerate(zip(csv_columns, csv_row)):
+                type_name = column_types.get(column_name, "")
+                blob_value = _dul_block_blob_value(
                     value=value,
-                    type_name=column_types.get(column_name, ""),
+                    type_name=type_name,
                     input_dir=input_path.parent,
                 )
-                for column_name, value in zip(csv_columns, csv_row)
-            ]
-            output_file.write(
-                f"INSERT INTO {target_table} ({column_names}) VALUES "
-                f"({', '.join(values)});\n"
+                if blob_value is not None and len(blob_value.hex()) > SQL_BLOCK_TEXT_THRESHOLD_CHARS:
+                    values.append(_block_var_name(index))
+                    block_blobs[index] = blob_value
+                    continue
+                text_value = _dul_block_text_value(
+                    value=value,
+                    type_name=type_name,
+                    input_dir=input_path.parent,
+                )
+                if text_value is not None and len(text_value) > SQL_BLOCK_TEXT_THRESHOLD_CHARS:
+                    values.append(_block_var_name(index))
+                    block_texts[index] = (
+                        ColumnMeta(name=column_name, type_name=_normalized_type_name(type_name)),
+                        text_value,
+                    )
+                else:
+                    values.append(
+                        _dul_sql_value(
+                            value=value,
+                            type_name=type_name,
+                            input_dir=input_path.parent,
+                        )
+                    )
+            _write_insert(
+                output_file,
+                target_table=target_table,
+                column_names=column_names,
+                sql_values=values,
+                block_texts=block_texts,
+                block_blobs=block_blobs,
             )
             rows += 1
     return target_table, rows
+
+
+def _write_insert(
+    output_file: TextIO,
+    *,
+    target_table: str,
+    column_names: list[str],
+    sql_values: list[str],
+    block_texts: dict[int, tuple[ColumnMeta, str]],
+    block_blobs: dict[int, bytes],
+) -> None:
+    column_list = ", ".join(column_names)
+    value_list = ", ".join(sql_values)
+    if not block_texts and not block_blobs:
+        output_file.write(f"INSERT INTO {target_table} ({column_list}) VALUES ({value_list});\n")
+        return
+
+    output_file.write("DECLARE\n")
+    for index, (column, _text) in block_texts.items():
+        output_file.write(f"  {_block_var_name(index)} {_block_var_type(column)};\n")
+    for index in block_blobs:
+        output_file.write(f"  {_block_var_name(index)} BLOB;\n")
+    output_file.write("BEGIN\n")
+    for index, (_column, text) in block_texts.items():
+        variable = _block_var_name(index)
+        chunks = [
+            text[start : start + SQL_BLOCK_TEXT_CHUNK_CHARS]
+            for start in range(0, len(text), SQL_BLOCK_TEXT_CHUNK_CHARS)
+        ]
+        first, *rest = chunks
+        output_file.write(f"  {variable} := {_single_sql_string_literal(first)};\n")
+        for chunk in rest:
+            output_file.write(f"  {variable} := {variable} || {_single_sql_string_literal(chunk)};\n")
+    for index, payload in block_blobs.items():
+        variable = _block_var_name(index)
+        output_file.write(f"  DBMS_LOB.CREATETEMPORARY({variable}, TRUE);\n")
+        hex_value = payload.hex()
+        for start in range(0, len(hex_value), SQL_BLOCK_BLOB_HEX_CHUNK_CHARS):
+            chunk = hex_value[start : start + SQL_BLOCK_BLOB_HEX_CHUNK_CHARS]
+            output_file.write(
+                f"  DBMS_LOB.WRITEAPPEND({variable}, {len(chunk) // 2}, HEXTORAW('{chunk}'));\n"
+            )
+    output_file.write(f"  INSERT INTO {target_table} ({column_list}) VALUES ({value_list});\n")
+    for index in block_blobs:
+        output_file.write(f"  DBMS_LOB.FREETEMPORARY({_block_var_name(index)});\n")
+    output_file.write("END;\n/\n")
+
+
+def _block_var_name(index: int) -> str:
+    return f"V_C{index + 1}"
+
+
+def _block_var_type(column: ColumnMeta) -> str:
+    return "VARCHAR(32767)"
+
+
+def _block_text_value(
+    *,
+    column: ColumnMeta,
+    value: object,
+    lob_payload: bytes | None,
+) -> str | None:
+    if value is None:
+        return None
+    type_name = column.type_name.upper()
+    if type_name in {"BYTE", "BINARY", "VARBINARY", "BLOB"} or _is_numeric_type(type_name):
+        return None
+    if isinstance(value, LobValue):
+        if lob_payload is not None:
+            return lob_payload.decode("utf-8")
+        if value.inline_payload is not None:
+            return value.text or ""
+        return None
+    return str(value)
+
+
+def _block_blob_value(
+    *,
+    column: ColumnMeta,
+    value: object,
+    lob_payload: bytes | None,
+) -> bytes | None:
+    if column.type_name.upper() != "BLOB" or value is None:
+        return None
+    if isinstance(value, LobValue):
+        if lob_payload is not None:
+            return lob_payload
+        return value.inline_payload
+    return None
+
+
+def _dul_block_text_value(*, value: str, type_name: str, input_dir: Path) -> str | None:
+    normalized_type = _normalized_type_name(type_name)
+    if value == "" or normalized_type in {"BYTE", "BINARY", "VARBINARY", "BLOB"} or _is_numeric_type(normalized_type):
+        return None
+    if value.startswith("@LOB:"):
+        payload_path = input_dir / value[len("@LOB:") :]
+        if payload_path.suffix.lower() in {".blob", ".hex"}:
+            return None
+        return payload_path.read_text(encoding="utf-8")
+    return value
+
+
+def _dul_block_blob_value(*, value: str, type_name: str, input_dir: Path) -> bytes | None:
+    normalized_type = _normalized_type_name(type_name)
+    if normalized_type != "BLOB" or value == "":
+        return None
+    if value.startswith("@LOB:"):
+        return (input_dir / value[len("@LOB:") :]).read_bytes()
+    try:
+        return bytes.fromhex(value)
+    except ValueError:
+        return None
+
+
+def _normalized_type_name(type_name: str) -> str:
+    return type_name.upper().split("(", 1)[0].strip()
+
+
+def _is_numeric_type(type_name: str) -> bool:
+    return type_name in {
+        "TINYINT",
+        "SMALLINT",
+        "INT",
+        "INTEGER",
+        "BIGINT",
+        "REAL",
+        "FLOAT",
+        "DOUBLE",
+        "NUMBER",
+        "NUMERIC",
+        "DEC",
+        "DECIMAL",
+    }
 
 
 def _sql_value(
@@ -464,6 +674,16 @@ def _dul_sql_value(*, value: str, type_name: str, input_dir: Path) -> str:
     }:
         return value
     return _sql_string_literal(value)
+
+
+def _create_sql_for_target(create_sql: str, *, target_table: str) -> str:
+    sql = create_sql.strip().rstrip(";")
+    return re.sub(
+        r"(?is)\A(\s*CREATE\s+TABLE\s+)([^\s(]+)",
+        lambda match: match.group(1) + target_table,
+        sql,
+        count=1,
+    )
 
 
 def _read_dul_sections(file: TextIO) -> tuple[str, list[str]]:
@@ -671,4 +891,14 @@ def _safe_lob_name(value: str) -> str:
 
 
 def _sql_string_literal(value: str) -> str:
+    if len(value) <= SQL_STRING_LITERAL_CHUNK_CHARS:
+        return _single_sql_string_literal(value)
+    chunks = [
+        _single_sql_string_literal(value[index : index + SQL_STRING_LITERAL_CHUNK_CHARS])
+        for index in range(0, len(value), SQL_STRING_LITERAL_CHUNK_CHARS)
+    ]
+    return "(" + " || ".join(chunks) + ")"
+
+
+def _single_sql_string_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
