@@ -156,6 +156,8 @@ def _decode_fixed_value(data: bytes, offset: int, column: ColumnMeta) -> tuple[o
         return _decode_timestamp_with_timezone(raw), length
     if type_name == "BYTE":
         return raw.hex(), length
+    if type_name == "CHAR":
+        return _decode_character_bytes(raw).rstrip(" "), length
     if type_name == "ROWID":
         return _decode_rowid(raw), length
     if type_name == "INTERVAL DAY TO SECOND":
@@ -255,6 +257,8 @@ def _fixed_width(column: ColumnMeta) -> int | None:
         return 10
     if type_name == "BYTE":
         return 1
+    if type_name == "CHAR" and column.length is not None and 0 < column.length <= 2:
+        return column.length
     if type_name == "ROWID":
         return 12
     if type_name == "INTERVAL DAY TO SECOND":

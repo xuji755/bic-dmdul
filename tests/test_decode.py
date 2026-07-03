@@ -312,6 +312,50 @@ class ObservedRowDecodeTest(unittest.TestCase):
 
         self.assertEqual(values, [7, "1", "2026-06-30", "MARKER"])
 
+    def test_decode_short_char_in_fixed_area_before_decimal_variables(self) -> None:
+        data = bytes.fromhex(
+            "007e00000003000000030000005f870000484686c44c5831234983c00e55"
+            "89735837645a4d584254934967526d375248595967757a584261575a306f"
+            "9147576e4a506542644238375835677837659250454a34586b6451316d57"
+            "43696e75306c378937343037313131313118000000000000d52e000037"
+            "006b08ef030000"
+        )
+        row = ObservedRow(page_offset=0x10B1, data=data, header=ObservedRowHeader.from_bytes(data))
+
+        values = decode_observed_row_values(
+            row,
+            (
+                ColumnMeta(name="D_W_ID", type_name="INTEGER", length=4, nullable=False),
+                ColumnMeta(name="D_ID", type_name="INTEGER", length=4, nullable=False),
+                ColumnMeta(name="D_YTD", type_name="DECIMAL", length=12, scale=2),
+                ColumnMeta(name="D_TAX", type_name="DECIMAL", length=4, scale=4),
+                ColumnMeta(name="D_NEXT_O_ID", type_name="INTEGER", length=4),
+                ColumnMeta(name="D_NAME", type_name="VARCHAR", length=10),
+                ColumnMeta(name="D_STREET_1", type_name="VARCHAR", length=20),
+                ColumnMeta(name="D_STREET_2", type_name="VARCHAR", length=20),
+                ColumnMeta(name="D_CITY", type_name="VARCHAR", length=20),
+                ColumnMeta(name="D_STATE", type_name="CHAR", length=2),
+                ColumnMeta(name="D_ZIP", type_name="CHAR", length=9),
+            ),
+        )
+
+        self.assertEqual(
+            values,
+            [
+                3,
+                3,
+                "75874834.72",
+                "0.1384",
+                34655,
+                "sX7dZMXBT",
+                "IgRm7RHYYguzXBaWZ0o",
+                "GWnJPeBdB87X5gx7e",
+                "PEJ4XkdQ1mWCinu0l7",
+                "HF",
+                "740711111",
+            ],
+        )
+
     def test_decode_null_bitmap_in_storage_column_order(self) -> None:
         data = (
             bytes.fromhex("00 2f 3c 00")
