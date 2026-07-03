@@ -61,6 +61,7 @@ DICT_FIELDNAMES = {
         "pages",
         "group_id",
         "file_no",
+        "tablespace_name",
         "page_type_raw",
         "page0_kind_raw",
         "page0_kind_label",
@@ -272,6 +273,7 @@ def _file_dict_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
     for ordinal, item in enumerate(summary.get("files", ()), start=1):
         if not isinstance(item, dict):
             continue
+        control_file_entries = _matched_control_entries(summary, item)
         rows.append(
             {
                 "dict_type": "file",
@@ -283,11 +285,14 @@ def _file_dict_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
                 "pages": item.get("pages"),
                 "group_id": item.get("group_id"),
                 "file_no": item.get("file_no_hint"),
+                "tablespace_name": _tablespace_name_from_control_entries(
+                    control_file_entries
+                ),
                 "page_type_raw": item.get("page_type_raw"),
                 "page0_kind_raw": item.get("page0_kind_raw"),
                 "page0_kind_label": item.get("page0_kind_label"),
                 "system_candidate": item.get("system_candidate"),
-                "control_file_entries": _matched_control_entries(summary, item),
+                "control_file_entries": control_file_entries,
             }
         )
     return rows
@@ -1166,9 +1171,20 @@ def _matched_control_entries(
                 "text": entry.get("text"),
                 "normalized_path": entry.get("normalized_path"),
                 "basename": entry.get("basename"),
+                "tablespace_name": entry.get("tablespace_name"),
+                "tablespace_offset": entry.get("tablespace_offset"),
             }
         )
     return matches
+
+
+def _tablespace_name_from_control_entries(entries: list[dict[str, Any]]) -> str:
+    names = {
+        str(entry.get("tablespace_name", "")).strip()
+        for entry in entries
+        if str(entry.get("tablespace_name", "")).strip()
+    }
+    return sorted(names)[0] if len(names) == 1 else ""
 
 
 def _bootstrap_diagnostics(

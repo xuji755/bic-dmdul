@@ -7,6 +7,9 @@ from typing import Any
 
 
 _DBF_HINT_RE = re.compile(r"[A-Za-z0-9_./\\:-]*\.DBF", re.IGNORECASE)
+_CONTROL_ATTRIBUTE_STRINGS = {
+    "NORMAL",
+}
 
 
 def summarize_control_file(
@@ -49,6 +52,10 @@ def summarize_control_file(
             if dbf_hint_limit is not None and len(dbf_hints) >= dbf_hint_limit:
                 break
     sampled_strings = string_records[:sample_limit]
+    tablespace_file_hints = _control_file_tablespace_file_hints(
+        string_records=string_records,
+        dbf_occurrences=dbf_occurrences,
+    )
 
     return {
         "path": str(path),
@@ -57,6 +64,7 @@ def summarize_control_file(
         "dbf_path_hints": dbf_hints,
         "dbf_path_hint_records": dbf_hint_records,
         "dbf_path_occurrences": dbf_occurrences,
+        "tablespace_file_hints": tablespace_file_hints,
         "printable_string_samples": [str(record["text"]) for record in sampled_strings],
         "printable_string_records": sampled_strings,
     }
@@ -123,6 +131,73 @@ def _dbf_path_occurrence(
         "length": len(text),
         "string_offset": string_offset,
     }
+
+
+def _control_file_tablespace_file_hints(
+    *,
+    string_records: list[dict[str, Any]],
+    dbf_occurrences: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Associate control-file DBF path records with preceding TS name records.
+
+    DM stores the authoritative data-file to tablespace relationship in the
+    control file.  This intentionally does not derive a tablespace name from the
+    DBF filename; it only links strings that are physically present in dm.ctl.
+    """
+
+    if not dbf_occurrences:
+        return []
+
+    candidates = [
+        record for record in string_records if _is_tablespace_name_candidate(record)
+    ]
+    if not candidates:
+        return []
+
+    hints: list[dict[str, Any]] = []
+    for occurrence in dbf_occurrences:
+        file_offset = int(occurrence.get("offset", -1))
+        if file_offset < 0:
+            continue
+        previous = [
+            record
+            for record in candidates
+            if int(record.get("offset", -1)) < file_offset
+        ]
+        if not previous:
+            continue
+        candidate = previous[-1]
+        ts_offset = int(candidate["offset"])
+        distance = file_offset - ts_offset
+        if distance > 2048:
+            continue
+        tablespace_name = str(candidate["text"])
+        hints.append(
+            {
+                "tablespace_name": tablespace_name,
+                "tablespace_offset": ts_offset,
+                "dbf_ordinal": occurrence.get("ordinal"),
+                "dbf_offset": occurrence.get("offset"),
+                "dbf_text": occurrence.get("text"),
+                "normalized_path": occurrence.get("normalized_path"),
+                "basename": occurrence.get("basename"),
+                "distance": distance,
+            }
+        )
+    return hints
+
+
+def _is_tablespace_name_candidate(record: dict[str, Any]) -> bool:
+    text = str(record.get("text", ""))
+    if not (1 <= len(text) <= 128):
+        return False
+    if any(char in text for char in "/\\.=:- "):
+        return False
+    if text.upper() != text:
+        return False
+    if text in _CONTROL_ATTRIBUTE_STRINGS:
+        return False
+    return re.fullmatch(r"[A-Z][A-Z0-9_$#]*", text) is not None
 
 
 def _changed_ranges(

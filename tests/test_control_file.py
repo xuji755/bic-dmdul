@@ -63,6 +63,42 @@ class ControlFileTest(unittest.TestCase):
             [0, 1, 2],
         )
 
+    def test_summarize_control_file_maps_tablespace_names_to_dbf_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "dm.ctl"
+            path.write_bytes(
+                b"".join(
+                    [
+                        b"\x00DATAFILE=/dmdata/data/DAMENG/NO_TS.DBF\x00",
+                        b"\x00SYSTEM\x00",
+                        b"\x00" * 24,
+                        b"/dmdata/data/DAMENG/SYSTEM.DBF\x00",
+                        b"\x00DMDUL_TS\x00",
+                        b"\x00NORMAL\x00",
+                        b"\x00" * 32,
+                        b"/dmdata/data/DAMENG/DMDUL_TS01.DBF\x00",
+                        b"\x00" * 32,
+                        b"/dmdata/data/DAMENG/DMDUL_TS02.DBF\x00",
+                    ]
+                )
+            )
+
+            summary = summarize_control_file(path, sample_limit=8)
+
+        by_basename = {
+            item["basename"]: item for item in summary["tablespace_file_hints"]
+        }
+        self.assertEqual(by_basename["system.dbf"]["tablespace_name"], "SYSTEM")
+        self.assertEqual(
+            by_basename["dmdul_ts01.dbf"]["tablespace_name"],
+            "DMDUL_TS",
+        )
+        self.assertEqual(
+            by_basename["dmdul_ts02.dbf"]["tablespace_name"],
+            "DMDUL_TS",
+        )
+        self.assertNotIn("no_ts.dbf", by_basename)
+
     def test_summarize_control_file_sample_limit_only_caps_printable_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "dm.ctl"

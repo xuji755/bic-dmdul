@@ -238,6 +238,7 @@ def _control_file_data_file_manifest(
             "dbf_path_hint_records",
             [],
         )
+        tablespace_by_ordinal = _control_file_tablespace_by_ordinal(control_file)
         for record in records:
             if not isinstance(record, dict):
                 continue
@@ -245,15 +246,19 @@ def _control_file_data_file_manifest(
             basename = str(
                 record.get("basename") or Path(text.replace("\\", "/")).name.lower()
             )
+            tablespace_hint = tablespace_by_ordinal.get(record.get("ordinal"), {})
             matches = by_basename.get(basename, [])
             entries.append(
                 {
                     "control_file": control_file.get("path"),
+                    "source_control_file": control_file.get("path"),
                     "control_file_ordinal": record.get("ordinal"),
                     "text": text,
                     "normalized_path": record.get("normalized_path"),
                     "basename": basename,
                     "offset": record.get("offset"),
+                    "tablespace_name": tablespace_hint.get("tablespace_name", ""),
+                    "tablespace_offset": tablespace_hint.get("tablespace_offset"),
                     "matched_paths": [str(path) for path in matches],
                     "matched": bool(matches),
                     "observed_files": [
@@ -272,6 +277,20 @@ def _control_file_data_file_manifest(
             item for item in entries if len(item["matched_paths"]) > 1
         ],
     }
+
+
+def _control_file_tablespace_by_ordinal(
+    control_file: dict[str, Any],
+) -> dict[Any, dict[str, Any]]:
+    hints = control_file.get("tablespace_file_hints")
+    if not isinstance(hints, list):
+        return {}
+    by_ordinal: dict[Any, dict[str, Any]] = {}
+    for hint in hints:
+        if not isinstance(hint, dict):
+            continue
+        by_ordinal[hint.get("dbf_ordinal")] = hint
+    return by_ordinal
 
 
 def _control_file_dbf_hints(

@@ -500,6 +500,68 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
         self.assertEqual(scan_progress[0]["header_hits"], 2)
         self.assertEqual(scan_progress[0]["pages_planned"], 1)
 
+    def test_orphan_storage_id_scan_recovers_old_pages_when_current_root_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "TRUNC_REC.DBF"
+            old_storage_id = 33596006
+            pages = [_page(page_no=index, kind=0) for index in range(8)]
+            pages[2] = _page(page_no=2, kind=0x14)
+            pages[2][0x3A:0x3E] = old_storage_id.to_bytes(4, "little")
+            pages[2][0x62:0x73] = (
+                bytes.fromhex("00 11 00")
+                + (42).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x11 - 2 - 1 - 4)
+            )
+            pages[6] = _page(page_no=6, kind=0x15)
+            pages[6][0x3A:0x3E] = old_storage_id.to_bytes(4, "little")
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "recover.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_TRUNC_REC_T",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 6,
+                                "scan_pages": 1,
+                            },
+                            "columns": [{"name": "ID", "type_name": "INT"}],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_TRUNC_REC_T",
+                output=output_path,
+                orphan_scan_storage_id=old_storage_id,
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+
+        self.assertTrue(report.ok)
+        self.assertEqual(report.mode, "orphan-storage-id-global-scan")
+        self.assertEqual(report.rows_written, 1)
+        self.assertEqual(report.scanned_pages, (2,))
+        self.assertEqual(rows, [["ID"], ["42"]])
+        self.assertIn(
+            "page-plan-orphan-storage-id-scan",
+            {item["code"] for item in report.diagnostics},
+        )
+
     def test_plans_noncontiguous_leaf_pages_from_btree_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

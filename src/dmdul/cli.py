@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import mmap
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -40,7 +42,7 @@ from .page_catalog import catalog_data_file_pages
 from .preflight import evaluate_database_summary_preflight
 from .resolver import OfflineResolveError, resolve_offline_table_metadata
 from .row_archive import import_data_to_sql
-from .row import iter_observed_rows, scan_observed_row_chain
+from .row import iter_observed_rows, iter_observed_rows_by_slots, scan_observed_row_chain
 from .storage import DataFile
 from .sysdict import (
     dump_sysobject_rows,
@@ -621,6 +623,39 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    recovery_storage_ids: tuple[int, ...] = ()
+    if args.orphan_scan_storage_id is not None:
+        recovery_storage_ids = (args.orphan_scan_storage_id,)
+    if args.truncate and not recovery_storage_ids and len(tables) == 1:
+        recovery_storage_ids = _truncate_recovery_storage_ids_from_tab_dict(
+            dict_dir=dict_dir,
+            table=tables[0],
+        )
+        if not recovery_storage_ids:
+            print(
+                "dmdul: --truncate could not determine storage_index_id/storage_index_ids from tab.dict; use --orphan-scan-storage-id explicitly",
+                file=sys.stderr,
+            )
+            return 2
+    if recovery_storage_ids or args.truncate:
+        if len(tables) != 1:
+            print(
+                "dmdul: truncate/orphan recovery requires exactly one matched table",
+                file=sys.stderr,
+            )
+            return 2
+        if partition_names:
+            print(
+                "dmdul: --orphan-scan-storage-id cannot be combined with --partition",
+                file=sys.stderr,
+            )
+            return 2
+        if max(1, args.partition_parallel) > 1:
+            print(
+                "dmdul: --orphan-scan-storage-id cannot be combined with --partition-parallel",
+                file=sys.stderr,
+            )
+            return 2
     output_dir.mkdir(parents=True, exist_ok=True)
     progress = None if args.json else _dump_data_progress_printer()
     if progress is not None:
@@ -652,7 +687,10 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
                 **(
                     {"part_workers": max(1, args.partition_parallel)}
                     if max(1, args.partition_parallel) > 1
-                    else {"include_sql_header": True}
+                    else {
+                        "include_sql_header": True,
+                        "orphan_scan_storage_ids": recovery_storage_ids,
+                    }
                 ),
                 progress=progress,
             ): table
@@ -819,6 +857,236 @@ def _print_table_failure_details(report: dict[str, object]) -> None:
         )
     for error in report.get("decode_errors", ()) or ():
         print(f"  decode_error={error}", file=sys.stderr)
+
+
+def _truncate_recovery_storage_ids_from_tab_dict(
+    *,
+    dict_dir: Path,
+    table: object,
+) -> tuple[int, ...]:
+    tab_path = dict_dir / "tab.dict"
+    if not tab_path.exists():
+        return ()
+    table_owner = _normalize_identifier(getattr(table, "owner", ""))
+    table_name = _normalize_identifier(getattr(table, "name", ""))
+    table_qualified = _normalize_identifier(getattr(table, "qualified_name", ""))
+    with tab_path.open("r", encoding="utf-8", newline="") as file:
+        for row in csv.DictReader(file):
+            owner = _normalize_identifier(row.get("owner") or "")
+            name = _normalize_identifier(row.get("name") or "")
+            qualified = _normalize_identifier(row.get("qualified_name") or "")
+            if not (
+                (owner == table_owner and name == table_name)
+                or qualified == table_qualified
+            ):
+                continue
+            values = _storage_id_values_from_tab_row(row)
+            if not values:
+                return ()
+            return values
+    return ()
+
+
+def _storage_id_values_from_tab_row(row: dict[str, str]) -> tuple[int, ...]:
+    raw_values = []
+    storage_index_id = (row.get("storage_index_id") or "").strip()
+    if storage_index_id:
+        raw_values.append(storage_index_id)
+    storage_index_ids = (row.get("storage_index_ids") or "").strip()
+    if storage_index_ids:
+        raw_values.extend(item.strip() for item in storage_index_ids.split(";") if item.strip())
+    result: list[int] = []
+    seen: set[int] = set()
+    for value in raw_values:
+        try:
+            storage_id = int(value)
+        except ValueError as exc:
+            table_name = row.get("qualified_name") or row.get("name") or "<unknown>"
+            raise ValueError(f"invalid storage id for {table_name}: {value}") from exc
+        if storage_id in seen:
+            continue
+        seen.add(storage_id)
+        result.append(storage_id)
+    return tuple(result)
+
+
+def _cmd_scan_orphan_storages(args: argparse.Namespace) -> int:
+    dict_dir = Path(args.dict_dir)
+    tablespaces = _tablespace_filters(args.tablespace)
+    if tablespaces and not _file_dict_has_tablespace_mapping(dict_dir / "file.dict"):
+        print(
+            "dmdul: --tablespace requires tablespace_name/tablespace/group_name in file.dict; "
+            "use --group-id or refresh dictionaries with tablespace metadata",
+            file=sys.stderr,
+        )
+        return 2
+    known_storage_ids = _known_storage_ids_from_tab_dict(dict_dir / "tab.dict")
+    candidates = _scan_orphan_storage_candidates(
+        dict_dir=dict_dir,
+        known_storage_ids=known_storage_ids,
+        group_id=args.group_id,
+        tablespaces=tablespaces,
+        min_pages=max(1, args.min_pages),
+        sample_rows=max(0, args.sample_rows),
+    )
+    payload = {
+        "mode": "dm-scan-orphan-storages",
+        "dict_dir": str(dict_dir),
+        "group_id": args.group_id,
+        "tablespaces": list(tablespaces),
+        "known_storage_ids": len(known_storage_ids),
+        "candidates": candidates,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"known_storage_ids={payload['known_storage_ids']}")
+        for item in candidates:
+            print(
+                f"storage_id={item['storage_id']} group_id={item['group_id']} "
+                f"file_no={item['file_no']} pages={item['pages']} "
+                f"first_pages={','.join(str(p) for p in item['first_pages'])}"
+            )
+            for sample in item.get("row_samples", ()):
+                print(
+                    f"  sample page={sample['page_no']} offset={sample['offset']} "
+                    f"len={sample['len']} ascii={sample['ascii_hint']}"
+                )
+    return 0
+
+
+def _known_storage_ids_from_tab_dict(path: Path) -> set[int]:
+    known: set[int] = set()
+    if not path.exists():
+        return known
+    with path.open("r", encoding="utf-8", newline="") as file:
+        for row in csv.DictReader(file):
+            known.update(_storage_id_values_from_tab_row(row))
+    return known
+
+
+def _file_dict_has_tablespace_mapping(path: Path) -> bool:
+    if not path.exists():
+        return False
+    with path.open("r", encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+        return any(field in (reader.fieldnames or ()) for field in ("tablespace_name", "tablespace", "group_name"))
+
+
+def _scan_orphan_storage_candidates(
+    *,
+    dict_dir: Path,
+    known_storage_ids: set[int],
+    group_id: int | None,
+    tablespaces: tuple[str, ...],
+    min_pages: int,
+    sample_rows: int,
+) -> list[dict[str, object]]:
+    by_storage: dict[tuple[int, int, int], dict[str, object]] = {}
+    file_dict = dict_dir / "file.dict"
+    if not file_dict.exists():
+        return []
+    with file_dict.open("r", encoding="utf-8", newline="") as file:
+        for row in csv.DictReader(file):
+            row_group_id = int(row.get("group_id") or 0)
+            if group_id is not None and row_group_id != group_id:
+                continue
+            if tablespaces and _normalize_tablespace_name(_file_row_tablespace_name(row)) not in tablespaces:
+                continue
+            file_no = int(row.get("file_no") or 0)
+            path = Path(row["path"])
+            page_size = int(row.get("page_size") or 8192)
+            if not path.exists():
+                continue
+            pages_total = path.stat().st_size // page_size
+            with path.open("rb") as data_file:
+                with mmap.mmap(data_file.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    for page_no in range(pages_total):
+                        page_start = page_no * page_size
+                        if int.from_bytes(mm[page_start + 0x14 : page_start + 0x18], "little") != 0x14:
+                            continue
+                        header_file_no = int.from_bytes(mm[page_start : page_start + 4], "little") >> 16
+                        header_page_no = int.from_bytes(mm[page_start + 4 : page_start + 8], "little")
+                        if header_file_no != file_no or header_page_no != page_no:
+                            continue
+                        storage_id = int.from_bytes(mm[page_start + 0x3A : page_start + 0x3E], "little")
+                        if storage_id == 0 or storage_id in known_storage_ids:
+                            continue
+                        key = (row_group_id, file_no, storage_id)
+                        item = by_storage.setdefault(
+                            key,
+                            {
+                                "storage_id": storage_id,
+                                "group_id": row_group_id,
+                                "file_no": file_no,
+                                "path": str(path),
+                                "pages": 0,
+                                "first_pages": [],
+                                "row_samples": [],
+                            },
+                        )
+                        item["pages"] = int(item["pages"]) + 1
+                        first_pages = item["first_pages"]
+                        assert isinstance(first_pages, list)
+                        if len(first_pages) < 8:
+                            first_pages.append(page_no)
+                        row_samples = item["row_samples"]
+                        assert isinstance(row_samples, list)
+                        if len(row_samples) < sample_rows:
+                            page = mm[page_start : page_start + page_size]
+                            rows = iter_observed_rows_by_slots(page) or [
+                                row for row in scan_observed_row_chain(page) if not row.is_deleted
+                            ]
+                            for observed_row in rows:
+                                raw = observed_row.data[:96]
+                                row_samples.append(
+                                    {
+                                        "page_no": page_no,
+                                        "offset": observed_row.page_offset,
+                                        "deleted": observed_row.is_deleted,
+                                        "len": observed_row.length,
+                                        "raw_hex": raw.hex(),
+                                        "ascii_hint": _ascii_hint(raw),
+                                    }
+                                )
+                                if len(row_samples) >= sample_rows:
+                                    break
+    candidates = [
+        item
+        for item in by_storage.values()
+        if int(item["pages"]) >= min_pages
+    ]
+    candidates.sort(key=lambda item: (-int(item["pages"]), int(item["storage_id"])))
+    return candidates
+
+
+def _tablespace_filters(values: list[str] | None) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or ():
+        for item in value.split(","):
+            normalized = _normalize_tablespace_name(item)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+    return tuple(result)
+
+
+def _file_row_tablespace_name(row: dict[str, str]) -> str:
+    for key in ("tablespace_name", "tablespace", "group_name"):
+        value = (row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _normalize_tablespace_name(value: str) -> str:
+    return value.strip().strip('"').casefold()
+
+
+def _ascii_hint(raw: bytes) -> str:
+    return "".join(chr(byte) if 32 <= byte < 127 else "." for byte in raw)
 
 
 
@@ -1599,6 +1867,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="workers inside one table; when >1 writes split part files under a parts subdirectory",
     )
+    dump_data.add_argument(
+        "--orphan-scan-storage-id",
+        type=int,
+        help="recovery mode: scan same-group data files for BTREE data pages with this old/orphan storage id, for truncate/drop recovery only",
+    )
+    dump_data.add_argument(
+        "--truncate",
+        action="store_true",
+        help="truncate recovery mode: automatically scan old/orphan storage ids from tab.dict storage_index_id/storage_index_ids",
+    )
     dump_data.add_argument("--delimiter", choices=["|", "~"])
     dump_data.add_argument(
         "--output-format",
@@ -1617,6 +1895,22 @@ def build_parser() -> argparse.ArgumentParser:
     dump_data.add_argument("--lob-hash", choices=["sha256"], default="sha256")
     dump_data.add_argument("--json", action="store_true")
     dump_data.set_defaults(func=_cmd_dump_data)
+
+    scan_orphan = subparsers.add_parser(
+        "scan-orphan-storages",
+        help="scan data files for BTREE storage ids not referenced by current tab.dict",
+    )
+    scan_orphan.add_argument("--dict-dir", required=True)
+    scan_orphan.add_argument("--group-id", type=int)
+    scan_orphan.add_argument(
+        "--tablespace",
+        action="append",
+        help="tablespace name to scan; repeatable or comma-separated. Defaults to all data files when omitted",
+    )
+    scan_orphan.add_argument("--min-pages", type=int, default=1)
+    scan_orphan.add_argument("--sample-rows", type=int, default=3)
+    scan_orphan.add_argument("--json", action="store_true")
+    scan_orphan.set_defaults(func=_cmd_scan_orphan_storages)
 
     extract_dicts = subparsers.add_parser(
         "extract-dicts",

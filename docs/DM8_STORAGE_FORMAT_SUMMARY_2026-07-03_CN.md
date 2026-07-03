@@ -36,6 +36,16 @@
 
 文件前若干页用于文件头、空间管理和控制结构。新建业务表空间中普通对象通常从页 16 之后开始分配。
 
+控制文件 `dm.ctl` 中保存数据文件到表空间的关系。当前测试库中可从控制文件字符串结构观察到：
+
+- 表空间名字符串在同一控制记录中先出现；
+- 部分记录中间有 `NORMAL` 这类属性字符串；
+- 随后出现一个或多个 DBF 路径；
+- 多文件表空间如 `MAIN` 对应 `MAIN.DBF/main2.dbf/main3.dbf`；
+- `DMDUL_TS01.DBF` 的控制文件映射为表空间 `DMDUL_TS`，不应从文件名推断。
+
+因此 `file.dict.tablespace_name` 应来自控制文件解析。`scan-orphan-storages --tablespace` 使用这个字段过滤数据文件；如果旧 dict 没有该字段，应重新 bootstrap 或退回使用 `--group-id`。
+
 ## 3. 字典与段定位
 
 核心字典表：
@@ -153,6 +163,195 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
 6. 对多 extent 表，不假设 extent 连续；按 BTREE leaf 链或 storage-id 页计划处理。
 
 已验证 `DMDUL_EXT2` 超过 1 个 extent，25,000 行严格导出成功。`DBA_EXTENTS` 在当前实例对该段只返回一行，不能作为完整 leaf 页计划依赖。
+
+### 5.1 TRUNCATE 后表数据残留与恢复特征
+
+实验对象：
+
+```text
+表名:       SYSDBA.DMDUL_TRUNC_REC_T
+表空间:     DMDUL_TS
+行数:       22000
+列:         ID INT, K INT, C2 CHAR(2), AMT DECIMAL(12,2), V VARCHAR(64), PAD VARCHAR(400)
+object_id:  34177
+storage_id: 33596006
+group/file: 6/0
+root page:  1712
+数据文件:    /dmdata/data/DAMENG/DMDUL_TS01.DBF
+```
+
+TRUNCATE 前在线字典和离线字典表现：
+
+| 项 | 值 |
+| --- | --- |
+| 在线行数 | `22000` |
+| `DBA_SEGMENTS.HEADER_FILE` | `0` |
+| `DBA_SEGMENTS.HEADER_BLOCK` | `1712` |
+| `DBA_SEGMENTS.BYTES` | `8781824` |
+| `tab.dict.storage_index_id` | `33596006` |
+| `tab.dict.root_file/root_page` | `0/1712` |
+| 原数据页范围 | 主要为 `1904..2967`，共 `1048` 个 `0x14` 数据页 |
+
+TRUNCATE 后在线字典和离线字典表现：
+
+| 项 | 值 |
+| --- | --- |
+| 在线行数 | `0` |
+| 表对象 | `SYSOBJECTS` 中仍存在 |
+| 列定义 | `SYSCOLUMNS` 中仍存在 |
+| `DBA_SEGMENTS.HEADER_FILE` | 仍为 `0` |
+| `DBA_SEGMENTS.HEADER_BLOCK` | 仍为 `1712` |
+| `DBA_SEGMENTS.BYTES` | 缩小为 `131072` |
+| `tab.dict.storage_index_id` | 仍为 `33596006` |
+| `tab.dict.root_file/root_page` | 仍为 `0/1712` |
+| 正常 `dump-data` | 从当前 root/segment 入口导出 `0` 行 |
+
+关键 DBF 页特征：
+
+- TRUNCATE 没有立即清空旧数据页内容。
+- 旧数据页仍保持 `page_kind_raw=0x14`。
+- 旧数据页页头 `storage_id_candidate` 仍为原 storage id：`33596006`。
+- 旧页内行结构、slot、字段值仍可按原列定义正常解码。
+- 实验中 TRUNCATE 后对旧页再次扫描：
+  - `pages_checked=1048`
+  - `pages_still_data_kind=1048`
+  - `pages_same_storage_id=1048`
+  - `good_rows=22000`
+  - `min_id=1`
+  - `max_id=22000`
+- 样例页 `1904` 中仍能解码出 `ID=21, K=21, C2='TR', AMT=26.25, V='TRUNC_21'` 等完整字段。
+
+恢复结论：
+
+- 如果 TRUNCATE 后没有新的对象或 DML 覆盖这些旧页，数据具备恢复可能。
+- 恢复不能依赖当前 segment root 的正常 leaf 链，因为当前字典入口已经代表“截断后”的空段状态。
+- 可行策略是：先从历史记录、旧 `tab.dict`、操作前证据、备份字典、日志或人工记录中取得旧 storage id，再扫描同 group 的数据文件页头，找出仍带该 storage id 且 `page_kind_raw=0x14` 的数据页。普通表使用 `storage_index_id`；分区表使用所有 leaf 分区/subpartition 的 `storage_index_ids`。
+- 找到候选页后仍必须按表列定义逐行解码，并跳过 deleted row；不能只按页头命中就无条件输出。
+- 这种模式应作为显式恢复模式，不应放入默认导出路径。默认导出必须尊重当前字典入口，TRUNCATE 后当前表就是 0 行。
+
+工具实现原则：
+
+```text
+正常导出:
+  dict -> 当前 table storage root -> 当前 leaf/data page plan -> 导出当前活动行
+
+TRUNCATE 恢复:
+  dict/历史记录 -> 表列定义 + 旧 storage_index_id/storage_index_ids
+  -> 全 group DBF 页头扫描
+  -> page_kind_raw=0x14 且 storage id 命中 -> 解码活动行 -> 导出到恢复文件
+```
+
+边界和风险：
+
+- 一旦旧页被重新分配并覆盖，无法从 DBF 中无损恢复被覆盖的数据。
+- 如果只有 TRUNCATE 后的字典，而没有记录旧 storage id，仍可从当前 `tab.dict.storage_index_id` 尝试扫描；本次实验中 TRUNCATE 后 storage id 未变化。但这是否对所有达梦版本、所有表类型都稳定，还需要更多样本。
+- 如果 TRUNCATE 后又插入新数据，新旧页可能同时带相同 storage id。恢复模式需要输出页号/行偏移，并提供后续去重或人工筛选依据。
+- 分区表必须按 leaf partition/subpartition 的 storage id 分别扫描，不能只用父表对象。当前 `dump-data --truncate` 已自动读取 `tab.dict.storage_index_ids` 并逐个扫描。
+- LOB 表需要额外处理：行内 locator 可能仍在旧行中，但 out-of-line LOB 页是否仍未覆盖需要单独按 locator 追踪验证，不能只恢复主表行。
+- 该模式恢复的是“DBF 中仍残留的物理行”，不等价于数据库一致性读；事务可见性、未提交版本、回滚段关联仍是后续研究点。
+
+本次实验证据文件保存在远端测试环境：
+
+```text
+/home/dmdba/dmdul/tmp/trunc_recovery/old_pages_manifest.json
+/home/dmdba/dmdul/tmp/trunc_recovery/old_page_scan_after_truncate.json
+/home/dmdba/dmdul/tmp/trunc_recovery/dict_before/
+/home/dmdba/dmdul/tmp/trunc_recovery/dict_after/
+```
+
+### 5.2 DROP 后表数据残留与 orphan storage 发现
+
+实验对象：
+
+```text
+表名:       SYSDBA.DMDUL_DROP_REC_T
+表空间:     DMDUL_TS
+行数:       18000
+列:         ID INT, K INT, C2 CHAR(2), AMT DECIMAL(12,2), V VARCHAR(64), PAD VARCHAR(400)
+object_id:  34178
+storage_id: 33596007
+group/file: 6/0
+root page:  2944
+```
+
+DROP 前基线：
+
+- 在线行数 `18000`；
+- `DBA_SEGMENTS.HEADER_FILE=0`、`HEADER_BLOCK=2944`、`BYTES=7208960`；
+- DROP 前 `tab.dict` 记录：
+  - `storage_index_id=33596007`
+  - `group_id=6`
+  - `root_file=0`
+  - `root_page=2944`
+- checkpoint 后按 `storage_id=33596007` 扫描用户表空间，可导出 `18000` 行。
+
+DROP 后在线字典表现：
+
+| 查询 | 结果 |
+| --- | ---: |
+| `SYS.SYSOBJECTS WHERE NAME='DMDUL_DROP_REC_T'` | `0` |
+| `DBA_TABLES WHERE OWNER='SYSDBA' AND TABLE_NAME='DMDUL_DROP_REC_T'` | `0` |
+| `DBA_SEGMENTS WHERE OWNER='SYSDBA' AND SEGMENT_NAME='DMDUL_DROP_REC_T'` | `0` |
+
+DROP 后离线观察：
+
+- 常规 live slot 读取不到该表对象；
+- SYSOBJECTS/SYSINDEXES/SYSCOLUMNS 的 slot 层统计中，本次样本没有出现 deleted slot：
+  - `SYSOBJECTS deleted_slots=0`
+  - `SYSINDEXES deleted_slots=0`
+  - `SYSCOLUMNS deleted_slots=0`
+- 但 `SYSTEM.DBF` 的 raw bytes 中仍残留：
+  - 表名 `DMDUL_DROP_REC_T`，可识别 object id `34178`；
+  - `SYSINDEXES` 残留行可识别 `storage_id=33596007`、`group_id=6`、`root_file=0`、`root_page=2944`；
+  - `SYSCOLUMNS` raw scan 可识别 6 个列定义。
+- 用户表空间中旧数据页仍存在：
+  - `storage_id=33596007`
+  - `pages_planned=858`
+  - `rows_written=18000`
+  - `decode_error=0`
+
+因此 DROP 恢复至少有两种路径：
+
+1. **字典 raw 残留可识别**
+   - 从 `SYSTEM.DBF` raw bytes 找到表对象、列定义、SYSINDEXES storage root；
+   - 构造临时 dict；
+   - 再按 `storage_id` 扫描用户表空间导出。
+
+2. **表名/对象 raw 残留也找不到**
+   - 从当前 `tab.dict` 收集所有仍有归属的 `storage_index_id/storage_index_ids`；
+   - 扫描用户表空间所有 `page_kind_raw=0x14` 数据页；
+   - 将页头 storage id 不在当前字典集合中的对象列为 orphan storage；
+   - 对每个 orphan storage 输出页数、首页列表、行 raw hex 和 ASCII hint，让用户确认；
+   - 用户确认 storage id 后，用 `dump-data --orphan-scan-storage-id <id>` 导出。
+
+本次 DROP 后执行 orphan storage 扫描：
+
+```text
+known_storage_ids=2536
+orphan_candidates=1
+storage_id=33596007
+pages=858
+first_pages=1904,1905,1906,1907,1908,1909,1910,1911
+sample ascii:
+  DROP_4725 ... DP ... Q13YYYY...
+  DROP_4724 ... DP ... Q12YYYY...
+```
+
+结论：
+
+- DROP 后旧表数据页没有立即清零，仍可恢复，前提是页未被重新分配覆盖；
+- 本次样本不是 Oracle 式“字典行 slot 标 deleted 后仍在 slot 中”的形态，而是 live slot 已不可见、raw bytes 仍残留；
+- 对 DROP 恢复，必须同时准备“raw 字典恢复”和“orphan storage 发现”两条路径；
+- 如果没有列定义，只能先输出 raw row/ASCII hint 辅助识别；完整字段解码仍需要列定义或用户提供列定义。
+
+本次实验证据文件保存在远端测试环境：
+
+```text
+/home/dmdba/dmdul/tmp/drop_recovery/dict_before/
+/home/dmdba/dmdul/tmp/drop_recovery/dict_after/
+/home/dmdba/dmdul/tmp/drop_recovery/dump_after_from_before_dict/dump.json
+/home/dmdba/dmdul/tmp/drop_recovery/orphan_scan_after_drop.json
+```
 
 ## 6. 行结构
 

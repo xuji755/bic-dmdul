@@ -423,6 +423,22 @@ head -5 /recovery/work/dict/col.dict
 
 `tab.dict` 中当前只需要表对象；其他对象不是表数据导出主流程必需。
 
+`file.dict` 是后续按表空间过滤扫描的重要依据。新版 bootstrap 会从控制文件 `dm.ctl` 解析数据文件到表空间的映射，并写入 `tablespace_name` 字段，例如：
+
+```text
+basename,group_id,file_no,tablespace_name
+SYSTEM.DBF,0,0,SYSTEM
+MAIN.DBF,4,0,MAIN
+main2.dbf,4,1,MAIN
+DMDUL_TS01.DBF,6,0,DMDUL_TS
+```
+
+注意：
+
+- 表空间名来自控制文件，不从 DBF 文件名推断；
+- 如果旧版本生成的 `file.dict` 没有 `tablespace_name`，`scan-orphan-storages --tablespace` 会拒绝执行；
+- 遇到这种情况应使用新版工具重新执行 bootstrap，或者临时使用 `--group-id` 限定扫描范围。
+
 ## 7. 阶段 3：导出数据
 
 ### 7.1 导出单表
@@ -718,6 +734,137 @@ TMPDIR=./tmp ./bin/dmdul \
 - `--partition` 依赖 bootstrap 写入的 `tab.dict.partition_names`，并与 `tab.dict.page_refs` 一一对应；
 - 指定分区时本次必须只匹配一张表，避免把分区名误应用到多张表；
 - 分区过滤可和 `--partition-parallel` 同时使用。
+
+### 7.5.1 TRUNCATE 后残留数据恢复导出
+
+如果表被 `TRUNCATE`，当前字典中的表对象和列定义通常仍存在，但当前段入口已经代表截断后的空表。此时默认 `dump-data` 会按当前入口导出，结果应为 0 行。
+
+在旧数据页尚未被覆盖时，可以启用显式恢复模式：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table SYSDBA.DMDUL_TRUNC_REC_T \
+  --truncate \
+  --output-format row \
+  --json
+```
+
+`--truncate` 会从 `tab.dict` 自动取得旧 storage id：
+
+- 普通表读取 `storage_index_id`；
+- 分区表读取 `storage_index_ids`，对所有 leaf 分区/subpartition 的 storage id 分别扫描；
+- 工具扫描同 group 数据文件中 `page_kind_raw=0x14` 且页头 storage id 命中的旧数据页；
+- 找到候选页后仍按 `col.dict` 的列定义逐行解码，并跳过 deleted row。
+
+如果需要人工指定 storage id，也可以使用：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table SYSDBA.DMDUL_TRUNC_REC_T \
+  --orphan-scan-storage-id 33596006 \
+  --json
+```
+
+限制和注意事项：
+
+- `--truncate` / `--orphan-scan-storage-id` 必须只匹配一张表；
+- 当前不能和 `--partition`、`--partition-parallel` 组合；
+- 分区表恢复会自动扫描全部 `storage_index_ids`，暂不支持只恢复其中几个分区；
+- 恢复结果是 DBF 中残留的物理行，不等价于数据库一致性读；
+- 如果旧页已经被重新分配并覆盖，无法从数据文件中恢复被覆盖的数据；
+- TRUNCATE 后又插入新数据时，新旧页可能同时带相同 storage id，需要结合输出报告中的页号、行偏移进一步筛选。
+
+### 7.5.2 DROP 后 orphan storage 扫描
+
+如果表已经被 `DROP`，当前在线字典和 bootstrap live 字典可能都找不到完整表入口。此时可以先扫描当前字典没有归属的 storage id：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  scan-orphan-storages \
+  --dict-dir /recovery/work/dict \
+  --min-pages 4 \
+  --sample-rows 3 \
+  --json
+```
+
+默认不指定过滤条件时，会扫描 `file.dict` 中所有数据文件。如果大致知道表在哪个表空间，可以限制扫描范围：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  scan-orphan-storages \
+  --dict-dir /recovery/work/dict \
+  --tablespace DMDUL_TS \
+  --min-pages 4 \
+  --sample-rows 3 \
+  --json
+```
+
+也可以直接使用 group/tablespace id：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  scan-orphan-storages \
+  --dict-dir /recovery/work/dict \
+  --group-id 6 \
+  --min-pages 4 \
+  --sample-rows 3 \
+  --json
+```
+
+输出会列出候选 storage id：
+
+```json
+{
+  "mode": "dm-scan-orphan-storages",
+  "known_storage_ids": 2536,
+  "candidates": [
+    {
+      "storage_id": 33596007,
+      "group_id": 6,
+      "file_no": 0,
+      "pages": 858,
+      "first_pages": [1904, 1905, 1906],
+      "row_samples": [
+        {
+          "page_no": 1904,
+          "offset": 7492,
+          "len": 370,
+          "raw_hex": "...",
+          "ascii_hint": ".r..u...E...DP..<...DROP_4725.@Q13YYYY..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+确认候选 storage id 后，如果仍有旧字典、raw 字典恢复结果，或用户能提供列定义，可以用手工 storage id 导出：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  dump-data \
+  --dict-dir /recovery/work/dict_or_recovered \
+  --output-dir /recovery/work/drop_recover \
+  --table SYSDBA.DMDUL_DROP_REC_T \
+  --orphan-scan-storage-id 33596007 \
+  --output-format row \
+  --json
+```
+
+说明：
+
+- `scan-orphan-storages` 不需要知道表名，只依赖当前 `tab.dict` 和 `file.dict`；
+- 默认扫描全库；指定 `--tablespace` 或 `--group-id` 时只扫描对应表空间；
+- `--tablespace` 可以重复，也可以逗号分隔；它必须依赖 `file.dict` 中由控制文件解析得到的 `tablespace_name`、`tablespace` 或 `group_name` 字段，不能从 DBF 文件名推断；
+- 如果当前 `file.dict` 还没有表空间名映射，请使用 `--group-id`，或先用新版工具重新 bootstrap，让工具从 `dm.ctl` 补充数据文件到表空间的映射；
+- 它把当前字典中没有归属、但用户表空间仍有 `0x14` 数据页的 storage id 列出来；
+- `row_samples` 只用于人工识别，未必能完整解码字段；
+- 完整字段导出仍需要列定义。列定义可能来自 DROP 前 dict、`SYSTEM.DBF` raw 残留、备份元数据或人工提供；
+- 如果旧页已被重用覆盖，该 storage id 的页数、样例内容和行解码结果都会变差，需要人工判断。
 
 ### 7.6 导出压缩 HUGE 表
 
@@ -1039,6 +1186,8 @@ LOB 导入规则：
 | `--partition` | 指定 leaf 分区/子分区名。可重复，也可逗号分隔。要求本次只匹配一张表。 |
 | `--parallel` | 多表并发 worker 数。 |
 | `--partition-parallel` | 单表内部 split-part worker 数。大分区表使用。 |
+| `--truncate` | TRUNCATE 恢复模式。自动从 `tab.dict.storage_index_id/storage_index_ids` 取旧 storage id 并扫描残留数据页。 |
+| `--orphan-scan-storage-id` | 手工指定旧 storage id 扫描残留数据页，适合 TRUNCATE/DROP 恢复实验。 |
 | `--delimiter` | DUL 文本分隔符，支持 `|` 和 `~`。 |
 | `--output-format` | `dul` 或 `row`。默认 `dul`。 |
 | `--report-output` | 写 JSON 报告到文件。 |

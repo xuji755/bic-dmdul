@@ -5,7 +5,7 @@ import hashlib
 import json
 import mmap
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -152,6 +152,8 @@ def extract_csv_with_calibrated_metadata(
     page_refs_override: tuple[StoragePageRef, ...] | None = None,
     partition_names: tuple[str, ...] = (),
     empty_page_plan_level: str | None = None,
+    orphan_scan_storage_id: int | None = None,
+    orphan_scan_storage_ids: tuple[int, ...] = (),
 ) -> ExtractionReport:
     """Create a CSV for a table using calibrated metadata.
 
@@ -163,6 +165,16 @@ def extract_csv_with_calibrated_metadata(
     if output_format not in {"dul", "row"}:
         raise ValueError(f"unsupported output format: {output_format}")
     table = metadata.find_table(table_name)
+    orphan_storage_ids = _normalize_orphan_storage_ids(
+        orphan_scan_storage_id=orphan_scan_storage_id,
+        orphan_scan_storage_ids=orphan_scan_storage_ids,
+    )
+    if orphan_storage_ids:
+        storage_id_for_scan_validation = orphan_storage_ids[0] if len(orphan_storage_ids) == 1 else None
+        table = replace(
+            table,
+            storage=replace(table.storage, storage_id=storage_id_for_scan_validation),
+        )
     data_file_meta = metadata.find_data_file(
         table.storage.group_id,
         table.storage.file_no,
@@ -183,7 +195,16 @@ def extract_csv_with_calibrated_metadata(
     decode_errors: list[str] = []
     diagnostics: list[dict[str, Any]] = list(initial_diagnostics)
     accepted_page_refs: list[StoragePageRef] = []
-    if page_refs_override is None:
+    if orphan_storage_ids and page_refs_override is None:
+        if partition_names:
+            raise ValueError("partition_names cannot be used with orphan storage scan")
+        page_plan = _build_orphan_storage_id_page_plan(
+            table=table,
+            data_files=data_files,
+            storage_ids=orphan_storage_ids,
+            progress=progress,
+        )
+    elif page_refs_override is None:
         page_plan = _build_page_plan(
             table,
             data_files,
@@ -1674,6 +1695,70 @@ def _build_storage_id_global_page_plan(
         diagnostics=tuple(diagnostics),
         mode="storage-id-global-scan",
     )
+
+
+def _build_orphan_storage_id_page_plan(
+    *,
+    table: TableMeta,
+    data_files: dict[int, DataFile],
+    storage_ids: tuple[int, ...],
+    progress: Callable[[dict[str, Any]], None] | None = None,
+) -> PagePlan:
+    if not storage_ids:
+        raise ValueError("orphan storage scan requires at least one storage id")
+    pages: list[StoragePageRef] = []
+    seen_pages: set[tuple[int, int]] = set()
+    diagnostics: list[dict[str, Any]] = [
+        {
+            "level": "warning",
+            "code": "page-plan-orphan-storage-id-scan",
+            "message": "planned pages by explicitly scanning for an old/orphan storage id; use only for truncate/drop recovery when current segment metadata no longer owns all pages",
+            "storage_ids": list(storage_ids),
+        }
+    ]
+    for storage_id in storage_ids:
+        scan_table = replace(
+            table,
+            storage=replace(table.storage, storage_id=storage_id),
+        )
+        plan = _build_storage_id_global_page_plan(
+            table=scan_table,
+            data_files=data_files,
+            progress=progress,
+        )
+        diagnostics.extend(plan.diagnostics)
+        for page in plan.pages:
+            key = (page.file_no, page.page_no)
+            if key in seen_pages:
+                continue
+            seen_pages.add(key)
+            pages.append(page)
+    return PagePlan(
+        pages=tuple(pages),
+        diagnostics=tuple(diagnostics),
+        mode="orphan-storage-id-global-scan",
+    )
+
+
+def _normalize_orphan_storage_ids(
+    *,
+    orphan_scan_storage_id: int | None,
+    orphan_scan_storage_ids: tuple[int, ...],
+) -> tuple[int, ...]:
+    values: list[int] = []
+    if orphan_scan_storage_id is not None:
+        values.append(orphan_scan_storage_id)
+    values.extend(orphan_scan_storage_ids)
+    result: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        if value <= 0:
+            raise ValueError("orphan storage ids must be positive integers")
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return tuple(result)
 
 
 

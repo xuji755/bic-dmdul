@@ -12,8 +12,16 @@ class DatabaseSummaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             (root / "dm.ctl").write_bytes(
-                b"\x00DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\x00"
-                b"MAIN=/dmdata/data/DAMENG/MAIN01.DBF\x00"
+                b"".join(
+                    [
+                        b"\x00SYSTEM\x00",
+                        b"\x00" * 24,
+                        b"/dmdata/data/DAMENG/SYSTEM.DBF\x00",
+                        b"MAIN\x00",
+                        b"\x00" * 24,
+                        b"/dmdata/data/DAMENG/MAIN01.DBF\x00",
+                    ]
+                )
             )
             (root / "SYSTEM.DBF").write_bytes(_page0(0, 0x13) + _page(0, 1, 0x14))
             (root / "TEMP.DBF").write_bytes(_page0(0, 0x0) + bytes(128))
@@ -44,8 +52,8 @@ class DatabaseSummaryTest(unittest.TestCase):
         )
         first_hint = summary["control_files"][0]["dbf_path_hint_records"][0]
         self.assertEqual(first_hint["text"], "/dmdata/data/DAMENG/SYSTEM.DBF")
-        self.assertEqual(first_hint["offset"], 10)
-        self.assertEqual(first_hint["string_offset"], 1)
+        self.assertEqual(first_hint["offset"], 32)
+        self.assertEqual(first_hint["string_offset"], 32)
         self.assertEqual(
             summary["control_files"][0]["printable_string_records"][0]["offset"],
             1,
@@ -61,6 +69,7 @@ class DatabaseSummaryTest(unittest.TestCase):
             item["basename"]: item for item in control_manifest["entries"]
         }["main01.dbf"]
         self.assertEqual(main_entry["control_file_ordinal"], 1)
+        self.assertEqual(main_entry["tablespace_name"], "MAIN")
         self.assertEqual(
             main_entry["normalized_path"],
             "/dmdata/data/dameng/main01.dbf",
