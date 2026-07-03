@@ -101,7 +101,10 @@ class SysIndexCandidate:
     root_file: int | None
     root_page: int | None
     type_name: str | None
+    xtype: int | None
     flag: int | None
+    keynum: int | None = None
+    keyinfo_hex: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1240,7 +1243,7 @@ def _sysobject_table_rows_from_strings(
     for subtype_offset, value in strings[type_index + 1 : type_index + 5]:
         if subtype_offset - type_offset > 48:
             break
-        if value in {"UTAB", "STAB"}:
+        if value in {"UTAB", "STAB", "PROC", "PKG", "TYPE", "CLASS", "TRIG"}:
             subtype_name = value
             break
     if subtype_name is None:
@@ -1857,7 +1860,13 @@ def _sysindex_candidate_from_context(
         type_name = type_raw.decode("ascii")
     except UnicodeDecodeError:
         type_name = None
+    xtype = int.from_bytes(context[15:19], "little", signed=False)
     flag = int.from_bytes(context[19:23], "little", signed=False)
+    keynum = None
+    keyinfo_hex = None
+    if len(context) >= 25:
+        keynum = int.from_bytes(context[23:25], "little", signed=False)
+        keyinfo_hex = _sysindex_keyinfo_hex_from_context(context, keynum=keynum)
     score = 0
     if is_unique is not None:
         score += 20
@@ -1869,8 +1878,10 @@ def _sysindex_candidate_from_context(
         score += 10
     if type_name in {"BT", "RT", "HT"}:
         score += 30
-    if flag in {0, 1}:
+    if flag in {0, 1, 3, 5}:
         score += 10
+    if keynum is not None and keynum <= 4096:
+        score += 5
     if score < 60:
         return None
     return SysIndexCandidate(
@@ -1884,8 +1895,35 @@ def _sysindex_candidate_from_context(
         root_file=root_file,
         root_page=root_page,
         type_name=type_name,
+        xtype=xtype,
         flag=flag,
+        keynum=keynum,
+        keyinfo_hex=keyinfo_hex,
     )
+
+
+def _sysindex_keyinfo_hex_from_context(context: bytes, *, keynum: int) -> str | None:
+    target_length = keynum * 3
+    if target_length == 0:
+        return ""
+    if target_length < 0 or target_length > 4096:
+        return None
+    for offset in range(25, min(len(context), 48)):
+        try:
+            decoded = decode_observed_var_length(context[offset:])
+        except ValueError:
+            continue
+        if decoded.length != target_length:
+            continue
+        start = offset + decoded.encoded_size
+        stop = start + decoded.length
+        if stop <= len(context):
+            return context[start:stop].hex()
+    direct_start = 25
+    direct_stop = direct_start + target_length
+    if direct_stop <= len(context):
+        return context[direct_start:direct_stop].hex()
+    return None
 
 
 def _dedupe_sysindex_candidates(

@@ -503,6 +503,24 @@ class SysDictHeuristicTest(unittest.TestCase):
         self.assertEqual(best.flag, 1)
         self.assertGreaterEqual(best.score, 80)
 
+    def test_finds_sysindex_keyinfo_from_observed_variable_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "SYSTEM.DBF"
+            index_id = 33573587
+            row = bytes.fromhex(
+                "d34a00024e0400000020fc0700425401000000000000000400010001000100"
+                "8c000041010041050041060041c54700000000ffffffff7fffffd2fd66"
+            )
+            path.write_bytes(b"\0" * 8192 + row)
+
+            candidates = find_sysindex_candidates(path, index_id)
+
+        self.assertTrue(candidates)
+        best = candidates[0]
+        self.assertEqual(best.index_id, index_id)
+        self.assertEqual(best.keynum, 4)
+        self.assertEqual(best.keyinfo_hex, "000041010041050041060041")
+
     def test_dumps_sysindex_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "SYSTEM.DBF"

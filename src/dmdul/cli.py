@@ -29,7 +29,7 @@ from .dul_config import (
     write_init_dul,
 )
 from .database_summary import summarize_database_dir
-from .decode import DecodeError, decode_observed_row_values
+from .decode import DecodeError, LobValue, decode_character_bytes_with_encoding, decode_observed_row_values
 from .discovery import discover_data_files
 from .evidence import (
     capture_data_file_evidence,
@@ -37,6 +37,7 @@ from .evidence import (
     verify_evidence_manifest,
 )
 from .extract import extract_csv_with_calibrated_metadata, extract_split_parts_with_calibrated_metadata
+from .lob import read_out_of_line_lob
 from .metadata import CalibratedMetadata, ColumnMeta, DataFileMeta, StorageRoot, TableMeta
 from .page import ObservedPageHeader, format_hex_dump
 from .page_catalog import catalog_data_file_pages
@@ -46,7 +47,11 @@ from .row_archive import import_data_to_sql
 from .row import iter_observed_rows, iter_observed_rows_by_slots, scan_observed_row_chain
 from .storage import DataFile
 from .sysdict import (
+    dump_syscolumn_rows_from_storage,
+    dump_sysindex_rows_from_storage,
     dump_sysobject_rows,
+    dump_sysobject_rows_from_storage,
+    _iter_storage_live_rows,
     find_syscolumn_candidates,
     find_sysindex_candidates,
     find_sysobject_candidates,
@@ -1109,6 +1114,345 @@ def _cmd_recover_orphan_table(args: argparse.Namespace) -> int:
         print(f"raw_rows_written={raw_rows}")
         print(schema["create_table_sql"])
     return 0
+
+
+def _cmd_dump_procedures(args: argparse.Namespace) -> int:
+    owner = _normalize_owner(args.owner)
+    output = Path(args.output)
+    system_file = _system_file_from_dict_dir(Path(args.dict_dir))
+    sysobjects = _load_sysobject_rows(system_file, page_size=args.page_size)
+    systexts = _load_systext_rows(system_file, page_size=args.page_size)
+    schema = _schema_object(sysobjects, owner)
+    procedures = [
+        obj
+        for obj in sysobjects
+        if obj.schema_id == schema.object_id
+        and obj.subtype_name == "PROC"
+        and obj.object_id is not None
+    ]
+    texts_by_id: dict[int, list[dict[str, object]]] = {}
+    for row in systexts:
+        texts_by_id.setdefault(int(row["id"]), []).append(row)
+    for rows in texts_by_id.values():
+        rows.sort(key=lambda item: int(item["seqno"]))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    emitted = 0
+    with output.open("w", encoding="utf-8", newline="\n") as file:
+        file.write(f"-- dmdul procedure DDL export owner={owner}\n")
+        for proc in sorted(procedures, key=lambda item: item.name):
+            if proc.object_id is None:
+                continue
+            text_rows = texts_by_id.get(proc.object_id, [])
+            if not text_rows:
+                continue
+            for text_row in text_rows:
+                text = str(text_row.get("text") or "")
+                if not text:
+                    continue
+                file.write(text.rstrip())
+                file.write("\n/\n\n")
+                emitted += 1
+    payload = {
+        "mode": "dm-dump-procedures",
+        "owner": owner,
+        "output": str(output),
+        "objects_seen": len(procedures),
+        "procedures_written": emitted,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"owner={owner}")
+        print(f"output={output}")
+        print(f"procedures_written={emitted}")
+    return 0
+
+
+def _cmd_dump_indexes(args: argparse.Namespace) -> int:
+    owner = _normalize_owner(args.owner)
+    dict_dir = Path(args.dict_dir)
+    output = Path(args.output)
+    system_file = _system_file_from_dict_dir(dict_dir)
+    sysobjects = _load_sysobject_rows(system_file, page_size=args.page_size)
+    sysindexes = _load_sysindex_rows(system_file, page_size=args.page_size)
+    dict_columns = _load_col_dict_columns(dict_dir=dict_dir, owner=owner)
+    syscolumns = [] if dict_columns else _load_syscolumn_rows(system_file, page_size=args.page_size)
+    schema = _schema_object(sysobjects, owner)
+    tables = {
+        int(obj.object_id): obj
+        for obj in sysobjects
+        if obj.schema_id == schema.object_id
+        and obj.subtype_name == "UTAB"
+        and obj.object_id is not None
+    }
+    index_objects = [
+        obj
+        for obj in sysobjects
+        if obj.subtype_name == "INDEX"
+        and obj.parent_id in tables
+        and obj.object_id is not None
+    ]
+    index_by_id = {row.index_id: row for row in sysindexes}
+    columns_by_table: dict[int, dict[int, object]] = dict_columns
+    if not columns_by_table:
+        for column in syscolumns:
+            if column.column_id is None:
+                continue
+            columns_by_table.setdefault(column.object_id, {})[column.column_id] = column
+    statements: list[str] = []
+    skipped: list[dict[str, object]] = []
+    for obj in sorted(index_objects, key=lambda item: (tables[int(item.parent_id)].name, item.name)):
+        assert obj.object_id is not None
+        assert obj.parent_id is not None
+        table = tables[int(obj.parent_id)]
+        index_row = index_by_id.get(obj.object_id)
+        if index_row is None:
+            skipped.append({"index": obj.name, "reason": "sysindexes-row-not-found"})
+            continue
+        index_type = _index_type_from_sysindex(index_row)
+        if index_type != "NORMAL":
+            skipped.append({"index": obj.name, "reason": f"unsupported-index-type:{index_type}"})
+            continue
+        key_columns = _index_key_columns(
+            index_row=index_row,
+            table_columns=columns_by_table.get(int(obj.parent_id), {}),
+        )
+        if not key_columns:
+            skipped.append({"index": obj.name, "reason": "key-columns-not-decoded"})
+            continue
+        unique = "UNIQUE " if index_row.is_unique == "Y" else ""
+        column_sql = ", ".join(key_columns)
+        statements.append(
+            f"CREATE {unique}INDEX {_quote_identifier(obj.name)} "
+            f"ON {_quote_identifier(owner)}.{_quote_identifier(table.name)} ({column_sql});"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8", newline="\n") as file:
+        file.write(f"-- dmdul index DDL export owner={owner}\n")
+        for statement in statements:
+            file.write(statement)
+            file.write("\n")
+    payload = {
+        "mode": "dm-dump-indexes",
+        "owner": owner,
+        "output": str(output),
+        "indexes_written": len(statements),
+        "indexes_skipped": len(skipped),
+        "skipped": skipped[: args.max_skipped],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"owner={owner}")
+        print(f"output={output}")
+        print(f"indexes_written={len(statements)}")
+        print(f"indexes_skipped={len(skipped)}")
+    return 0
+
+
+def _normalize_owner(value: str) -> str:
+    return value.strip().strip('"').upper()
+
+
+def _optional_int_text(value: object) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _system_file_from_dict_dir(dict_dir: Path) -> Path:
+    file_dict = dict_dir / "file.dict"
+    if not file_dict.exists():
+        raise FileNotFoundError(f"file.dict not found: {file_dict}")
+    candidates: list[Path] = []
+    with file_dict.open("r", encoding="utf-8", newline="") as file:
+        for row in csv.DictReader(file):
+            path_text = row.get("path")
+            if not path_text:
+                continue
+            path = Path(path_text)
+            basename = path.name.upper()
+            system_candidate = str(row.get("system_candidate", "")).lower() in {"1", "true", "yes"}
+            if system_candidate:
+                candidates.insert(0, path)
+            elif basename == "SYSTEM.DBF":
+                candidates.append(path)
+    for path in candidates:
+        if path.exists():
+            return path
+    raise FileNotFoundError("SYSTEM.DBF was not found from file.dict")
+
+
+def _load_sysobject_rows(system_file: Path, *, page_size: int):
+    return dump_sysobject_rows_from_storage(
+        system_file,
+        group_id=0,
+        root_file=0,
+        root_page=16,
+        storage_id=33554540,
+        page_size=page_size,
+    )
+
+
+def _load_sysindex_rows(system_file: Path, *, page_size: int):
+    return dump_sysindex_rows_from_storage(
+        system_file,
+        group_id=0,
+        root_file=0,
+        root_page=288,
+        storage_id=33554434,
+        page_size=page_size,
+    )
+
+
+def _load_syscolumn_rows(system_file: Path, *, page_size: int):
+    return dump_syscolumn_rows_from_storage(
+        system_file,
+        group_id=0,
+        root_file=0,
+        root_page=80,
+        storage_id=33554433,
+        page_size=page_size,
+    )
+
+
+def _load_col_dict_columns(*, dict_dir: Path, owner: str) -> dict[int, dict[int, object]]:
+    path = dict_dir / "col.dict"
+    if not path.exists():
+        return {}
+    result: dict[int, dict[int, object]] = {}
+    with path.open("r", encoding="utf-8", newline="") as file:
+        for row in csv.DictReader(file):
+            if _normalize_owner(row.get("owner", "")) != owner:
+                continue
+            object_id = _optional_int_text(row.get("object_id"))
+            column_id = _optional_int_text(row.get("column_id"))
+            if object_id is None or column_id is None:
+                continue
+            result.setdefault(object_id, {})[column_id] = type(
+                "DictColumn",
+                (),
+                {"object_id": object_id, "column_id": column_id, "name": str(row.get("name") or "")},
+            )()
+    return result
+
+
+def _load_systext_rows(system_file: Path, *, page_size: int) -> list[dict[str, object]]:
+    storage_rows = _iter_storage_live_rows(
+        system_file,
+        dictionary_name="SYSTEXTS",
+        group_id=0,
+        root_file=0,
+        root_page=176,
+        storage_id=33554543,
+        page_size=page_size,
+        progress=None,
+    )
+    columns = (
+        ColumnMeta(name="ID", type_name="INT", length=4),
+        ColumnMeta(name="SEQNO", type_name="INT", length=4),
+        ColumnMeta(name="TXT", type_name="CLOB"),
+    )
+    rows: list[dict[str, object]] = []
+    for _page_no, row in storage_rows:
+        try:
+            values = decode_observed_row_values(row, columns, external_lobs=True)
+        except DecodeError:
+            continue
+        text_value = values[2]
+        if isinstance(text_value, LobValue):
+            if text_value.text is not None:
+                text = text_value.text
+            elif text_value.inline_payload is not None:
+                text, _encoding = decode_character_bytes_with_encoding(text_value.inline_payload)
+            else:
+                text = _read_systext_lob_text(
+                    system_file=system_file,
+                    page_size=page_size,
+                    locator=text_value,
+                )
+        else:
+            text = str(text_value)
+        rows.append(
+            {
+                "id": int(values[0]),
+                "seqno": int(values[1]),
+                "text": text,
+            }
+        )
+    return rows
+
+
+def _read_systext_lob_text(*, system_file: Path, page_size: int, locator: LobValue) -> str:
+    try:
+        lob_read = read_out_of_line_lob(
+            raw_locator=locator.raw,
+            data_files={0: DataFile(system_file, page_size=page_size)},
+            group_id=0,
+            file_no=0,
+        )
+    except Exception:
+        return f"-- unresolved SYSTEXTS CLOB locator raw={locator.raw.hex()}"
+    text, _encoding = decode_character_bytes_with_encoding(lob_read.payload)
+    return text
+
+
+def _schema_object(sysobjects: list[object], owner: str):
+    for obj in sysobjects:
+        if obj.name.upper() == owner and obj.type_name == "SCH" and obj.object_id is not None:
+            return obj
+    raise KeyError(f"schema not found in SYSOBJECTS: {owner}")
+
+
+def _index_type_from_sysindex(index_row: object) -> str:
+    xtype = int(index_row.xtype or 0)
+    flag = int(index_row.flag or 0)
+    if xtype & 0x00000002:
+        return "FUNCTION-BASED NORMAL"
+    if xtype & 0x00001000 or xtype & 0x00004000 or xtype & 0x00002000:
+        return "BITMAP"
+    if xtype & 0x00000020:
+        return "FLAT"
+    if xtype & 0x00000001 == 0:
+        return "CLUSTER"
+    if flag & 0x00000002:
+        return "VIRTUAL"
+    return "NORMAL"
+
+
+def _index_key_columns(*, index_row: object, table_columns: dict[int, object]) -> list[str]:
+    keynum = int(index_row.keynum or 0)
+    keyinfo_hex = index_row.keyinfo_hex
+    if keynum <= 0 or not keyinfo_hex:
+        return []
+    keyinfo = bytes.fromhex(str(keyinfo_hex))
+    result: list[str] = []
+    for position in range(keynum):
+        start = position * 3
+        stop = start + 3
+        if stop > len(keyinfo):
+            return []
+        colid = int.from_bytes(keyinfo[start : start + 2], "little", signed=False)
+        order_marker = keyinfo[start + 2]
+        column = table_columns.get(colid)
+        if column is None:
+            return []
+        text = _quote_identifier(column.name)
+        if order_marker != 0x41:
+            text += " DESC"
+        result.append(text)
+    return result
+
+
+def _quote_identifier(value: str) -> str:
+    stripped = value.strip()
+    if stripped.replace("_", "").replace("$", "").replace("#", "").isalnum() and stripped.upper() == stripped:
+        return stripped
+    return '"' + stripped.replace('"', '""') + '"'
 
 
 def _known_storage_ids_from_tab_dict(path: Path) -> set[int]:
@@ -2530,6 +2874,27 @@ def build_parser() -> argparse.ArgumentParser:
     recover_orphan.add_argument("--report-output")
     recover_orphan.add_argument("--json", action="store_true")
     recover_orphan.set_defaults(func=_cmd_recover_orphan_table)
+
+    dump_procedures = subparsers.add_parser(
+        "dump-procedures",
+        help="dump CREATE PROCEDURE scripts for one owner by scanning SYS.SYSTEXTS on demand",
+    )
+    dump_procedures.add_argument("--dict-dir", required=True)
+    dump_procedures.add_argument("--owner", required=True)
+    dump_procedures.add_argument("--output", required=True)
+    dump_procedures.add_argument("--json", action="store_true")
+    dump_procedures.set_defaults(func=_cmd_dump_procedures)
+
+    dump_indexes = subparsers.add_parser(
+        "dump-indexes",
+        help="dump ordinary CREATE INDEX scripts for one owner from SYSOBJECTS/SYSINDEXES/SYSCOLUMNS",
+    )
+    dump_indexes.add_argument("--dict-dir", required=True)
+    dump_indexes.add_argument("--owner", required=True)
+    dump_indexes.add_argument("--output", required=True)
+    dump_indexes.add_argument("--max-skipped", type=int, default=20)
+    dump_indexes.add_argument("--json", action="store_true")
+    dump_indexes.set_defaults(func=_cmd_dump_indexes)
 
     extract_dicts = subparsers.add_parser(
         "extract-dicts",

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from dmdul.cli import _dump_data_progress_printer, build_parser, main
@@ -1144,6 +1145,95 @@ class CliTest(unittest.TestCase):
         self.assertIn("raw_row VARBINARY(17)", schema_text)
         self.assertIn("-- DATA", raw_text)
         self.assertIn("raw_row\n00110007000000", raw_text)
+
+    def test_dump_procedures_writes_owner_procedure_texts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "procedures.sql"
+            sysobjects = [
+                SimpleNamespace(name="SYSDBA", object_id=10, schema_id=None, parent_id=None, type_name="SCH", subtype_name=""),
+                SimpleNamespace(name="P_HELLO", object_id=20, schema_id=10, parent_id=None, type_name="SCHOBJ", subtype_name="PROC"),
+                SimpleNamespace(name="OTHER_P", object_id=30, schema_id=99, parent_id=None, type_name="SCHOBJ", subtype_name="PROC"),
+            ]
+            systexts = [
+                {"id": 20, "seqno": 0, "text": "CREATE OR REPLACE PROCEDURE P_HELLO AS BEGIN NULL; END;"},
+            ]
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-procedures",
+                    "--dict-dir",
+                    str(root),
+                    "--owner",
+                    "SYSDBA",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with patch("dmdul.cli._system_file_from_dict_dir", return_value=root / "SYSTEM.DBF"):
+                with patch("dmdul.cli._load_sysobject_rows", return_value=sysobjects):
+                    with patch("dmdul.cli._load_systext_rows", return_value=systexts):
+                        with redirect_stdout(stdout):
+                            exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+            text = output.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["procedures_written"], 1)
+        self.assertIn("CREATE OR REPLACE PROCEDURE P_HELLO", text)
+        self.assertIn("\n/\n", text)
+        self.assertNotIn("OTHER_P", text)
+
+    def test_dump_indexes_writes_normal_indexes_and_skips_cluster_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "indexes.sql"
+            sysobjects = [
+                SimpleNamespace(name="SYSDBA", object_id=10, schema_id=None, parent_id=None, type_name="SCH", subtype_name=""),
+                SimpleNamespace(name="T1", object_id=30, schema_id=10, parent_id=None, type_name="SCHOBJ", subtype_name="UTAB"),
+                SimpleNamespace(name="INDEX33590000", object_id=33590000, schema_id=10, parent_id=30, type_name="TABOBJ", subtype_name="INDEX"),
+                SimpleNamespace(name="IDX_T1_C1_C2", object_id=33590001, schema_id=10, parent_id=30, type_name="TABOBJ", subtype_name="INDEX"),
+            ]
+            sysindexes = [
+                SimpleNamespace(index_id=33590000, is_unique="N", xtype=0, flag=1, keynum=0, keyinfo_hex=None),
+                SimpleNamespace(index_id=33590001, is_unique="Y", xtype=17, flag=5, keynum=2, keyinfo_hex="000041010041"),
+            ]
+            syscolumns = [
+                SimpleNamespace(object_id=30, column_id=0, name="C1"),
+                SimpleNamespace(object_id=30, column_id=1, name="C2"),
+            ]
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-indexes",
+                    "--dict-dir",
+                    str(root),
+                    "--owner",
+                    "SYSDBA",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with patch("dmdul.cli._system_file_from_dict_dir", return_value=root / "SYSTEM.DBF"):
+                with patch("dmdul.cli._load_sysobject_rows", return_value=sysobjects):
+                    with patch("dmdul.cli._load_sysindex_rows", return_value=sysindexes):
+                        with patch("dmdul.cli._load_syscolumn_rows", return_value=syscolumns):
+                            with redirect_stdout(stdout):
+                                exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+            text = output.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["indexes_written"], 1)
+        self.assertEqual(payload["indexes_skipped"], 1)
+        self.assertIn("CREATE UNIQUE INDEX IDX_T1_C1_C2 ON SYSDBA.T1 (C1, C2);", text)
+        self.assertNotIn("INDEX33590000", text)
 
     def test_dump_data_partition_parallel_writes_parts_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

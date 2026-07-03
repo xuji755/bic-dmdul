@@ -15,13 +15,14 @@
 - 支持从 DUL/row/parts 生成重装载 SQL；
 - 支持已验证的短内联 LOB 和 out-of-line LOB 页链读取；
 - 支持已验证的压缩 `HUGE TABLE` 主表导出，工具会自动映射到内部 `$RAUX` 行存储。
+- 支持按需导出指定用户的存储过程 DDL 和普通索引 DDL。
 
 当前暂不作为主流程支持：
 
 - 达梦 ASM 磁盘组读取；
 - 缺失 `SYSTEM.DBF` 时的全文件扫描重组；
 - 直接连接目标 DM 库并执行并发入库；
-- 索引对象本身导出。
+- 复杂索引类型的完整还原，例如虚拟索引、函数索引、位图索引。
 
 ## 1. 基本原则
 
@@ -178,9 +179,9 @@ bootstrap 后会生成平面 CSV 字典文件，扩展名为 `.dict`：
 | --- | --- |
 | `file.dict` | 已识别数据文件清单 |
 | `user.dict` | 用户/模式信息 |
-| `tab.dict` | 表对象信息，当前只关心表，索引后续可补充 |
+| `tab.dict` | 表对象信息，当前主流程用于表数据导出，也作为按需 DDL 导出的对象入口 |
 | `col.dict` | 表列定义 |
-| `index.dict` 或相关索引字典 | 当前不是主流程必需 |
+| `index.dict` 或相关索引字典 | 当前不是 bootstrap 主流程必需；索引 DDL 导出会在命令执行时离线扫描 `SYSINDEXES` |
 
 字典文件不用 JSON，是为了适应大型系统中几十万张表的场景，便于流式读取和内存缓存。
 
@@ -1325,6 +1326,41 @@ dmdul dump-data --dict-dir dict --output-dir out \
   --partition-parallel 2 --output-format row
 ```
 
+### 7.12 按需导出存储过程和索引 DDL
+
+`bootstrap` 的目标是尽快完成表数据恢复所需的核心字典下载，因此不会默认下载 `SYS.SYSTEXTS` 这类只有导出过程源码时才需要的大字段字典表。需要恢复存储过程脚本时，使用 `dump-procedures` 单独执行。该命令会从 `file.dict` 找到 `SYSTEM.DBF`，离线扫描 `SYS.SYSOBJECTS` 和 `SYS.SYSTEXTS`，按 owner 生成脚本：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  dump-procedures \
+  --dict-dir /recovery/work/dict \
+  --owner SYSDBA \
+  --output /recovery/work/ddl/SYSDBA.procedures.sql \
+  --json
+```
+
+输出文件中每个过程文本后会写入 `/` 分隔符，便于交给 `disql` 执行。`SYSTEXTS.TXT` 是 CLOB，工具会读取已验证的内联和 out-of-line LOB，并按 ASCII/GB18030/UTF-8 路径解码文本。
+
+恢复表数据后，如需补建普通索引，使用 `dump-indexes`：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  dump-indexes \
+  --dict-dir /recovery/work/dict \
+  --owner SYSDBA \
+  --output /recovery/work/ddl/SYSDBA.indexes.sql \
+  --json
+```
+
+该命令会：
+
+- 从 `SYS.SYSOBJECTS` 找到指定 owner 下的表和索引对象；
+- 从 `SYS.SYSINDEXES` 解析唯一性、索引类型、`KEYNUM` 和 `KEYINFO`；
+- 优先使用 bootstrap 已写出的 `col.dict` 还原列名，缺失时再按需扫描 `SYS.SYSCOLUMNS`；
+- 只输出当前已验证的普通 BTree 索引 `CREATE INDEX` / `CREATE UNIQUE INDEX`。
+
+当前不会伪造复杂索引 DDL。遇到 cluster storage、virtual index、bitmap index、function-based index 或无法解析列列表的对象时，会在 JSON 的 `skipped` 中报告原因，而不是输出不可靠脚本。
+
 ## 8. 当前 page plan 机制
 
 当前 `dump-data` 的 page plan 顺序：
@@ -1787,7 +1823,15 @@ TEST2.DMDUL_MANY.dul
 
 ### 15.5 索引
 
-表数据导出当前不依赖独立索引段分析。表 storage 对象本身可能是 BTree 组织；独立主键/普通索引需要后续通过 `SYSINDEXES` 区分。目前不建议把表 storage BTree 和独立索引段混为一谈。
+表数据导出不依赖独立索引段分析。表 storage 对象本身可能是 BTree 组织；独立索引需要通过 `SYSOBJECTS` + `SYSINDEXES` + `SYSCOLUMNS/col.dict` 单独还原，不能把表 storage BTree 和索引段混为一谈。
+
+当前 `dump-indexes` 已支持普通 BTree 索引 DDL：
+
+- 普通索引和唯一索引；
+- 单列和多列组合索引；
+- 从 `SYSINDEXES.KEYINFO` 解析列序号，并映射到 `col.dict` 中的列名。
+
+当前仍不会输出未验证复杂索引的 DDL，包括 virtual index、bitmap index、function-based index 和 cluster storage。命令会在 JSON 中报告跳过原因。
 
 ### 15.6 ASM
 
@@ -1864,7 +1908,7 @@ TMPDIR=./tmp ./bin/dmdul --help
 当前阶段已验证：
 
 ```text
-189 tests OK
+208 tests OK
 ```
 
 ## 18. 快速命令清单
@@ -1915,5 +1959,19 @@ TMPDIR=./tmp ./bin/dmdul --help
 ./bin/dmdul import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
+  --json
+
+# 9. dump procedures for one owner
+./bin/dmdul dump-procedures \
+  --dict-dir /recovery/work/dict \
+  --owner SYSDBA \
+  --output /recovery/work/ddl/SYSDBA.procedures.sql \
+  --json
+
+# 10. dump normal indexes for one owner
+./bin/dmdul dump-indexes \
+  --dict-dir /recovery/work/dict \
+  --owner SYSDBA \
+  --output /recovery/work/ddl/SYSDBA.indexes.sql \
   --json
 ```
