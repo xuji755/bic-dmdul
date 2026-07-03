@@ -151,6 +151,7 @@ def extract_csv_with_calibrated_metadata(
     page_workers: int = 1,
     page_refs_override: tuple[StoragePageRef, ...] | None = None,
     partition_names: tuple[str, ...] = (),
+    empty_page_plan_level: str | None = None,
 ) -> ExtractionReport:
     """Create a CSV for a table using calibrated metadata.
 
@@ -215,6 +216,15 @@ def extract_csv_with_calibrated_metadata(
             mode="explicit-page-ref-list",
         )
     diagnostics.extend(page_plan.diagnostics)
+    if not page_plan.pages and empty_page_plan_level is not None:
+        diagnostics.append(
+            {
+                "level": empty_page_plan_level,
+                "code": "page-plan-empty",
+                "message": "page planning produced no data pages; no rows can be exported",
+                "mode": page_plan.mode,
+            }
+        )
     _emit_extract_progress(
         progress,
         {
@@ -408,6 +418,7 @@ def extract_split_parts_with_calibrated_metadata(
     output_format: str = "dul",
     progress: Callable[[dict[str, Any]], None] | None = None,
     partition_names: tuple[str, ...] = (),
+    empty_page_plan_level: str | None = None,
 ) -> ExtractionReport:
     if output_format not in {"dul", "row"}:
         raise ValueError(f"unsupported output format: {output_format}")
@@ -441,6 +452,20 @@ def extract_split_parts_with_calibrated_metadata(
                 },
             ),
             mode=f"{page_plan.mode}-partition-filter",
+        )
+    if not page_plan.pages and empty_page_plan_level is not None:
+        page_plan = PagePlan(
+            pages=page_plan.pages,
+            diagnostics=page_plan.diagnostics
+            + (
+                {
+                    "level": empty_page_plan_level,
+                    "code": "page-plan-empty",
+                    "message": "page planning produced no data pages; no rows can be exported",
+                    "mode": page_plan.mode,
+                },
+            ),
+            mode=page_plan.mode,
         )
     workers = max(1, part_workers)
     chunks = _split_page_refs(page_plan.pages, workers)
@@ -1776,6 +1801,27 @@ def _walk_leaf_chain(
                 )
                 break
             if header.page_kind_label != "tentative-btree-data":
+                if key in start_keys and header.page_kind_raw == 0x15:
+                    descent = _btree_find_leftmost_leaf(
+                        data_file=data_file,
+                        start_page=page_no,
+                        storage_id=header.storage_id_candidate,
+                        pages_total=pages_total,
+                    )
+                    if descent.leaf_page is not None:
+                        diagnostics.append(
+                            {
+                                "level": "info",
+                                "code": "page-plan-start-internal-descent",
+                                "message": "planned start page was a BTREE internal/root page; descended to the leftmost leaf page",
+                                "file_no": file_no,
+                                "root_page": page_no,
+                                "leaf_page": descent.leaf_page,
+                                "storage_id": header.storage_id_candidate,
+                            }
+                        )
+                        page_ref = StoragePageRef(file_no=file_no, page_no=descent.leaf_page)
+                        continue
                 diagnostics.append(
                     {
                         "level": "warning",

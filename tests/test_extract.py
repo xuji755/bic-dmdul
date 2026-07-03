@@ -981,6 +981,109 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
         self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"], ["50", "LEAF5"]])
 
+    def test_manifest_page_ref_descends_from_internal_root_to_leaf_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [_page(page_no=index, kind=0x14) for index in range(6)]
+            pages[0] = _page(page_no=0, kind=0x15)
+            pages[0][0x52:0x56] = (2).to_bytes(4, "little")
+            pages[2] = _row_page(page_no=2, next_page=5, value=10, text="LEAF2")
+            pages[5] = _row_page(page_no=5, next_page=None, value=50, text="LEAF5")
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "internal-root-walk.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_WALK",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "scan_pages": 1,
+                                "page_numbers": [0],
+                            },
+                            "columns": [
+                                {"name": "ID", "type_name": "INT"},
+                                {"name": "V", "type_name": "VARCHAR"},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_WALK",
+                output=output_path,
+            )
+
+            self.assertTrue(report.ok)
+            self.assertEqual(report.rows_written, 2)
+            self.assertEqual(report.scanned_pages, (2, 5))
+            self.assertIn(
+                "page-plan-start-internal-descent",
+                {item["code"] for item in report.diagnostics},
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+        self.assertEqual(rows, [["ID", "V"], ["10", "LEAF2"], ["50", "LEAF5"]])
+
+    def test_empty_page_plan_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [_page(page_no=index, kind=0x14) for index in range(2)]
+            pages[0] = _page(page_no=0, kind=0x15)
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "empty-plan.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_EMPTY_PLAN",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "page_numbers": [0],
+                            },
+                            "columns": [{"name": "ID", "type_name": "INT"}],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_EMPTY_PLAN",
+                output=output_path,
+                empty_page_plan_level="error",
+            )
+
+        self.assertFalse(report.ok)
+        self.assertEqual(report.rows_written, 0)
+        self.assertIn("page-plan-empty", {item["code"] for item in report.diagnostics})
+
     def test_segment_manifest_page_plan_skips_non_data_root_when_leaf_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

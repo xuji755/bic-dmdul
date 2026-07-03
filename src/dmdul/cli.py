@@ -648,6 +648,7 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
                 lob_hash=args.lob_hash,
                 output_format=args.output_format,
                 partition_names=partition_names,
+                empty_page_plan_level="error",
                 **(
                     {"part_workers": max(1, args.partition_parallel)}
                     if max(1, args.partition_parallel) > 1
