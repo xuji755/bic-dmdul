@@ -234,6 +234,7 @@ For page ownership checks, compare page-header `storage_id_candidate` against
 | `DMDUL_HEAP` | table | 48 | 16 |
 | `DMDUL_TYPES` | table | 64 | 16 |
 | `DMDUL_MANY` | table | 80 | 64 |
+| `DMDUL_EXT2` | table | observed from `SYSINDEXES`/segment manifest | 880 |
 
 `DBA_EXTENTS` reported smaller `BLOCKS` values in tests:
 
@@ -251,6 +252,15 @@ Working interpretation:
   extent in the compatibility view, not the full allocated 16-page cluster.
 - `SYS.SYSINDEXES.ROOTFILE/ROOTPAGE/GROUPID` is closer to the physical source
   needed by an offline extractor.
+
+A later 25,000-row controlled table, `DMDUL_EXT2`, forced allocation beyond one
+extent. `DBA_SEGMENTS` reported `BLOCKS=880` and `EXTENTS=55`, while
+`DBA_EXTENTS` on the same environment returned only one visible row
+(`EXTENT_ID=24`, `BLOCKS=4`). That result is useful calibration evidence: the
+online compatibility view should not be assumed to expose a complete Oracle-like
+per-extent map. Offline recovery must derive allocation and traversal from
+dictionary table rows, segment/root pages, extent/space metadata, and validated
+page-header ownership instead of depending on `DBA_EXTENTS` semantics.
 
 ## Table Organization
 
@@ -334,6 +344,16 @@ This validates the current transitional extraction strategy for non-NULL
 calibrated metadata. The final extractor still needs to derive the range from
 offline dictionary/BTREE metadata instead of requiring it in JSON.
 
+`DMDUL_EXT2` validates the same extraction path at a larger allocation size:
+25,000 rows were extracted with `strict_ok=true` and no decode errors, and the
+CSV passed aggregate and per-row formula checks (`ID=1..25000`,
+`sum(ID)=312512500`, `BUCKET=ID mod 997`, `MARKER='EXT2_'||ID`, exact `PAD`
+payload). This table also exposed a page-plan diagnostic bug: a segment-root
+entry may point to an internal child whose descendant leaf pages are already
+covered by the walked leaf next-chain. The root-entry coverage check now treats
+that branch as covered instead of reporting a false
+`page-plan-btree-root-entry-mismatch`.
+
 ## Storage-Id Scan Recovery When SYSTEM Is Missing
 
 Because ordinary table and index pages carry `storage_id_candidate` in the page
@@ -373,11 +393,17 @@ The current observed row-layout model used by the extractor is:
 | Region | Size | Status |
 | --- | ---: | --- |
 | row length/status | 2 bytes | decoded as above |
-| observed row metadata | 1 byte for <=4 columns, 2 bytes for >=5 columns | must be all zero for supported non-NULL rows |
+| observed row metadata | `ceil(column_count/4)` bytes | two-bit NULL state per storage-order column in controlled samples |
 | user column payload | variable | decoded by column type |
 
-Non-zero observed row metadata is rejected with `unsupported-row-metadata` until
-the NULL bitmap, column directory, and transaction/MVCC flags are decoded.
+For controlled ordinary rows, the metadata is interpreted little-endian with two
+bits per storage-order column. Storage order means fixed-width columns first,
+then variable-width columns, while SQL output is restored to dictionary column
+order. Observed states are `00` for present and `11` for NULL. Fixed-width NULL
+columns still reserve their fixed-width bytes. Variable-width NULL columns omit
+the variable-length prefix and payload. Metadata states `01` and `10`, and any
+extra bits beyond the column count, remain unsupported and are reported as
+`unsupported-row-metadata`.
 
 `catalog-pages` now includes a `row_area_probe` object in each nonzero page
 sample. The probe starts at the currently observed row-chain offset `0x62`,
@@ -634,9 +660,11 @@ More controlled `DMDUL_VLEN2` tests show the threshold more clearly:
 | 256 | `01 00` | two-byte big-endian length |
 | 1000 | `03 e8` | two-byte big-endian length |
 
-NULL handling is not fully decoded yet. The row containing `C_NULL = NULL`
-shows metadata bytes before the fixed values, but more controlled cases are
-needed to distinguish row header, NULL bitmap, and column directory fields.
+Controlled `DMDUL_NULL2` rows decoded the observed NULL metadata rule: two
+little-endian bits per storage-order column, `00` for present and `11` for NULL.
+For `ID INT, A INT, B VARCHAR, C BIGINT, D VARCHAR`, storage order is
+`ID, A, C, B, D`; for example metadata `3c 00` decodes `A` and `C` as NULL
+while `B` and `D` are present.
 
 Date/time/timestamp encodings are also not fully decoded yet. They appear as
 compact binary values, not text. More boundary-value tests are needed.
@@ -867,15 +895,15 @@ This does not prove a dictionary-specific row format. It proves the previous
 generic row model is incomplete for nullable columns in general: `ceil(column_count/4)`
 is not sufficient to locate variable fields when nullable columns are present.
 The same issue is visible in controlled nullable user-table rows such as
-`DMDUL_NULL2`. The next decoder must use the online schema comparison and NULL
-fixtures to calibrate the common row metadata/NULL-control bytes, then parse
-fixed fields and variable strings from the correct offset.
+`DMDUL_NULL2`. The current decoder now uses the calibrated NULL bitmap rule for
+ordinary rows: fixed-width NULL fields still consume their fixed bytes, while
+variable-width NULL fields do not consume a variable prefix or payload.
 
 The practical result is positive: for clean `SYSCOLUMNS` rows, the online values
 and offline bytes are close enough to implement a real dictionary row decoder
-without UNDO support. The remaining blocker is the common row metadata and
-NULL-control interpretation, not the base field storage and not a separate
-dictionary-table storage format.
+without UNDO support. Remaining blockers are exact dictionary-row boundary
+coverage and unsupported row metadata states, not the base field storage and not
+a separate dictionary-table storage format.
 
 The row-aware `SYS.SYSCOLUMNS` scanner now prefers this calibrated clean-row
 layout before falling back to the older nearby-string heuristic. A trial
@@ -1027,6 +1055,197 @@ The first practical offline metadata path should be:
 Until the dictionary bootstrap is reliable, a transitional extractor mode may
 accept dictionary metadata exported from a healthy database. That mode is useful
 for row/page decoder development but is not sufficient for DUL-style recovery.
+
+### Remote End-To-End CSV Validation
+
+The current `extract-csv --database-dir` path has been validated on the remote
+DM8 test files without querying online dictionary views:
+
+```sh
+cd /tmp/dmdul_run
+PYTHONPATH=src /opt/gbase/python3.8/bin/python3.8 -m dmdul.cli \
+  extract-csv \
+  --database-dir /dmdata/data/DAMENG \
+  --table DMDUL_MANY \
+  --output /tmp/dmdul_many.csv \
+  --scan-pages 64 \
+  --report-output /tmp/dmdul_many_report.json
+```
+
+Result:
+
+```text
+table=SYSDBA.DMDUL_MANY
+rows_written=80
+rows_skipped_deleted=0
+rows_skipped_decode_error=0
+ok=true
+mode=calibrated-metadata-page-range-scan
+```
+
+CSV verification showed:
+
+- `81` CSV lines including the header;
+- header `ID,MARKER,PAD`;
+- `80` data rows;
+- IDs cover `1..80` with no missing values and no duplicates;
+- `PAD` values decode to length `3000`;
+- accepted page refs were the 40 leaf pages `96..135`.
+
+The earlier run reported warning diagnostics:
+
+- `segment-root-candidate-ref-non-data-page`: segment-root candidate reference
+  scanning is still broad and reports non-data references;
+- `page-plan-btree-internal-descent`: the extractor used the BTREE root/internal
+  page to reach leaf pages.
+
+The previous `segment-manifest-data-file-without-control-entry` warning for
+`DMDUL_TS01.DBF` was traced to an implementation bug: the same `sample_limit`
+used for printable evidence display also capped DBF path hint scanning in
+`dm.ctl`, so later control-file entries were missed. Control-file DBF hint
+scanning is now decoupled from display sampling. On the remote file set,
+`DMDUL_TS01.DBF` matches `dm.ctl` and control-backup entries by basename and
+normalized path evidence, and `DMDUL_NULL2 --strict` returns `strict_ok=true`.
+
+The segment-root non-data-reference warning is intentionally retained as
+exploration evidence, but it is not treated as a strict extraction failure when
+the accepted page plan is otherwise valid. It comes from a broad sliding-window
+candidate scan over root bytes, not from the final set of pages decoded into the
+CSV.
+
+This proves the first practical offline chain for controlled ordinary tables:
+SYSTEM dictionary scans -> table object id -> column metadata -> child storage
+index -> `SYSINDEXES` root -> data pages -> decoded CSV. It does not yet prove
+complete support for MVCC visibility, all scalar types, chained/overflow rows,
+LOB following, or arbitrary production file sets.
+
+Additional remote validation compared offline CSV output with online `SELECT`
+for controlled fixtures:
+
+| Table | Offline result | Online comparison |
+| --- | --- | --- |
+| `DMDUL_ONE2` | 4 rows | matched integer boundary IDs `-2147483648`, `-1`, `1`, `2147483647` |
+| `DMDUL_NULL2` | 4 rows, 0 decode errors | matched NULL combinations; NULL fields emitted as empty CSV fields |
+| `DMDUL_MOD2` | 2 rows, 1 deleted row skipped | matched visible rows `MOD_KEEP_1` and `MOD_UPDATE_3_AFTER` |
+| `DMDUL_VLEN2` | 8 rows | matched IDs and VARCHAR lengths `1,2,10,127,128,255,256,1000` |
+| `DMDUL_DTTM2` | 3 rows | matched DATE/TIME/TIMESTAMP values; offline output normalizes zero padding and microseconds |
+| `DMDUL_EXT2` | 25,000 rows, strict mode OK | multi-extent table; IDs `1..25000`, `sum(ID)=312512500`, bucket/marker/pad formulas all matched |
+
+The bootstrap dictionary path now preserves `SYSCOLUMNS` scale and nullable
+fields in `col.dict`. A remote `bootstrap` run wrote `file.dict`/`user.dict`/
+`tab.dict`/`col.dict` under
+`/home/dmdba/dmdul/tmp/bootstrap_scale_nullable`; `DMDUL_TYPES3` produced 15
+column rows with `scale=4` for `NUMBER(18,4)`/`DECIMAL(18,4)` and `scale=6` for
+`TIME(6)`/`TIMESTAMP(6)`. Running `dump-data` from those dictionary files wrote
+4 rows with `strict_ok=true`, and the generated DUL header now renders
+`C_NUMBER NUMBER(18,4)`, `C_DECIMAL DECIMAL(18,4)`, `C_TIME TIME(6)`, and
+`C_TS TIMESTAMP(6)`.
+
+The same run also showed an owner/schema bug: the heuristic schema mapping
+emitted `TEST2.DMDUL_TYPES3` for this object. Online calibration showed the
+actual `SYS.SYSOBJECTS` row has `SCHID=150994945` (`0x09000001`), while the
+old scanner had truncated the value to one byte. Reading `SCHID` as a 4-byte
+value and seeding verified built-in schema ids fixes this controlled case:
+remote `bootstrap_owner_fix` produced `owner=SYSDBA`,
+`qualified_name=SYSDBA.DMDUL_TYPES3`, `schema_id=150994945`, and
+`dump-data --table SYSDBA.DMDUL_TYPES3` wrote 4 rows with `strict_ok=true`. At
+that point arbitrary user schema rows and duplicate table names still required
+more schema/user dictionary decoding.
+
+Follow-up raw-byte calibration found the ordinary `SCH` schema-row pattern. In
+clean rows the type/name sequence is `83 SCH <name>`, and the full schema id is
+stored as a little-endian u32 eight bytes before the prefixed `SCH` marker.
+Examples matched online `SYS.SYSOBJECTS`: `KYD=150995945` (`e9 03 00 09`),
+`KYD2=150995946`, `TEST=150995949`, and `SYSJOB=150995950`. Bootstrap now uses
+that layout and filters schema ids to the observed `0x09xxxxxx` range, removing
+false owner rows such as ASCII-like high integers while preserving real ordinary
+schemas.
+
+A duplicate-schema validation then created two same-name tables in `DMDUL_TS`:
+`SYSDBA.DMDUL_DUP_SCHEMA2` and `TEST.DMDUL_DUP_SCHEMA2`. The first targeted
+bootstrap attempt exposed that the old resolver ignored owner during name-based
+resolution and mapped both owners to object `34019`. The resolver now selects
+`SCHOBJ/UTAB` rows by owner-derived full schema id. The corrected targeted
+bootstrap produced distinct entries: `SYSDBA` object `34019`, storage
+`33595830`, root page `1280`; `TEST` object `34020`, storage `33595831`, root
+page `1296`. `dump-data` wrote both DUL files with `strict_ok=true` and two rows
+each, preserving owner-specific marker values. This proves duplicate table names
+can be separated for the observed ordinary schema/table row layouts. The first
+owner-aware targeted resolver was correct but inefficient because it rescanned
+`SYSTEM.DBF` per requested table. The first fix preloaded decoded `SYSOBJECTS`
+rows once in memory and reused them for every requested table. The second reuse
+path is `bootstrap --source-dict-dir`: remote
+`bootstrap_dup_schema_20260702_v5_from_dict` filtered the same two duplicate
+tables from an existing dict directory in about 1 second, with no SYS dictionary
+file read, and `dump-data` extracted both tables successfully from the filtered
+dictionary set.
+
+The current lower-level bootstrap path no longer scans the whole `SYSTEM.DBF`
+for the core dictionaries. DM7 and DM8 comparison found a bootstrap-like
+structure in SYSTEM.DBF page 0: offset `0x80` stores the `SYSOBJECTS` root page
+and offset `0x7c` stores the `SYSINDEXES` root page. The root page header then
+supplies the storage id. After that, the extractor verifies page-header
+ownership, walks the BTREE/root leaf chain, and decodes live slot rows.
+`SYSCOLUMNS` is reached through the offline-decoded `SYSINDEXES` row rather
+than a string scan:
+
+| Dictionary | Storage id | Root file | Root page | Remote result |
+| --- | ---: | ---: | ---: | --- |
+| `SYSOBJECTS` | `33554540` | `0` | `16` | 760 pages, 4,828 rows seen, 1,583 rows decoded |
+| `SYSINDEXES` | `33554434` | `0` | `288` | 303 pages, 2,465 rows seen, 2,447 rows decoded |
+| `SYSCOLUMNS` | `33554433` | `0` | `80` | 70 pages, 5,206 rows decoded, 0 failures |
+
+Remote `bootstrap_full_storage_20260702_v3` completed in about 3.3 seconds and
+generated `user=10`, `tab=1573`, `col=5206`. Remote
+`bootstrap_root_discovery_20260703` then discovered `SYSOBJECTS` root page `16`
+and `SYSINDEXES` root page `288` from page headers. Remote
+`bootstrap_file_header_20260703` moved one layer lower: it read those two root
+pages directly from SYSTEM page 0, decoded storage ids `33554540` and
+`33554434` from the root page headers, decoded `SYSCOLUMNS` root page `80` from
+offline `SYSINDEXES`, and generated `user=10`, `tab=1574`, `col=5206`. The same
+page 0 offsets were validated against the parallel DM7 database at
+`/dmdata/data7/DAMENG`; full DM7 bootstrap completed with `user=6`, `tab=344`,
+`col=4739` and one `SYSCOLUMNS` row-decode failure sample. The resulting DM8
+dictionary preserved owner/root metadata for controlled tables including
+`TEST.DEPARTMENTS`, `SYSDBA.DMDUL_DUP_SCHEMA2`, `TEST.DMDUL_DUP_SCHEMA2`,
+`SYSDBA.DMDUL_EXT2`, `SYSDBA.DMDUL_MANY`, and `SYSDBA.DMDUL_TYPES3`.
+`dump-data --dict-dir` from that storage-root dictionary then extracted both
+duplicate-schema tables and `SYSDBA.DMDUL_TYPES3` with `strict_ok=true`. The
+remaining bootstrap work is to characterize more SYSTEM page 0 fields and test
+additional DM builds, not to rely on online dictionary views.
+
+The current strict batch comparison writes remote evidence under
+`/home/dmdba/dmdul/tmp/strict_compare_current`. The generated
+`strict_online_compare.json` recorded all seven controlled tables as matched:
+`DMDUL_MANY`, `DMDUL_ONE2`, `DMDUL_NULL2`, `DMDUL_VLEN2`, `DMDUL_DTTM2`,
+`DMDUL_MOD2`, and `DMDUL_EXT2`. The comparison uses full row-set equality for
+the small tables, normalized temporal display forms for `DMDUL_DTTM2`, ID and
+payload-length checks for the 3000-byte `DMDUL_MANY` rows, and aggregate plus
+per-row formula verification for `DMDUL_EXT2`.
+
+`DMDUL_EXT2` was created in `DMDUL_TS` specifically to exceed a single extent.
+Online `DBA_SEGMENTS` reported `BLOCKS=880` and `EXTENTS=55`. The current
+`DBA_EXTENTS` view on this DM8 instance returned only one row for this segment
+(`EXTENT_ID=24`, `BLOCKS=4`), so it should not currently be treated as an
+Oracle-compatible per-extent map without more decoding. The extractor scanned
+862 accepted data page references for `DMDUL_EXT2` and wrote 25,000 rows with
+`strict_ok=true`.
+
+The `DMDUL_EXT2` BTREE also refined root-entry coverage checks. Root page `384`
+uses leftmost child page `386`, which descends to leaf page `400`; its root slot
+entry points to page `387`, another internal page. Page `387` does not expose
+the same leftmost-child field, but its slot entries point to leaf pages already
+covered by the `400..1261` leaf next-chain. Therefore a root entry child should
+not be treated as uncovered merely because the child page itself is not in the
+leaf chain. The planner now considers an internal child covered when its
+leftmost descendant leaf or all of its entry children are covered by the walked
+leaf chain. After that refinement, `DMDUL_EXT2 --strict` still writes 25,000
+verified rows and no longer reports `page-plan-btree-root-entry-mismatch`.
+The extraction report mode is now derived from the actual page planner; for this
+case it reports `mode=btree-internal-descent`, matching the diagnostic evidence
+instead of the older generic range-scan label. If
+`page-plan-btree-root-entry-mismatch` appears in a future run, strict mode now
+fails because an uncovered root child can mean an incomplete CSV.
 
 ## Next Experiments
 
@@ -1201,4 +1420,102 @@ Production extent allocation must also be treated as non-contiguous. Child pages
 from a BTREE root and leaf `prev/next` links are safer than scanning a contiguous
 range because other objects' extents can appear between a table's extents. Every
 planned page must still be verified by page header identity and storage id.
+## SYSOBJECTS Owner and Partition Findings - 2026-07-03
 
+A later `SYSCOLUMNS.COLID=2560` failure was traced to an upstream
+`SYSOBJECTS` parse error, not to the clean `SYSCOLUMNS` row formula. The target
+table `SYSDBA.DMDUL_TYPE_COVER5` was incorrectly decoded as object id
+`16777349`; online dictionary and slot-row evidence show the real object id is
+`34097`. Looking up columns for the wrong object id mixed unrelated rows and
+created the false non-contiguous column sequence.
+
+The observed DM8 `SYSOBJECTS` ordinary slot layout is:
+
+```text
+row.data[7:11]   ID
+row.data[11:15]  SCHID
+row.data[15:19]  PID, 0xffffffff for no parent
+variable area    NAME, TYPE$, SUBTYPE$
+```
+
+Object selection must use `(SCHID, NAME, PID)` plus decoded `TYPE$` and
+`SUBTYPE$`; table name alone is not a valid key when owner/schema information is
+available.
+
+Partition evidence from `SYSDBA.DMDUL_PART_T`:
+
+| Object | ID | TYPE$ | SUBTYPE$ | PID |
+| --- | ---: | --- | --- | ---: |
+| `DMDUL_PART_T` | 34099 | `SCHOBJ` | `UTAB` | -1 |
+| `DMDUL_PART_T_P1` | 34100 | `SCHOBJ` | `UTAB` | 34099 |
+| `DMDUL_PART_T_P2` | 34101 | `SCHOBJ` | `UTAB` | 34099 |
+| `INDEX33595928` | 33595928 | `TABOBJ` | `INDEX` | 34099 |
+| `INDEX33595929_33595928` | 33595929 | `TABOBJ` | `INDEX` | 34100 |
+| `INDEX33595930_33595928` | 33595930 | `TABOBJ` | `INDEX` | 34101 |
+
+The parent partitioned table and each partition are all `SCHOBJ/UTAB`; the
+difference is `PID`. Extraction of a partitioned parent table must expand child
+objects where `PID=<parent table id>` and read each partition's own
+`TABOBJ/INDEX` storage object. Remote strict extraction of
+`SYSDBA.DMDUL_PART_T` scanned partition root pages `1376` and `1392` and wrote
+the expected rows `1,P1` and `101,P2`.
+
+Complex partition follow-up used three controlled tables:
+
+- `SYSDBA.DMDUL_PART_LIST`: list partitions `P_CN`, `P_US`, `P_OTHER`.
+- `SYSDBA.DMDUL_PART_HASH`: four hash partitions `DMHASHPART0..3`.
+- `SYSDBA.DMDUL_PART_RANGE_HASH`: range partitions `P_LOW/P_HIGH`, each with
+  two hash subpartitions.
+
+The dictionary pattern remains recursive:
+
+```text
+table parent:       SCHOBJ/UTAB, PID=-1
+intermediate part:  SCHOBJ/UTAB, PID=<parent table or partition id>
+leaf part/subpart:  SCHOBJ/UTAB, PID=<parent partition id>
+data storage:       TABOBJ/INDEX, PID=<leaf object id>
+```
+
+For table-data extraction, dmdul should ignore intermediate storage objects and
+use only leaf partition/subpartition objects, defined as partition descendants
+with no further `SCHOBJ/UTAB` children. Remote strict extraction validated:
+
+| Table | Leaf data pages | Rows |
+| --- | --- | ---: |
+| `DMDUL_PART_LIST` | `1424`, `1440`, `1456` | 3 |
+| `DMDUL_PART_HASH` | `1488`, `1504`, `1520`, `1536` | 4 |
+| `DMDUL_PART_RANGE_HASH` | `1568`, `1584`, `1600`, `1616` | 4 |
+
+The range-hash output rows matched the inserted values:
+`RH_LOW1`, `RH_LOW2`, `RH_HIGH1`, and `RH_HIGH2`.
+
+Bootstrap/dump split:
+
+- `bootstrap` is responsible for scanning SYSTEM dictionary tables and writing
+  table metadata to dict files.
+- `dump-data --dict-dir` must consume only `file.dict`, `tab.dict`, and
+  `col.dict`; it must not rescan `SYSOBJECTS`, `SYSCOLUMNS`, or `SYSINDEXES`.
+- For partitioned tables, `tab.dict.page_refs` stores all leaf partition root
+  pages as `file_no:page_no` entries separated by semicolons, and
+  `storage_index_ids` stores the corresponding leaf storage ids.
+- When `page_refs` is present, the extractor treats these dict entries as the
+  extraction plan and does not apply a single table-level storage-id filter.
+
+Remote verification used one bootstrap pass for
+`SYSDBA.DMDUL_PART_RANGE_HASH`. The generated table row contained:
+
+```text
+storage_index_ids=33595943;33595944;33595945;33595946
+page_refs=0:1568;0:1584;0:1600;0:1616
+```
+
+The subsequent `dump-data --dict-dir tmp/bootstrap_complex_part_dict` wrote all
+four rows from the already downloaded dict without rescanning SYSTEM.DBF.
+
+## Current Format Summary
+
+A concise Chinese summary of the currently verified file/page/row/type/LOB
+formats is maintained in
+`docs/DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md`. Treat that document as the
+quick implementation reference, and this architecture note as the longer
+evidence log.

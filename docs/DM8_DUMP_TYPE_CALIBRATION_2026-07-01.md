@@ -147,7 +147,11 @@ Implemented in `src/dmdul/decode.py`:
 - decoded `NUMBER`/`NUMERIC`/`DECIMAL` using the observed base-100 payload;
 - exported `CLOB`/`BLOB` as hex for now, because full LOB segment following is
   not implemented yet;
-- changed row decoding to the fixed-area plus variable-area model.
+- changed row decoding to the fixed-area plus variable-area model;
+- decoded the observed ordinary-row NULL bitmap: two little-endian bits per
+  storage-order column, `00` for present and `11` for NULL. Fixed-width NULL
+  columns still consume fixed bytes; variable-width NULL columns omit their
+  length prefix and payload.
 
 The `NUMBER(38)` bug was fixed by converting base-100 digits directly into a
 string and placing the decimal point from the exponent. This avoids precision
@@ -323,17 +327,250 @@ page-row payload width for these fixed-width date/time columns. Export code
 should use page bytes and dictionary length together and must preserve raw bytes
 for any unrecognized suffix or variant.
 
+## Type Coverage Extension - 2026-07-03
+
+`DBA_TAB_COLUMNS.DATA_TYPE` on the DM8 lab instance currently exposes these
+ordinary target types:
+
+```text
+BIGINT, BLOB, BYTE, CHAR, CLOB, DATE, DATETIME,
+DATETIME WITH TIME ZONE, DEC, DECIMAL, DOUBLE, FLOAT, INT, INTEGER,
+INTERVAL DAY TO SECOND, NUMBER, NUMERIC, REAL, ROWID, SMALLINT, TEXT,
+TIME, TIME WITH TIME ZONE, TIMESTAMP, TIMESTAMP WITH LOCAL TIME ZONE,
+TINYINT, VARBINARY, VARCHAR, VARCHAR2
+```
+
+`CLASS234882066` also appears in dictionary views, but it is an internal class
+type and is not treated as an ordinary table extraction target.
+
+Focused remote fixtures validated the remaining type families:
+
+- `DMDUL_TYPE_COVER5` covered `DEC`, `BYTE`, `VARBINARY`, `TEXT`,
+  `TIME WITH TIME ZONE`, `TIMESTAMP WITH LOCAL TIME ZONE`,
+  `DATETIME WITH TIME ZONE`, and `INTERVAL DAY TO SECOND`.
+- `DMDUL_ROWID_COVER` covered a real `ROWID` column populated from a table
+  pseudo-rowid.
+
+Observed storage additions:
+
+- `BYTE` is fixed width 1 byte in ordinary rows. dmdul emits it as two hex
+  digits, preserving the byte value instead of converting it to a numeric
+  display.
+- `INTERVAL DAY TO SECOND` is fixed width 24 bytes in the tested row. The first
+  five little-endian signed 32-bit fields decode as day, hour, minute, second,
+  and microsecond. The sixth 32-bit field is retained as metadata for now.
+- `ROWID` is fixed width 12 bytes. DM renders it as three 4-byte big-endian
+  integers, each encoded into six base64-style characters. The observed raw
+  value `00 00 00 00 00 00 00 00 00 00 00 01` renders as
+  `AAAAAAAAAAAAAAAAAB`.
+- Short `TEXT`, `CLOB`, and `BLOB` values may carry a 13-byte inline LOB prefix:
+  one flag byte, eight locator/control bytes, and a 4-byte inline payload
+  length. When this length equals the remaining payload length, dmdul emits only
+  the inline value.
+- The lab database stores non-ASCII character bytes in the GB18030 family. The
+  decoder treats ASCII directly, then tries GB18030 before UTF-8 for non-ASCII
+  bytes.
+
+Remote strict extraction evidence:
+
+```text
+SYSDBA.DMDUL_TYPE_COVER5
+1,42.5,7f,cafe01,TEXT_VALUE_一,13:14:15.654321 +08:00,
+2026-07-01 13:14:15.654321,
+2026-07-01 13:14:15.654321 +08:00,1 02:03:04.500000
+
+SYSDBA.DMDUL_ROWID_COVER
+1,AAAAAAAAAAAAAAAAAB
+```
+
+The local coverage helper now reports zero unsupported observed ordinary target
+types, excluding the internal `CLASS234882066`.
+
 ## Current Limits
 
 Known remaining limits after this work:
 
-- `CLOB`/`BLOB` are not yet followed into full LOB storage; current output is
-  raw locator/inline payload hex.
-- Rows with nonzero row metadata, NULL bitmap variants, or more complex row
-  control structures are still rejected until their metadata is decoded.
+- `CLOB`/`BLOB`/`TEXT` short inline payloads are decoded, but full LOB segment
+  following is still not implemented. Non-inline or unrecognized LOB payloads
+  must be preserved rather than silently truncated.
+- Row metadata states outside the observed NULL bitmap values `00` and `11`, or
+  extra metadata bits beyond the column count, are still rejected until column
+  directory or transaction-control semantics are decoded.
 - Page planning now filters by storage id and data-page kind, but does not yet
   parse the segment root / extent bitmap into an exact extent list.
 - Missing `SYSTEM.DBF` recovery mode is still deferred.
+
+## Remote CLI Validation Follow-up
+
+The remote `extract-csv --database-dir` path was validated against online
+`SELECT` for focused fixtures:
+
+- `DMDUL_NULL2`: offline CSV decoded all 4 rows with NULL combinations. The
+  raw metadata bytes `fc 03`, `c0 03`, `3c 00`, and `00 00` matched the
+  storage-order two-bit NULL rule, and NULL values were emitted as empty CSV
+  fields.
+- `DMDUL_DTTM2`: offline CSV decoded 3 rows with packed `DATE`, `TIME`, and
+  `TIMESTAMP` values. Online `SELECT` returned the same logical values; offline
+  formatting is normalized as `YYYY-MM-DD`, `HH:MI:SS.ffffff`, and
+  `YYYY-MM-DD HH:MI:SS.ffffff`.
+- `DMDUL_VLEN2`: offline CSV decoded all 8 VARCHAR threshold rows and matched
+  online value lengths `1, 2, 10, 127, 128, 255, 256, 1000`.
+- `DMDUL_MOD2`: offline CSV skipped the committed deleted row and matched the
+  two visible online rows.
+- `DMDUL_TYPES3`: offline strict CSV decoded all 4 mixed scalar rows and
+  matched online `SELECT` after normalizing display-only differences. Covered
+  columns were `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `REAL`, `FLOAT`,
+  `DOUBLE`, `NUMBER(18,4)`, `DECIMAL(18,4)`, `DATE`, `TIME(6)`,
+  `TIMESTAMP(6)`, `CHAR(8)`, and `VARCHAR(40)`. The strict report returned
+  `strict_ok=true`, `rows_written=4`, and `rows_skipped_decode_error=0`.
+
+The `DMDUL_TYPES3` run also exposed a dictionary-bootstrap hazard. The current
+SYSTEM-file heuristic can see noisy `SYSCOLUMNS` candidates with duplicate
+`column_id` values, including an unrelated `FINDEXID`-like row. The resolver now
+deduplicates by `column_id`, keeps the highest-scoring candidate, and rejects
+non-contiguous column ids instead of letting one spurious row shift all later
+decoded columns.
+
+Follow-up bootstrap validation preserved `SYSCOLUMNS` `scale` and `nullable`
+through `col.dict` and `dump-data`. The generated DUL header for
+`DMDUL_TYPES3` now renders numeric and temporal precision from offline
+dictionary files: `NUMBER(18,4)`, `DECIMAL(18,4)`, `TIME(6)`, and
+`TIMESTAMP(6)`.
+
+A later owner/schema fix reads `SYSOBJECTS.SCHID` as a 4-byte value and maps the
+verified built-in full schema ids. Remote `bootstrap_owner_fix` then emitted
+`SYSDBA.DMDUL_TYPES3` instead of the earlier noisy `TEST2.DMDUL_TYPES3`, and
+`dump-data --table SYSDBA.DMDUL_TYPES3` generated a DUL header beginning with
+`CREATE TABLE SYSDBA.DMDUL_TYPES3`.
+
+This validates the current ordinary-row path for controlled NULL metadata,
+fixed temporal payloads, variable-length thresholds, and committed deleted-row
+skipping.
+
+## LOB Attachment Export
+
+`dump-data`, `extract-dicts`, and `extract-csv` now default to external LOB
+export. The main DUL/CSV file stores a stable placeholder instead of embedding
+large LOB values:
+
+```text
+@LOB:SYSDBA.T.lob/00000001/DOC.clob
+@LOB:SYSDBA.T.lob/00000001/BIN.blob
+```
+
+For an output file `SYSDBA.T.dul`, attachments are written under
+`SYSDBA.T.lob/` by default:
+
+```text
+SYSDBA.T.dul
+SYSDBA.T.lob/
+  00000001/DOC.clob
+  00000001/BIN.blob
+  manifest.jsonl
+```
+
+The filename row component is the extraction row sequence, not a primary key.
+`BLOB` attachments are raw bytes. `CLOB` and `TEXT` attachments are decoded text
+written as UTF-8, with the original source encoding recorded in
+`manifest.jsonl`. Each manifest row records table, row sequence, column, type,
+status, file path, output byte count, and `sha256`. When text transcoding
+changes the byte count, `source_bytes` records the original LOB page byte count.
+
+Out-of-line LOB locators now follow the observed DM8 page chain when the shape
+matches the controlled evidence. The observed locator is 21 bytes:
+
+```text
+00      flag, 0x02 for out-of-line LOB
+01..04  LOB id, little-endian
+09..12  byte length, little-endian
+13..16  group id / tablespace group, little-endian
+17..20  first LOB data page, little-endian
+```
+
+The observed LOB data pages use page kind `0x20`. The LOB id is stored at page
+offset `0x24`, payload length at `0x2c`, and payload bytes start at `0x38`.
+The regular page `next_page` pointer links the data pages. The implementation
+accepts this narrow shape only: group id, file hint, page number, page kind,
+LOB id, and payload bounds must all match. If any check fails, dmdul still
+writes the raw locator as `<column>.locator.hex`, emits
+`status="unresolved-locator"` in the manifest, and adds the strict error
+diagnostic `lob-locator-not-followed`.
+
+Remote validation on 2026-07-03 used `SYSDBA.DMDUL_LOB_INLINE`:
+
+```text
+ID|DOC|BIN
+1|@LOB:SYSDBA.DMDUL_LOB_INLINE.lob/00000001/DOC.clob|@LOB:SYSDBA.DMDUL_LOB_INLINE.lob/00000001/BIN.blob
+```
+
+The generated CLOB attachment contained `CLOB_一`, and the BLOB attachment bytes
+were `ca fe ba be`. The `dump-data --dict-dir` report returned
+`ok=true`, `strict_ok=true`, and `rows_written=1`.
+
+Remote out-of-line validation on 2026-07-03 used `SYSDBA.DMDUL_LOB_BIG` with a
+26000-character CLOB and a 12000-byte BLOB. The row locators were:
+
+```text
+DOC: 0260d4060000000000606d00000600000086060000
+BIN: 0261d4060000000000e02e0000060000008b060000
+```
+
+The DOC byte length field is `0x6d60` (28000 bytes in GB18030), and the first
+page is `1670`. The BIN byte length field is `0x2ee0` (12000 bytes), and the
+first page is `1675`. Offline `dump-data --dict-dir` wrote:
+
+```text
+DOC pages: 1670, 1671, 1672, 1673
+BIN pages: 1675, 1676
+DOC output: 26000 UTF-8 characters, 30000 bytes
+BIN output: 12000 bytes
+```
+
+The strict report returned `ok=true`, `strict_ok=true`, and `rows_written=1`.
+
+LOB update / old-version evidence on 2026-07-03 used
+`SYSDBA.DMDUL_LOB_UPDATE`:
+
+1. Inserted one row with `OLD_LOB_一_...` CLOB and `cafebabe...` BLOB.
+2. Committed.
+3. Updated the same row to `NEW_LOB_二_...` CLOB and `deadbeef...` BLOB.
+4. Committed.
+
+Online SQL returned only the new version:
+
+```text
+DOC_LEN=20000
+DOC_PREFIX=NEW_LOB_二_NEW_LOB_二_
+BIN_LEN=12000
+```
+
+Offline `dump-data --dict-dir` also returned only the new version and reported
+`ok=true`, `strict_ok=true`, `rows_written=1`. The attachment verification
+showed:
+
+```text
+doc_chars=20000
+doc_prefix=NEW_LOB_二_NEW_LOB_二_NEW_
+contains_old=False
+bin_bytes=12000
+bin_head=deadbeefdeadbeefdeadbeefdeadbeef
+bin_contains_old_cafebabe=False
+```
+
+Raw page scanning still found the old LOB payload physically present:
+
+```text
+old CLOB pages: 1766 -> 1767 -> 1768, lobid=447586
+old BLOB pages: 1769 -> 1770, lobid=447587
+new CLOB pages: 1771 -> 1772 -> 1773, lobid=447588
+new BLOB pages: 1774 -> 1775, lobid=447589
+current table row page: 1776
+```
+
+This confirms the extraction rule: do not scan and export arbitrary LOB pages.
+For current committed table data, dmdul must decode the active row first, then
+follow only the locator stored in that active row. Old LOB page chains can
+remain in the data file and must not be treated as current table values.
 
 ## Practical Rule Going Forward
 

@@ -9,13 +9,17 @@
 - 从字典定位表的 storage root；
 - 解析表 storage BTree root/leaf page plan；
 - 导出单表或某个用户下所有表的数据；
-- 对大批量表导出支持并发 worker。
+- 对大批量表导出支持多表并发 worker；
+- 对大型分区表支持按分区名导出、表内 split-part 并发导出；
+- 支持 DUL 文本、二进制 row 归档、parts manifest 三种导出结构；
+- 支持从 DUL/row/parts 生成重装载 SQL；
+- 支持已验证的短内联 LOB 和 out-of-line LOB 页链读取。
 
 当前暂不作为主流程支持：
 
 - 达梦 ASM 磁盘组读取；
 - 缺失 `SYSTEM.DBF` 时的全文件扫描重组；
-- 完整 LOB 段跟随读取；
+- 直接连接目标 DM 库并执行并发入库；
 - 索引对象本身导出。
 
 ## 1. 基本原则
@@ -179,6 +183,32 @@ bootstrap 后会生成平面 CSV 字典文件，扩展名为 `.dict`：
 
 字典文件不用 JSON，是为了适应大型系统中几十万张表的场景，便于流式读取和内存缓存。
 
+`tab.dict` 中和数据定位最相关的字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `owner` / `name` / `qualified_name` | 表所属用户、表名、全名。判断同名表时必须同时看 owner。 |
+| `object_id` | 表对象 id，用于和 `col.dict.object_id` 关联。 |
+| `storage_index_id` | 普通表的 storage id；分区表父对象可能为空或只作为参考。 |
+| `storage_index_ids` | 分区表所有 leaf 分区/subpartition 的 storage id 列表，使用 `;` 分隔。 |
+| `group_id` / `root_file` / `root_page` | storage root 所在 group、文件号、页号。 |
+| `page_refs` | 已展开的 leaf root 页引用，格式如 `0:1568;0:1584`。分区表导出优先使用它。 |
+| `partition_names` | 与 `page_refs` 一一对应的 leaf 分区或子分区名，格式如 `P_LOW;P_HIGH`。 |
+| `scan_pages` | 缺少更精确 page plan 时的保守扫描窗口。 |
+
+`col.dict` 中和字段解码最相关的字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `owner` / `table_name` / `qualified_table_name` | 列所属表。 |
+| `object_id` | 与 `tab.dict.object_id` 关联。 |
+| `ordinal` | 列顺序，导出时按该顺序解码。 |
+| `name` | 列名。 |
+| `type_name` | 达梦字段类型名。 |
+| `length` / `scale` / `nullable` | 字段长度、精度、小数位、是否可空。 |
+
+如果人工修改字典，必须保持 `tab.dict` 与 `col.dict` 的 `object_id` 对齐；分区表还要保持 `partition_names` 和 `page_refs` 数量一致、顺序一致。
+
 ## 4. 总体流程
 
 推荐恢复流程分为三个阶段：
@@ -327,22 +357,20 @@ TMPDIR=./tmp ./bin/dmdul \
 [bootstrap] scan database directory: /recovery/dmcopy
 [bootstrap] database scan complete: data_files=2 control_files=1
 [bootstrap] write control.ctl: /recovery/work/dict/control.ctl
-[bootstrap] scan SYSTEM.DBF for SYSOBJECTS/SYSCOLUMNS/SYSINDEXES
+[bootstrap] download SYS dictionaries from SYSTEM storage roots
 [bootstrap] dictionary rows: user=1 tab=10 col=80
 [bootstrap] bootstrap complete
 ```
 
-这些信息用于判断长时间执行时卡在目录扫描、`SYSTEM.DBF` 扫描还是字典写入阶段。使用 `--json` 时 stdout 保持为纯 JSON，不输出这些进度行。
+这些信息用于判断长时间执行时卡在目录扫描、SYS 字典存储根读取还是字典写入阶段。使用 `--json` 时 stdout 保持为纯 JSON，不输出这些进度行。
 
 当前阶段 bootstrap 的核心任务：
 
 - 找到 SYSTEM 表空间的数据文件；
-- 扫描 `SYSTEM.DBF`；
-- 下载关键系统字典：
+- 从已知 SYS 字典存储根读取关键系统字典：
   - `SYSOBJECTS`；
+  - `SYSINDEXES`；
   - `SYSCOLUMNS`；
-  - `SYSUSERS`；
-  - 必要的 storage/root 信息；
 - 生成 `file.dict`、`user.dict`、`tab.dict`、`col.dict`。
 
 ### 6.2 不使用 init.dul 的写法
@@ -452,7 +480,186 @@ CREATE TABLE BMSQL.BMSQL_ORDERS (
 - 当前支持 `|` 和 `~`；
 - 不建议使用逗号，因为业务数据中逗号出现概率较高。
 
-### 7.2 导出多个指定表
+### 7.2 二进制 row 归档格式
+
+对于大表、包含换行/分隔符的字符列、二进制列或大 LOB 的表，推荐使用 row 归档格式：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  dump-data \
+  --dict-dir /recovery/work/dict \
+  --output-dir /recovery/work/dulout \
+  --table BMSQL.BMSQL_ORDERS \
+  --output-format row \
+  --json
+```
+
+输出文件：
+
+```text
+/recovery/work/dulout/BMSQL.BMSQL_ORDERS.row
+```
+
+`.row` 是二进制文件，不是 JSON，也不是分隔文本。文件内包含：
+
+- owner、表名、列定义；
+- 可用于导入端建表的 `CREATE TABLE` 脚本；
+- 每条活动行的原始 DM 行内 bytes；
+- 行所在 file/page/slot offset；
+- 该行引用的 LOB payload blocks。
+
+row 归档可以复制到另一台服务器使用；导入端不需要原始 DBF，也不需要同名 `.lob/` 附件目录。
+
+从 `.row` 生成导入 SQL：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql
+```
+
+默认会使用 `.row` 文件内的 `CREATE TABLE` 脚本，并生成 `INSERT` 和 `COMMIT`。如果目标库中表已经存在：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
+  --no-create-table
+```
+
+如果需要导入到新表名：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
+  --table RECOVER.BMSQL_ORDERS
+```
+
+`import-data` 同时支持 DUL 文本格式和 row 归档格式，默认 `--input-format auto` 会自动识别。已有 DUL 文本导出也可以生成导入 SQL：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.dul \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
+  --input-format dul \
+  --delimiter '|'
+```
+
+DUL 文本导入使用文件头部的 `CREATE TABLE`，并解析 `-- DATA` 后的分隔符数据；遇到 `@LOB:<relative-path>` 时，会从 DUL 文件所在目录读取同名 `.lob/` 附件。row 归档导入则使用 `.row` 文件内的建表脚本、原始行 bytes 和内嵌 LOB payload，不需要 `.lob/` 附件目录。`import-row` 仍保留为兼容别名，但新流程建议统一使用 `import-data`。
+
+### 7.2.1 三种输出结构怎么选
+
+| 输出结构 | 命令 | 主文件 | LOB 存放方式 | 适用场景 |
+| --- | --- | --- | --- | --- |
+| DUL 文本 | `--output-format dul` | `OWNER.TABLE.dul` | 默认写到 `OWNER.TABLE.lob/` 附件目录 | 小表、普通字符/数字表、需要人工检查文本内容 |
+| row 归档 | `--output-format row` | `OWNER.TABLE.row` | LOB payload 内嵌到 `.row` 文件 | 大表、二进制列、包含分隔符/换行、大 LOB、跨服务器搬运 |
+| parts manifest | `--partition-parallel > 1` | `OWNER.TABLE.dul` 或 `.row`，内容为 `DMDUL-PARTS 1` | 每个 part 独立处理；row part 内嵌 LOB，DUL part 使用自己的 `.lob/` | 大型分区表或 page refs 很多的表，需要表内并发导出 |
+
+选择建议：
+
+- 只为了快速查看少量数据，使用 DUL 文本。
+- 恢复大表、LOB 表、含二进制列的表，优先使用 row 归档。
+- 一个分区表有很多 leaf 分区或数据页很多，使用 `--partition-parallel` 生成 parts manifest。
+- 要跨服务器传输，row 归档最省心，因为 LOB payload 在同一个归档体系中，不依赖原 DBF。
+- 如果选择 DUL 文本并且有 LOB，复制到导入环境时必须连同 `.lob/` 目录一起复制。
+
+### 7.2.2 DUL 文本文件结构
+
+普通 DUL 文本主文件：
+
+```text
+CREATE TABLE OWNER.TABLE_NAME (
+  C1 INT,
+  C2 VARCHAR(100),
+  C3 CLOB
+);
+-- DATA
+C1|C2|C3
+1|abc|@LOB:OWNER.TABLE_NAME.lob/00000001/C3.clob
+```
+
+对应 LOB 附件目录：
+
+```text
+OWNER.TABLE_NAME.lob/
+  00000001/
+    C3.clob
+  manifest.jsonl
+```
+
+`manifest.jsonl` 每行描述一个 LOB 附件，字段包括：
+
+| 字段 | 含义 |
+| --- | --- |
+| `table` | 表名 |
+| `row_sequence` | 导出行序号，从 1 开始 |
+| `column` | LOB 列名 |
+| `type_name` | `TEXT` / `CLOB` / `BLOB` |
+| `status` | `inline`、`out-of-line` 或 `unresolved-locator` |
+| `file` | 附件相对路径 |
+| `bytes` | 输出附件字节数 |
+| `sha256` | 附件校验值 |
+| `source_encoding` / `output_encoding` | 文本 LOB 的源编码和输出编码 |
+| `source_bytes` | 原始 LOB payload 字节数 |
+| `pages` | out-of-line LOB 页链页号 |
+
+### 7.2.3 row 归档文件结构
+
+`.row` 是二进制文件，不应使用文本编辑器修改。内部逻辑结构：
+
+```text
+MAGIC: DMDULROW
+HEADER:
+  owner
+  table name
+  create table SQL
+  column metadata list
+RECORDS:
+  LOB record, optional, keyed by row sequence and column name
+  ROW record, includes row sequence, file_no, page_no, row_offset, raw row bytes
+END:
+  rows count
+```
+
+row 归档保留的是 DM 原始行内 bytes；导入阶段再按归档中的列定义解码。这样可以避免 CSV 分隔符、换行、二进制字符造成歧义。
+
+### 7.2.4 parts manifest 结构
+
+启用 `--partition-parallel N` 后，主输出文件不是普通 DUL/row 数据，而是 manifest：
+
+```text
+DMDUL-PARTS 1
+FORMAT row
+TABLE OWNER.BIG_PART_T
+DELIMITER |
+PART_DIR OWNER.BIG_PART_T.row.parts
+PART_COUNT 8
+CREATE_SQL_BEGIN
+CREATE TABLE OWNER.BIG_PART_T (
+  ...
+);
+CREATE_SQL_END
+PART 1 part-000001.row ROWS 10000 OK true
+PART 2 part-000002.row ROWS 12000 OK true
+```
+
+part 子目录：
+
+```text
+OWNER.BIG_PART_T.row.parts/
+  part-000001.row
+  part-000002.row
+  ...
+```
+
+导入时只需要把主 manifest 路径交给 `import-data`，工具会按 `PART_DIR` 找到所有 part 文件。
+
+### 7.3 导出多个指定表
 
 `--table` 可以重复：
 
@@ -466,7 +673,7 @@ TMPDIR=./tmp ./bin/dmdul \
   --json
 ```
 
-### 7.3 导出某个用户下所有表
+### 7.4 导出某个用户下所有表
 
 命令：
 
@@ -478,9 +685,42 @@ TMPDIR=./tmp ./bin/dmdul \
   --json
 ```
 
-### 7.4 并发导出
+### 7.5 导出指定分区
 
-当用户下表很多时，可以启用并发：
+对于分区表，可以只导出一个 leaf 分区或几个 leaf 分区：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table BMSQL.BIG_PART_T \
+  --partition P_LOW \
+  --json
+```
+
+多个分区可以重复写 `--partition`，也可以使用逗号列表：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table BMSQL.BIG_PART_T \
+  --partition P_LOW,P_HIGH \
+  --partition DMHASHPART0 \
+  --output-format row \
+  --json
+```
+
+说明：
+
+- 分区名大小写不敏感；
+- `--partition` 依赖 bootstrap 写入的 `tab.dict.partition_names`，并与 `tab.dict.page_refs` 一一对应；
+- 指定分区时本次必须只匹配一张表，避免把分区名误应用到多张表；
+- 分区过滤可和 `--partition-parallel` 同时使用。
+
+### 7.6 并发导出
+
+当用户下表很多时，可以启用多表并发：
 
 ```sh
 TMPDIR=./tmp ./bin/dmdul \
@@ -499,13 +739,65 @@ TMPDIR=./tmp ./bin/dmdul \
 
 说明：
 
-- `parallel=1` 为单线程；
-- `parallel>1` 会使用多个 worker；
+- `parallel=1` 为单表导出队列；
+- `parallel>1` 会使用多个 worker 同时导出多张表；
 - 并发度不宜超过磁盘实际吞吐能力；
 - 大量小表可以适当提高并发；
 - 大表导出主要受单表扫描和磁盘顺序读取影响。
 
-### 7.5 导出报告
+对于大型分区表，可以启用表内 split-part 并发：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table BMSQL.BIG_PART_T \
+  --partition-parallel 8 \
+  --output-format row \
+  --json
+```
+
+此时主输出文件仍是：
+
+```text
+/recovery/work/dulout/BMSQL.BIG_PART_T.row
+```
+
+但它是一个 parts manifest，内容记录 part 子目录位置、建表脚本和每个 part 文件：
+
+```text
+DMDUL-PARTS 1
+FORMAT row
+TABLE BMSQL.BIG_PART_T
+PART_DIR BMSQL.BIG_PART_T.row.parts
+CREATE_SQL_BEGIN
+...
+CREATE_SQL_END
+PART 1 part-000001.row ROWS ...
+PART 2 part-000002.row ROWS ...
+```
+
+每个 worker 只写自己的 part 文件，例如：
+
+```text
+BMSQL.BIG_PART_T.row.parts/
+  part-000001.row
+  part-000002.row
+  part-000003.row
+```
+
+`import-data` 可以直接读取主 manifest，并自动找到 part 子目录：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BIG_PART_T.row \
+  --output-sql /recovery/work/dulout/BMSQL.BIG_PART_T.import.sql
+```
+
+当前导入命令会把所有 part 合并生成一个 SQL 文件；文件结构已经保留了 part 边界，后续直接执行导入时可以按 part 文件启动多个导入 worker。
+
+### 7.7 导出报告
 
 可以把 JSON 报告写入文件：
 
@@ -531,6 +823,54 @@ tables_failed
 每张表 scanned_pages / scanned_page_refs
 ```
 
+典型 JSON 结构：
+
+```json
+{
+  "mode": "dm-dump-data",
+  "dict_dir": "/recovery/work/dict",
+  "output_dir": "/recovery/work/dulout",
+  "delimiter": "|",
+  "output_format": "row",
+  "parallel": 8,
+  "partition_parallel": 1,
+  "tables_total": 10,
+  "tables_ok": 10,
+  "tables_failed": 0,
+  "reports": [
+    {
+      "table": "BMSQL.BMSQL_ORDERS",
+      "output": "/recovery/work/dulout/BMSQL.BMSQL_ORDERS.row",
+      "ok": true,
+      "strict_ok": true,
+      "rows_written": 100000,
+      "rows_skipped_deleted": 0,
+      "rows_skipped_decode_error": 0,
+      "decode_errors": [],
+      "diagnostics": [],
+      "scanned_page_refs": [
+        {"file_no": 0, "page_no": 96}
+      ],
+      "mode": "page-plan-btree-root-children"
+    }
+  ]
+}
+```
+
+字段解释：
+
+| 字段 | 含义 |
+| --- | --- |
+| `ok` | 没有 error 级 diagnostics。 |
+| `strict_ok` | 没有 error，也没有严格模式认为有风险的 warning。 |
+| `rows_written` | 成功写出的活动行数。 |
+| `rows_skipped_deleted` | 物理上存在但标记删除的行数。 |
+| `rows_skipped_decode_error` | 因行结构/类型解码失败跳过的行数。 |
+| `decode_errors` | 最多保留前 10 个解码错误位置。 |
+| `diagnostics` | page plan、LOB、类型、文件缺失等诊断信息。 |
+| `scanned_page_refs` | 实际接受并扫描的数据页 file/page。 |
+| `mode` | 本表 page plan 或导出模式。 |
+
 不使用 `--json` 时，如果有失败表，工具会把失败详情输出到 stderr，例如：
 
 ```text
@@ -542,7 +882,7 @@ table_failed=TEST2.BMSQL_ITEM
 
 如果看到 `tables_failed>0`，优先查看 stderr 中的 `table_failed`、`diagnostic` 和 `decode_error`。也可以同时加 `--report-output` 保存完整 JSON 报告。
 
-### 7.6 strict page plan
+### 7.8 strict page plan
 
 默认情况下，如果 page plan 有可恢复的 warning，工具会继续导出并在 report 中记录 diagnostics。
 
@@ -558,6 +898,140 @@ TMPDIR=./tmp ./bin/dmdul \
 ```
 
 生产恢复建议先不使用 `--strict-page-plan` 完成最大化导出，再根据 report 复核 diagnostics。
+
+### 7.9 导入和重装载 SQL
+
+`import-data` 的作用是把 dmdul 导出的文件转换成可在目标 DM 数据库执行的 SQL。当前它不直接连接数据库执行 SQL，而是生成 `.sql` 文件，便于审计、分批执行或后续接入并发执行器。
+
+基本命令：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
+  --json
+```
+
+支持输入格式：
+
+| `--input-format` | 含义 |
+| --- | --- |
+| `auto` | 默认。自动识别 row magic、parts manifest，其他按 DUL 文本处理。 |
+| `dul` | 强制按 DUL 文本解析。 |
+| `row` | 强制按二进制 row 归档解析。 |
+| `parts` | 强制按 parts manifest 解析。 |
+
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--input` | DUL、row 或 parts manifest 输入文件。 |
+| `--output-sql` | 输出 SQL 文件。 |
+| `--input-format` | 输入格式，默认 `auto`。 |
+| `--delimiter` | DUL 文本分隔符；不指定时从数据表头自动判断。 |
+| `--table` | 指定目标表名。用于导入到不同 schema 或临时恢复表。 |
+| `--no-create-table` | 不输出建表脚本，只输出 `INSERT` 和 `COMMIT`。 |
+| `--json` | 输出导入报告。 |
+
+默认 SQL 结构：
+
+```sql
+CREATE TABLE OWNER.TABLE_NAME (
+  ...
+);
+
+INSERT INTO OWNER.TABLE_NAME (C1, C2) VALUES (...);
+INSERT INTO OWNER.TABLE_NAME (C1, C2) VALUES (...);
+COMMIT;
+```
+
+如果目标表已提前建好：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.insert.sql \
+  --no-create-table
+```
+
+如果要导入到新表名：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS_REC.import.sql \
+  --table RECOVER.BMSQL_ORDERS_REC
+```
+
+LOB 导入规则：
+
+- DUL 文本遇到 `@LOB:<relative-path>` 时，从输入 DUL 文件所在目录读取附件；
+- row 归档从 `.row` 文件内部读取 LOB payload；
+- parts manifest 会逐个读取 part 文件，每个 part 按自己的格式解析；
+- `BLOB` 输出为 `HEXTORAW('<hex>')`；
+- `CLOB/TEXT` 输出为字符串字面量，当前按 UTF-8 文本写入 SQL。
+
+注意：对于超大 LOB，单条 SQL 字面量可能受目标数据库 SQL 长度限制。当前工具先保证导出结构完整和可审计；后续直接入库执行器应使用分块绑定或批量装载方式处理超大 LOB。
+
+### 7.10 dump-data 参数组合规则
+
+`dump-data` 当前是正式导出主入口。常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--dict-dir` | bootstrap 输出的字典目录。不使用 init.dul 时必须指定。 |
+| `--output-dir` | 表数据输出目录。不使用 init.dul 时必须指定。 |
+| `--table` | 指定表，可重复。支持 `OWNER.TABLE` 或只写表名；只写表名时可能匹配多个 owner 的同名表，应谨慎。 |
+| `--user` | 导出某个用户下所有表。按 owner 匹配，和表名无关。 |
+| `--partition` | 指定 leaf 分区/子分区名。可重复，也可逗号分隔。要求本次只匹配一张表。 |
+| `--parallel` | 多表并发 worker 数。 |
+| `--partition-parallel` | 单表内部 split-part worker 数。大分区表使用。 |
+| `--delimiter` | DUL 文本分隔符，支持 `|` 和 `~`。 |
+| `--output-format` | `dul` 或 `row`。默认 `dul`。 |
+| `--report-output` | 写 JSON 报告到文件。 |
+| `--strict-page-plan` | page plan 不完整时直接失败。 |
+| `--lob-mode` | `external` 或 `inline`。默认 `external`。row 归档总是按可导入方式保存 LOB payload。 |
+| `--lob-hash` | LOB 附件 hash，目前支持 `sha256`。 |
+| `--json` | stdout 输出 JSON manifest。 |
+
+选择对象时的规则：
+
+- 不指定 `--table` 且不指定 `--user`：导出字典中的全部表。
+- 指定一个或多个 `--table`：只导出匹配表。
+- 指定 `--user`：导出该 owner 下全部表。
+- 同时指定 `--table` 和 `--user`：当前过滤条件是并集，通常不建议这样用；需要精确导出时优先使用 `--table OWNER.TABLE`。
+- 指定 `--partition`：必须最终只匹配一张表，否则命令返回错误。
+
+并发参数的区别：
+
+| 参数 | 并发对象 | 输出结构 |
+| --- | --- | --- |
+| `--parallel` | 多张表 | 每张表一个主输出文件 |
+| `--partition-parallel` | 同一张表内的多个 page refs/分区切片 | 一个主 manifest + parts 子目录 |
+
+常见组合：
+
+```sh
+# 单表 row 归档
+dmdul dump-data --dict-dir dict --output-dir out \
+  --table BMSQL.T1 --output-format row
+
+# 用户全量，多表并发
+dmdul dump-data --dict-dir dict --output-dir out \
+  --user BMSQL --parallel 8
+
+# 大分区表，表内并发，每个 worker 写 part
+dmdul dump-data --dict-dir dict --output-dir out \
+  --table BMSQL.BIG_PART_T --partition-parallel 8 --output-format row
+
+# 只导出几个分区，并对这些分区 split-part
+dmdul dump-data --dict-dir dict --output-dir out \
+  --table BMSQL.BIG_PART_T --partition P_LOW,P_HIGH \
+  --partition-parallel 2 --output-format row
+```
 
 ## 8. 当前 page plan 机制
 
@@ -618,9 +1092,9 @@ rows_written = 80
 | `DATE` | 支持当前观测到的页内 payload；未知额外字段必须保留 |
 | `TIME` | 支持当前观测到的 5 字节 payload |
 | `TIMESTAMP` / `DATETIME` | 支持当前观测到的 8 字节 payload |
-| `CHAR` / `VARCHAR` | 支持 |
-| `CLOB` / `BLOB` | 当前输出 locator/inline payload raw hex，尚未完整跟随 LOB 段 |
-| 带时区时间类型 | 已有一手证据，导出策略需保留额外 TZ bytes |
+| `CHAR` / `VARCHAR` / `VARCHAR2` | 支持 |
+| `TEXT` / `CLOB` / `BLOB` | 支持短内联 LOB；支持当前已验证的 21 字节 out-of-line locator 和 `0x20` LOB 页链；默认外置到 `.lob/` 附件目录 |
+| 带时区时间类型 | 支持当前观测到的 TZ offset 编码 |
 
 注意：如果某个类型包含未理解的 extra bytes，应优先 raw hex 保留，不得丢失。
 
@@ -858,7 +1332,99 @@ cat /recovery/work/dulout/orders_report.json
   --json
 ```
 
-### 13.7 复核失败表
+### 13.7 大表推荐使用 row 归档
+
+对于包含大字段、二进制字段、LOB、换行或分隔符的表，建议直接导出 row 归档：
+
+```sh
+./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table BMSQL.BIG_TABLE \
+  --output-format row \
+  --report-output /recovery/work/dulout/big_table_report.json \
+  --json
+```
+
+输出：
+
+```text
+/recovery/work/dulout/BMSQL.BIG_TABLE.row
+```
+
+如果要在另一台服务器导入，只需要复制 `.row` 文件；如果输出是 DUL 文本并且有 LOB，则必须同时复制 `.dul` 和 `.lob/` 目录。
+
+### 13.8 大型分区表 split-part 导出
+
+对于 leaf 分区很多或单表数据很大的分区表：
+
+```sh
+./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table BMSQL.BIG_PART_T \
+  --partition-parallel 8 \
+  --output-format row \
+  --report-output /recovery/work/dulout/big_part_report.json \
+  --json
+```
+
+输出：
+
+```text
+/recovery/work/dulout/BMSQL.BIG_PART_T.row
+/recovery/work/dulout/BMSQL.BIG_PART_T.row.parts/
+```
+
+主 `.row` 文件此时是 parts manifest，不是单个 row archive。复制到导入环境时必须同时复制 manifest 和 `.parts/` 子目录。
+
+只导出指定分区：
+
+```sh
+./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table BMSQL.BIG_PART_T \
+  --partition P202401,P202402 \
+  --partition-parallel 2 \
+  --output-format row \
+  --json
+```
+
+### 13.9 生成导入 SQL
+
+普通 row 归档：
+
+```sh
+./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BIG_TABLE.row \
+  --output-sql /recovery/work/dulout/BMSQL.BIG_TABLE.import.sql \
+  --json
+```
+
+parts manifest：
+
+```sh
+./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BIG_PART_T.row \
+  --output-sql /recovery/work/dulout/BMSQL.BIG_PART_T.import.sql \
+  --json
+```
+
+DUL 文本：
+
+```sh
+./bin/dmdul \
+  import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.dul \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
+  --delimiter '|' \
+  --json
+```
+
+### 13.10 复核失败表
 
 如果 report 中 `tables_failed > 0`，先查看失败表 diagnostics：
 
@@ -898,7 +1464,16 @@ TEST2.DMDUL_MANY.dul
 
 ### 15.2 LOB
 
-`CLOB/BLOB` 当前可以导出 locator/inline payload 的 raw hex，但还没有完整跟随 LOB 段读取全部内容。
+`TEXT/CLOB/BLOB` 默认外置导出。主 DUL/CSV 文件中写入 `@LOB:<relative-path>` 占位符，实际内容写入同名 `.lob/` 目录，并生成 `manifest.jsonl`。
+
+当前已验证两类 LOB：
+
+- 短内联 LOB：行内 13 字节前缀后跟真实 payload。
+- out-of-line LOB：行内 21 字节 locator 指向 `0x20` LOB 数据页，工具按 `next_page` 链读取完整 payload。
+
+`BLOB` 附件按原始 bytes 写出；`CLOB/TEXT` 附件解码后写 UTF-8，manifest 中记录 `source_encoding`、`source_bytes`、输出 `bytes` 和 `sha256`。如果遇到不符合当前已验证格式的 locator，工具不会伪造成功，会写 `.locator.hex` 并报告 `lob-locator-not-followed`。
+
+使用 `--output-format row` 时，LOB payload 直接写入 `.row` 文件内的 LOB block，不再依赖外置 `.lob/` 附件目录。导入端只需要 `.row` 文件即可生成包含 LOB 值的 SQL。
 
 ### 15.3 未知行结构
 
@@ -911,6 +1486,22 @@ TEST2.DMDUL_MANY.dul
 ### 15.5 ASM
 
 `init.dul` 中预留了 `diskgroups` 参数，但当前阶段暂不支持 ASM 磁盘组读取。
+
+### 15.6 parts 并发导入边界
+
+`--partition-parallel` 已经支持导出端多 worker、每个 worker 写独立 part 文件。`import-data` 当前可以读取 parts manifest，并把所有 part 合并生成一个 SQL 文件。
+
+尚未实现的是：直接连接目标 DM 数据库，按 part 启动多个导入 worker 并行执行。后续实现时应优先使用绑定变量、批量提交或数据库装载接口，而不是为超大 LOB 生成巨大的单条 SQL 字面量。
+
+### 15.7 超大 LOB SQL 限制
+
+当前 `import-data` 生成 SQL 时：
+
+- `BLOB` 使用 `HEXTORAW('<hex>')`；
+- `CLOB/TEXT` 使用字符串字面量；
+- 每行生成一条 `INSERT`。
+
+如果 LOB 很大，目标库可能限制 SQL 文本长度或字面量长度。遇到这种情况，导出的 row/parts 数据仍然完整；需要后续导入执行器用分块写入或绑定变量方式装载。
 
 ## 16. 故障排查建议
 
@@ -954,7 +1545,7 @@ grep -i 'BMSQL_ORDERS' /recovery/work/dict/col.dict
 
 ### 16.4 数据中包含分隔符
 
-当前导出为分隔文本，建议优先使用 `|` 或 `~`。如果业务字段中也大量包含这些字符，后续需要增加 raw-safe 输出格式或字段级 raw 模式。当前原则是不为了格式美观而改写原始数据。
+默认导出为分隔文本，建议优先使用 `|` 或 `~`。如果业务字段中大量包含分隔符、换行、二进制字符或大 LOB，应使用 `--output-format row`。row 归档保留原始 DM 行内 bytes，并把 LOB payload blocks 嵌入同一个文件，避免分隔文本转义带来的歧义。
 
 ## 17. 版本验证命令
 
@@ -967,7 +1558,7 @@ TMPDIR=./tmp ./bin/dmdul --help
 当前阶段已验证：
 
 ```text
-132 tests OK
+189 tests OK
 ```
 
 ## 18. 快速命令清单
@@ -993,9 +1584,30 @@ TMPDIR=./tmp ./bin/dmdul --help
 ./bin/dmdul --init-file /recovery/work/init.dul \
   dump-data --table BMSQL.BMSQL_ORDERS --json
 
-# 4. dump one user with workers
+# 4. dump one table as row archive
+./bin/dmdul --init-file /recovery/work/init.dul \
+  dump-data --table BMSQL.BMSQL_ORDERS \
+  --output-format row --json
+
+# 5. dump selected partitions
+./bin/dmdul --init-file /recovery/work/init.dul \
+  dump-data --table BMSQL.BIG_PART_T \
+  --partition P_LOW,P_HIGH --output-format row --json
+
+# 6. dump a large partitioned table with split parts
+./bin/dmdul --init-file /recovery/work/init.dul \
+  dump-data --table BMSQL.BIG_PART_T \
+  --partition-parallel 8 --output-format row --json
+
+# 7. dump one user with workers
 ./bin/dmdul --init-file /recovery/work/init.dul \
   dump-data --user BMSQL --parallel 8 \
   --report-output /recovery/work/dulout/bmsql_report.json \
+  --json
+
+# 8. generate reload SQL
+./bin/dmdul import-data \
+  --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
+  --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
   --json
 ```

@@ -13,11 +13,14 @@ def summarize_control_file(
     path: Path,
     *,
     sample_limit: int = 32,
+    dbf_hint_limit: int | None = None,
 ) -> dict[str, Any]:
     """Summarize a DM control file without assuming its binary layout."""
 
     if sample_limit < 0:
         raise ValueError("sample_limit must be non-negative")
+    if dbf_hint_limit is not None and dbf_hint_limit < 0:
+        raise ValueError("dbf_hint_limit must be non-negative")
 
     data = path.read_bytes()
     string_records = _extract_printable_string_records(data)
@@ -25,7 +28,7 @@ def summarize_control_file(
     dbf_hints: list[str] = []
     dbf_hint_records: list[dict[str, Any]] = []
     seen: set[str] = set()
-    if sample_limit > 0:
+    if dbf_hint_limit != 0:
         for record in string_records:
             text = str(record["text"])
             for match in _DBF_HINT_RE.finditer(text):
@@ -41,9 +44,9 @@ def summarize_control_file(
                     seen.add(hint)
                     dbf_hints.append(hint)
                     dbf_hint_records.append(occurrence)
-                if len(dbf_hints) >= sample_limit:
+                if dbf_hint_limit is not None and len(dbf_hints) >= dbf_hint_limit:
                     break
-            if len(dbf_hints) >= sample_limit:
+            if dbf_hint_limit is not None and len(dbf_hints) >= dbf_hint_limit:
                 break
     sampled_strings = string_records[:sample_limit]
 

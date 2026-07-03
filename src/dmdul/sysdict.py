@@ -52,6 +52,11 @@ KNOWN_DM_TYPE_NAMES = frozenset(
 
 SCAN_PROGRESS_BYTES = 16 * 1024 * 1024
 
+SYSTEM_FILE_HEADER_ROOT_OFFSETS = {
+    0: 0x80,  # SYS.SYSOBJECTS root page, observed in DM7 and DM8 SYSTEM.DBF page 0.
+    1: 0x7C,  # SYS.SYSINDEXES root page, observed in DM7 and DM8 SYSTEM.DBF page 0.
+}
+
 
 @dataclass(frozen=True)
 class SysObjectCandidate:
@@ -76,6 +81,8 @@ class SysColumnCandidate:
     score: int
     column_id: int | None
     length: int | None
+    scale: int | None
+    nullable: str | None
     name: str
     type_name: str
     name_offset: int
@@ -95,6 +102,16 @@ class SysIndexCandidate:
     root_page: int | None
     type_name: str | None
     flag: int | None
+
+
+@dataclass(frozen=True)
+class StorageRootCandidate:
+    storage_id: int
+    root_file: int
+    root_page: int
+    page_kind_raw: int
+    score: int
+    source: str
 
 
 @dataclass(frozen=True)
@@ -314,6 +331,8 @@ def _syscolumn_candidate_from_row(
         score=140,
         column_id=column_id,
         length=length,
+        scale=scale,
+        nullable=nullable.decode("ascii"),
         name=name,
         type_name=type_name,
         name_offset=name_start,
@@ -585,6 +604,274 @@ def dump_syscolumn_rows_from_storage(
         f"rows_decoded={len(rows)} failures={len(failures)}"
         + (f" failure_file={failure_path}" if failure_path is not None else ""),
     )
+    return rows
+
+
+def dump_sysobject_rows_from_storage(
+    system_file: Path,
+    *,
+    root_file: int,
+    root_page: int,
+    storage_id: int,
+    group_id: int = 0,
+    page_size: int = 8192,
+    progress: Callable[[str], None] | None = None,
+) -> list[SysObjectRowCandidate]:
+    """Read SYS.SYSOBJECTS rows from its storage root and page slots."""
+
+    storage_rows = _iter_storage_live_rows(
+        system_file,
+        dictionary_name="SYSOBJECTS",
+        root_file=root_file,
+        root_page=root_page,
+        storage_id=storage_id,
+        group_id=group_id,
+        page_size=page_size,
+        progress=progress,
+    )
+    candidates: list[SysObjectRowCandidate] = []
+    for page_no, row in storage_rows:
+        candidates.extend(
+            _sysobject_rows_from_context(
+                context=row.data,
+                absolute_context_start=(page_no * page_size) + row.page_offset,
+                page_size=page_size,
+                local_marker_offset=0,
+            )
+        )
+    rows = _dedupe_sysobject_row_candidates(candidates)
+    _emit_storage_progress(
+        progress,
+        "SYSOBJECTS storage done: "
+        f"rows_seen={len(storage_rows)} rows_decoded={len(rows)}",
+    )
+    return rows
+
+
+def discover_storage_root_page(
+    system_file: Path,
+    *,
+    storage_id: int,
+    root_file: int = 0,
+    page_size: int = 8192,
+) -> StorageRootCandidate | None:
+    """Find a likely BTREE storage root page by scanning page headers.
+
+    The observed DM8 SYSTEM dictionary roots have matching page identity,
+    matching page-header storage id, kind 0x15, and null prev/next references.
+    Leaf pages may also have null prev on the leftmost leaf, so the kind 0x15
+    predicate is intentionally preferred for root discovery.
+    """
+
+    data_file = DataFile(system_file, page_size=page_size)
+    pages_total = system_file.stat().st_size // page_size
+    best: StorageRootCandidate | None = None
+    for page_no in range(pages_total):
+        page = data_file.read_page(page_no)
+        try:
+            header = ObservedPageHeader.from_page(page)
+        except ValueError:
+            continue
+        if header.page_no != page_no:
+            continue
+        if header.storage_id_candidate != storage_id:
+            continue
+        score = 0
+        source_parts = ["page-header-storage-id"]
+        if header.page_kind_raw == 0x15:
+            score += 100
+            source_parts.append("kind-0x15")
+        elif header.page_kind_raw == 0x14:
+            score += 20
+            source_parts.append("kind-0x14")
+        else:
+            continue
+        if header.prev_page.is_null:
+            score += 10
+            source_parts.append("prev-null")
+        if header.next_page.is_null:
+            score += 10
+            source_parts.append("next-null")
+        if header.page_kind_raw == 0x15 and header.prev_page.is_null and header.next_page.is_null:
+            score += 100
+            source_parts.append("root-shape")
+        candidate = StorageRootCandidate(
+            storage_id=storage_id,
+            root_file=root_file,
+            root_page=page_no,
+            page_kind_raw=header.page_kind_raw,
+            score=score,
+            source="+".join(source_parts),
+        )
+        if best is None or (candidate.score, -candidate.root_page) > (best.score, -best.root_page):
+            best = candidate
+    return best
+
+
+def discover_system_dictionary_root_from_file_header(
+    system_file: Path,
+    *,
+    object_id: int,
+    root_file: int = 0,
+    page_size: int = 8192,
+) -> StorageRootCandidate | None:
+    """Discover a standard SYS dictionary root from SYSTEM file header metadata.
+
+    DM7 and DM8 samples both store the bootstrap entry pages for SYSOBJECTS and
+    SYSINDEXES in SYSTEM.DBF page 0. The root page itself then exposes the
+    storage id in its normal page header.
+    """
+
+    root_offset = SYSTEM_FILE_HEADER_ROOT_OFFSETS.get(object_id)
+    if root_offset is None:
+        return None
+    data_file = DataFile(system_file, page_size=page_size)
+    page0 = data_file.read_page(0)
+    if len(page0) < root_offset + 4:
+        return None
+    root_page = int.from_bytes(page0[root_offset : root_offset + 4], "little", signed=False)
+    pages_total = system_file.stat().st_size // page_size
+    if root_page <= 0 or root_page >= pages_total:
+        return None
+    root = data_file.read_page(root_page)
+    header = ObservedPageHeader.from_page(root)
+    if header.page_no != root_page:
+        return None
+    if header.page_kind_raw not in {0x14, 0x15}:
+        return None
+    storage_id = header.storage_id_candidate
+    if storage_id <= 0:
+        return None
+    score = 200
+    source_parts = [f"system-page0-offset-0x{root_offset:x}"]
+    if header.page_kind_raw == 0x15:
+        score += 50
+        source_parts.append("kind-0x15")
+    if header.prev_page.is_null:
+        score += 10
+        source_parts.append("prev-null")
+    if header.next_page.is_null:
+        score += 10
+        source_parts.append("next-null")
+    if header.page_kind_raw == 0x15 and header.prev_page.is_null and header.next_page.is_null:
+        score += 50
+        source_parts.append("root-shape")
+    return StorageRootCandidate(
+        storage_id=storage_id,
+        root_file=root_file,
+        root_page=root_page,
+        page_kind_raw=header.page_kind_raw,
+        score=score,
+        source="+".join(source_parts),
+    )
+
+
+def dump_sysindex_rows_from_storage(
+    system_file: Path,
+    *,
+    root_file: int,
+    root_page: int,
+    storage_id: int,
+    group_id: int = 0,
+    page_size: int = 8192,
+    progress: Callable[[str], None] | None = None,
+) -> list[SysIndexCandidate]:
+    """Read SYS.SYSINDEXES rows from its storage root and page slots."""
+
+    storage_rows = _iter_storage_live_rows(
+        system_file,
+        dictionary_name="SYSINDEXES",
+        root_file=root_file,
+        root_page=root_page,
+        storage_id=storage_id,
+        group_id=group_id,
+        page_size=page_size,
+        progress=progress,
+    )
+    candidates: list[SysIndexCandidate] = []
+    type_markers = (b"BT", b"RT", b"HT")
+    for page_no, row in storage_rows:
+        seen_offsets: set[int] = set()
+        for marker in type_markers:
+            search_from = 0
+            while True:
+                type_offset = row.data.find(marker, search_from)
+                if type_offset < 0:
+                    break
+                id_offset = type_offset - 13
+                if id_offset >= 0 and id_offset not in seen_offsets:
+                    seen_offsets.add(id_offset)
+                    context = row.data[id_offset : min(len(row.data), id_offset + 64)]
+                    if len(context) >= 23:
+                        index_id = int.from_bytes(context[0:4], "little", signed=False)
+                        if 1 <= index_id <= 100_000_000:
+                            candidate = _sysindex_candidate_from_context(
+                                index_id=index_id,
+                                absolute=(page_no * page_size) + row.page_offset + id_offset,
+                                page_size=page_size,
+                                context=context,
+                            )
+                            if candidate is not None:
+                                candidates.append(candidate)
+                search_from = type_offset + 1
+    rows = _dedupe_sysindex_candidates(candidates)
+    _emit_storage_progress(
+        progress,
+        "SYSINDEXES storage done: "
+        f"rows_seen={len(storage_rows)} rows_decoded={len(rows)}",
+    )
+    return rows
+
+
+def _iter_storage_live_rows(
+    system_file: Path,
+    *,
+    dictionary_name: str,
+    root_file: int,
+    root_page: int,
+    storage_id: int,
+    group_id: int,
+    page_size: int,
+    progress: Callable[[str], None] | None,
+) -> list[tuple[int, Any]]:
+    data_file = DataFile(system_file, page_size=page_size)
+    table = TableMeta(
+        owner="SYS",
+        name=dictionary_name,
+        columns=(),
+        storage=StorageRoot(
+            group_id=group_id,
+            file_no=root_file,
+            root_page=root_page,
+            storage_id=storage_id,
+        ),
+    )
+    plan = _build_root_page_plan(table=table, data_files={root_file: data_file})
+    _emit_storage_progress(
+        progress,
+        f"{dictionary_name} storage plan: "
+        f"root_file={root_file} root_page={root_page} storage_id={storage_id} "
+        f"pages={len(plan.pages)} diagnostics={len(plan.diagnostics)}",
+    )
+    rows: list[tuple[int, Any]] = []
+    pages_done = 0
+    for page_ref in plan.pages:
+        pages_done += 1
+        page = data_file.read_page(page_ref.page_no)
+        header = ObservedPageHeader.from_page(page)
+        if header.page_kind_raw != 0x14:
+            continue
+        if header.storage_id_candidate != storage_id:
+            continue
+        for row in iter_observed_rows_by_slots(page):
+            if not row.is_deleted:
+                rows.append((page_ref.page_no, row))
+        if pages_done == len(plan.pages) or pages_done % 64 == 0:
+            _emit_storage_progress(
+                progress,
+                f"{dictionary_name} storage progress: "
+                f"pages={pages_done}/{len(plan.pages)} rows_seen={len(rows)}",
+            )
     return rows
 
 
@@ -862,25 +1149,41 @@ def _sysobject_schema_rows_from_strings(
     local_marker_offset: int,
 ) -> list[SysObjectRowCandidate]:
     type_offset, _ = strings[type_index]
-    previous_names = [
+    next_names = [
         (offset, value)
-        for offset, value in strings[max(0, type_index - 3) : type_index]
-        if _is_sysobject_name(value)
+        for offset, value in strings[type_index + 1 : type_index + 4]
+        if offset - type_offset <= 24 and _is_sysobject_name(value)
     ]
-    if not previous_names:
-        return []
-    name_offset, name = previous_names[-1]
-    if type_offset - name_offset > 48:
-        return []
-    object_id = _sysobjects_schema_object_id_from_name_offset(context, name_offset)
+    name_after_type = bool(next_names)
+    if name_after_type:
+        name_offset, name = next_names[0]
+        object_id = _sysobjects_schema_object_id_from_type_offset(context, type_offset)
+    else:
+        previous_names = [
+            (offset, value)
+            for offset, value in strings[max(0, type_index - 3) : type_index]
+            if _is_sysobject_name(value)
+        ]
+        if not previous_names:
+            return []
+        name_offset, name = previous_names[-1]
+        if type_offset - name_offset > 48:
+            return []
+        object_id = _sysobjects_schema_object_id_from_name_offset(context, name_offset)
     if object_id is None:
         return []
     score = 60
     if object_id is not None:
         score += 30
-        if object_id <= 100:
+        if object_id >= 0x09000000:
+            score += 40
+        elif object_id <= 100:
             score += 20
+    if name_after_type:
+        score += 30
     if 0 <= type_offset - name_offset <= 16:
+        score += 15
+    if 0 <= name_offset - type_offset <= 16:
         score += 15
     absolute = absolute_context_start + name_offset
     return [
@@ -898,6 +1201,21 @@ def _sysobject_schema_rows_from_strings(
             source="heuristic-system-scan",
         )
     ]
+
+
+def _sysobjects_schema_object_id_from_type_offset(context: bytes, type_offset: int) -> int | None:
+    # Clean schema rows observed in SYSOBJECTS store the full schema id as a
+    # little-endian u32 eight bytes before the prefixed "SCH" type marker.
+    offset = type_offset - 8
+    if offset < 0 or offset + 4 > len(context):
+        return None
+    value = int.from_bytes(context[offset : offset + 4], "little", signed=False)
+    normalized = _normalize_sysobjects_schema_id(value)
+    if normalized is None:
+        return None
+    if not 0x09000000 <= normalized <= 0x09FFFFFF:
+        return None
+    return normalized
 
 
 def _sysobject_table_rows_from_strings(
@@ -927,18 +1245,25 @@ def _sysobject_table_rows_from_strings(
             break
     if subtype_name is None:
         return []
-    object_id_found = _nearest_plausible_id_before_with_offset(
-        context,
-        anchor_offset=name_offset,
-        start=max(0, name_offset - 96),
-        minimum=1,
-        maximum=10_000_000,
-    )
-    object_id_offset = None if object_id_found is None else object_id_found[0]
-    object_id = None if object_id_found is None else object_id_found[1]
-    schema_id = _sysobjects_schema_id_from_fixed_area(context, object_id_offset)
+    fixed = _sysobjects_table_fixed_area_from_name_offset(context, name_offset)
+    has_fixed_area = fixed is not None
+    if fixed is not None:
+        object_id_offset, object_id, schema_id = fixed
+    else:
+        object_id_found = _nearest_plausible_id_before_with_offset(
+            context,
+            anchor_offset=name_offset,
+            start=max(0, name_offset - 96),
+            minimum=0,
+            maximum=10_000_000,
+        )
+        object_id_offset = None if object_id_found is None else object_id_found[0]
+        object_id = None if object_id_found is None else object_id_found[1]
+        schema_id = _sysobjects_schema_id_from_fixed_area(context, object_id_offset)
     parent_id = _sysobjects_parent_id_from_fixed_area(context, object_id_offset)
     score = 70
+    if has_fixed_area:
+        score += 60
     if object_id is not None:
         score += 30
         if 10_000 <= object_id <= 60_000:
@@ -963,6 +1288,44 @@ def _sysobject_table_rows_from_strings(
     ]
 
 
+def _sysobjects_table_fixed_area_from_name_offset(
+    context: bytes,
+    name_offset: int,
+) -> tuple[int, int, int] | None:
+    # Clean SYSOBJECTS SCHOBJ rows from slot decoding place the object id 57
+    # bytes before NAME. The full schema id starts three bytes after the object
+    # id in observed DM7/DM8 system-table rows.
+    candidates: list[tuple[int, int, int, int, int, int, int]] = []
+    for object_offset in range(name_offset - 72, name_offset - 16):
+        if object_offset < 0 or object_offset + 7 > len(context):
+            continue
+        object_id = int.from_bytes(context[object_offset : object_offset + 4], "little", signed=False)
+        if object_id > 100_000_000:
+            continue
+        for schema_offset in (object_offset + 3, object_offset + 4):
+            if schema_offset + 4 > len(context):
+                continue
+            schema_id = int.from_bytes(context[schema_offset : schema_offset + 4], "little", signed=False)
+            if 0x09000000 <= schema_id <= 0x09FFFFFF:
+                distance = abs((name_offset - object_offset) - 58)
+                if 10_000 <= object_id <= 100_000:
+                    object_rank = 0
+                elif 1 <= object_id <= 100:
+                    object_rank = 1
+                elif object_id >= 0x02000000:
+                    object_rank = 2
+                elif object_id == 0:
+                    object_rank = 4
+                else:
+                    object_rank = 3
+                schema_rank = 0 if schema_offset == object_offset + 4 else 1
+                candidates.append((object_rank, distance, schema_rank, object_offset, object_id, schema_id, schema_offset))
+    if not candidates:
+        return None
+    _, _, _, object_offset, object_id, schema_id, _ = min(candidates)
+    return object_offset, object_id, schema_id
+
+
 def _sysobject_index_rows_from_strings(
     *,
     strings: list[tuple[int, str]],
@@ -973,37 +1336,25 @@ def _sysobject_index_rows_from_strings(
     local_marker_offset: int,
 ) -> list[SysObjectRowCandidate]:
     type_offset, _ = strings[type_index]
-    for name_offset, name in strings[type_index + 1 : type_index + 6]:
-        if name_offset - type_offset > 96:
-            break
-        if not _is_index_object_name(name):
+    subtype_is_index = any(
+        value == "INDEX" and 0 <= offset - type_offset <= 48
+        for offset, value in strings[type_index + 1 : type_index + 5]
+    ) or any(
+        _is_index_object_name(value) and 0 <= offset - type_offset <= 96
+        for offset, value in strings[type_index + 1 : type_index + 6]
+    )
+    if not subtype_is_index:
+        return []
+    previous_names = [
+        (offset, value)
+        for offset, value in strings[max(0, type_index - 4) : type_index]
+        if _is_sysobject_name(value) and 0 <= type_offset - offset <= 96
+    ]
+    for name_offset, name in reversed(previous_names):
+        fixed = _sysobjects_index_fixed_area_from_name_offset(context, name_offset)
+        if fixed is None:
             continue
-        index_id = int(name[5:])
-        index_id_offset = _nearest_bytes_offset(
-            context,
-            index_id.to_bytes(4, "little", signed=False),
-            anchor_offset=type_offset,
-            start=max(0, type_offset - 128),
-            end=min(len(context), name_offset + len(name) + 32),
-        )
-        schema_id = _sysobjects_schema_id_from_fixed_area(context, index_id_offset)
-        parent_id = _sysobjects_parent_id_from_fixed_area(context, index_id_offset)
-        if parent_id is None:
-            parent_id = _nearest_plausible_id_before(
-                context,
-                anchor_offset=type_offset,
-                start=max(0, type_offset - 96),
-                minimum=1,
-                maximum=10_000_000,
-                exclude={index_id},
-            )
-        score = 65
-        if parent_id is not None:
-            score += 25
-            if 10_000 <= parent_id <= 60_000:
-                score += 20
-        if index_id_offset is not None:
-            score += 15
+        index_id, schema_id, parent_id = fixed
         absolute = absolute_context_start + name_offset
         return [
             SysObjectRowCandidate(
@@ -1016,11 +1367,131 @@ def _sysobject_index_rows_from_strings(
                 offset=absolute,
                 page_no=absolute // page_size,
                 page_offset=absolute % page_size,
-                score=score,
+                score=150,
                 source="heuristic-system-scan",
             )
         ]
+    previous_index_names = [
+        (offset, value)
+        for offset, value in strings[max(0, type_index - 4) : type_index]
+        if _is_index_object_name(value) and 0 <= type_offset - offset <= 96
+    ]
+    if previous_index_names:
+        name_offset, name = previous_index_names[-1]
+        return _sysobject_index_row_from_name(
+            context=context,
+            absolute_context_start=absolute_context_start,
+            page_size=page_size,
+            type_offset=type_offset,
+            name_offset=name_offset,
+            name=name,
+        )
+    for name_offset, name in strings[type_index + 1 : type_index + 6]:
+        if name_offset - type_offset > 96:
+            break
+        if not _is_index_object_name(name):
+            continue
+        return _sysobject_index_row_from_name(
+            context=context,
+            absolute_context_start=absolute_context_start,
+            page_size=page_size,
+            type_offset=type_offset,
+            name_offset=name_offset,
+            name=name,
+        )
     return []
+
+
+def _sysobjects_index_fixed_area_from_name_offset(
+    context: bytes,
+    name_offset: int,
+) -> tuple[int, int | None, int | None] | None:
+    candidates: list[tuple[int, int, int, int | None, int | None]] = []
+    for object_offset in range(name_offset - 64, name_offset - 49):
+        if object_offset < 0 or object_offset + 12 > len(context):
+            continue
+        object_id = int.from_bytes(context[object_offset : object_offset + 4], "little", signed=False)
+        if not 1 <= object_id <= 100_000_000:
+            continue
+        for schema_offset in (object_offset + 4, object_offset + 3):
+            if schema_offset + 4 > len(context):
+                continue
+            raw_schema_id = int.from_bytes(context[schema_offset : schema_offset + 4], "little", signed=False)
+            schema_id = raw_schema_id if 0x09000000 <= raw_schema_id <= 0x09FFFFFF else None
+            if schema_id is None:
+                continue
+            parent_id = None
+            for parent_offset in (schema_offset + 4, schema_offset + 3):
+                if parent_offset + 4 > len(context):
+                    continue
+                value = int.from_bytes(context[parent_offset : parent_offset + 4], "little", signed=False)
+                if 0 <= value <= 100_000_000:
+                    parent_id = value
+                    break
+            if parent_id is None:
+                continue
+            distance = abs((name_offset - object_offset) - 57)
+            object_rank = 0 if object_id >= 0x02000000 else 1
+            candidates.append((object_rank, distance, object_id, schema_id, parent_id))
+    if not candidates:
+        return None
+    _, _, object_id, schema_id, parent_id = min(candidates)
+    return object_id, schema_id, parent_id
+
+
+def _sysobject_index_row_from_name(
+    *,
+    context: bytes,
+    absolute_context_start: int,
+    page_size: int,
+    type_offset: int,
+    name_offset: int,
+    name: str,
+) -> list[SysObjectRowCandidate]:
+    index_id = int(name[5:])
+    index_id_offset = _nearest_bytes_offset(
+        context,
+        index_id.to_bytes(4, "little", signed=False),
+        anchor_offset=type_offset,
+        start=max(0, min(name_offset, type_offset) - 128),
+        end=min(len(context), max(name_offset + len(name), type_offset) + 64),
+    )
+    schema_id = _sysobjects_schema_id_from_fixed_area(context, index_id_offset)
+    parent_id = _sysobjects_parent_id_from_fixed_area(context, index_id_offset)
+    if parent_id is None:
+        parent_id = _nearest_plausible_id_before(
+            context,
+            anchor_offset=type_offset,
+            start=max(0, type_offset - 96),
+            minimum=1,
+            maximum=10_000_000,
+            exclude={index_id},
+        )
+    score = 65
+    if parent_id is not None:
+        score += 25
+        if 10_000 <= parent_id <= 60_000:
+            score += 20
+    if index_id_offset is not None:
+        score += 15
+    if name_offset < type_offset:
+        score += 10
+    absolute = absolute_context_start + name_offset
+    return [
+        SysObjectRowCandidate(
+            name=name,
+            object_id=index_id,
+            schema_id=schema_id,
+            parent_id=parent_id,
+            type_name="TABOBJ",
+            subtype_name="INDEX",
+            offset=absolute,
+            page_no=absolute // page_size,
+            page_offset=absolute % page_size,
+            score=score,
+            source="heuristic-system-scan",
+        )
+    ]
 
 
 def _is_sysobject_name(value: str) -> bool:
@@ -1075,10 +1546,14 @@ def _nearest_plausible_id_before_with_offset(
 
 
 def _sysobjects_schema_id_from_fixed_area(context: bytes, object_id_offset: int | None) -> int | None:
-    if object_id_offset is None or object_id_offset + 5 > len(context):
+    if object_id_offset is None or object_id_offset + 8 > len(context):
         return None
-    value = context[object_id_offset + 4]
-    return value if value != 0 else None
+    value = int.from_bytes(
+        context[object_id_offset + 4 : object_id_offset + 8],
+        "little",
+        signed=False,
+    )
+    return _normalize_sysobjects_schema_id(value)
 
 
 def _sysobjects_parent_id_from_fixed_area(context: bytes, object_id_offset: int | None) -> int | None:
@@ -1090,6 +1565,14 @@ def _sysobjects_parent_id_from_fixed_area(context: bytes, object_id_offset: int 
     return value
 
 
+def _normalize_sysobjects_schema_id(value: int) -> int | None:
+    if value in {0, 0xFFFFFFFF}:
+        return None
+    if 1 <= value < 0x10000:
+        return 0x09000000 + value
+    return value
+
+
 def _sysobjects_schema_object_id_from_name_offset(context: bytes, name_offset: int) -> int | None:
     # Clean SYSOBJECTS schema rows observed in SYSTEM.DBF store the schema id in
     # the fixed area shortly before NAME. Keep this deliberately narrow so it is
@@ -1098,8 +1581,11 @@ def _sysobjects_schema_object_id_from_name_offset(context: bytes, name_offset: i
     if offset < 0 or offset + 4 > len(context):
         return None
     value = int.from_bytes(context[offset : offset + 4], "little", signed=False)
-    if 1 <= value <= 10_000:
-        return value
+    normalized = _normalize_sysobjects_schema_id(value)
+    if normalized is None:
+        return None
+    if 0x09000000 <= normalized <= 0x09FFFFFF:
+        return normalized
     return None
 
 
@@ -1181,7 +1667,7 @@ def _syscolumn_candidates_from_context(
     context: bytes,
     local_object_offset: int,
 ) -> list[SysColumnCandidate]:
-    column_id, length = _observed_column_id_and_length(
+    column_id, length, scale, nullable = _observed_column_id_length_scale_nullable(
         context,
         local_object_offset=local_object_offset,
     )
@@ -1216,6 +1702,8 @@ def _syscolumn_candidates_from_context(
                     score=score,
                     column_id=column_id,
                     length=length,
+                    scale=scale,
+                    nullable=nullable,
                     name=name,
                     type_name=upper_type,
                     name_offset=name_offset,
@@ -1225,13 +1713,13 @@ def _syscolumn_candidates_from_context(
     return []
 
 
-def _observed_column_id_and_length(
+def _observed_column_id_length_scale_nullable(
     context: bytes,
     *,
     local_object_offset: int,
-) -> tuple[int | None, int | None]:
-    if local_object_offset + 10 > len(context):
-        return None, None
+) -> tuple[int | None, int | None, int | None, str | None]:
+    if local_object_offset + 13 > len(context):
+        return None, None, None, None
     column_id = int.from_bytes(
         context[local_object_offset + 4 : local_object_offset + 6],
         "little",
@@ -1242,11 +1730,20 @@ def _observed_column_id_and_length(
         "little",
         signed=False,
     )
+    scale = int.from_bytes(
+        context[local_object_offset + 10 : local_object_offset + 12],
+        "little",
+        signed=False,
+    )
+    nullable_byte = context[local_object_offset + 12]
+    nullable = chr(nullable_byte) if nullable_byte in {ord("N"), ord("Y")} else None
     if column_id > 4096:
         column_id = None
     if length > 1024 * 1024:
         length = None
-    return column_id, length
+    if scale > 10000:
+        scale = None
+    return column_id, length, scale, nullable
 
 
 def _prefixed_ascii_strings(context: bytes) -> list[tuple[int, str]]:
@@ -1310,7 +1807,10 @@ def _score_syscolumn_candidate(
 def _dedupe_syscolumn_candidates(
     candidates: list[SysColumnCandidate],
 ) -> list[SysColumnCandidate]:
-    best_by_key: dict[tuple[int, int | None, str, str, int | None], SysColumnCandidate] = {}
+    best_by_key: dict[
+        tuple[int, int | None, str, str, int | None, int | None, str | None],
+        SysColumnCandidate,
+    ] = {}
     for candidate in candidates:
         key = (
             candidate.object_id,
@@ -1318,6 +1818,8 @@ def _dedupe_syscolumn_candidates(
             candidate.name,
             candidate.type_name,
             candidate.length,
+            candidate.scale,
+            candidate.nullable,
         )
         existing = best_by_key.get(key)
         if existing is None or (candidate.score, -candidate.offset) > (

@@ -71,6 +71,12 @@ Short or otherwise unparsed `.DBF` files are reported as skipped files instead
 of being silently ignored. Stable diagnostic codes are also summarized in
 `diagnostics.counts_by_code` for automated gates.
 
+`sample_limit` is a presentation/sampling control for printable strings, page
+catalog samples, and diagnostic examples. It must not limit DBF path hint
+scanning needed for recovery decisions. Control-file DBF occurrences are scanned
+independently so a small debugging sample cannot hide a valid data-file entry
+and create a false `segment-manifest-data-file-without-control-entry`.
+
 To capture one control file without scanning the whole database directory:
 
 ```sh

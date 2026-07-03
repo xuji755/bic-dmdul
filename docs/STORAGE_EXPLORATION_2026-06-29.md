@@ -268,3 +268,18 @@ The same bridge is now recoverable offline from `SYSTEM.DBF`: scanning for table
 object ids `33629..33634` and selecting the nearest following `TABOBJ` plus
 `INDEX<digits>` string produced highest-scoring candidates
 `33595349..33595354`. These candidates were found on page 5697.
+
+`extract-csv --database-dir /dmdata/data/DAMENG --table DMDUL_MANY` was later
+validated end to end on the remote file set using Python 3.8 at
+`/opt/gbase/python3.8/bin/python3.8`. It resolved the table from offline
+`SYSTEM.DBF` scans, wrote `/tmp/dmdul_many.csv`, and recovered 80 rows with IDs
+`1..80`, no missing IDs, no duplicates, and no decode errors.
+
+The same remote path now decodes the controlled NULL table `DMDUL_NULL2`.
+Observed row metadata uses two little-endian bits per storage-order column:
+`00` means present and `11` means NULL. For columns
+`ID INT, A INT, B VARCHAR, C BIGINT, D VARCHAR`, storage order is
+`ID, A, C, B, D`; fixed-width NULL columns still reserve bytes, while
+variable-width NULL columns omit their length prefix and payload. The CLI wrote
+4 rows, skipped 0 rows, and reported 0 decode errors; NULL values appear as
+empty CSV fields.

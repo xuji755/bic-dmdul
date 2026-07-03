@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from .discovery import DiscoveredDataFile, discover_data_files
@@ -9,6 +10,7 @@ from .metadata import (
     CalibratedMetadata,
     ColumnMeta,
     DataFileMeta,
+    StoragePageRef,
     StorageRoot,
     TableMeta,
 )
@@ -18,6 +20,8 @@ from .sysdict import (
     SysIndexCandidate,
     SysObjectCandidate,
     SysObjectIndexChildCandidate,
+    SysObjectRowCandidate,
+    dump_sysobject_rows,
     find_syscolumn_candidates,
     find_sysindex_candidates,
     find_sysobject_candidates,
@@ -27,6 +31,15 @@ from .sysdict import (
 
 class OfflineResolveError(RuntimeError):
     pass
+
+
+BUILTIN_SCHEMA_IDS_BY_OWNER = {
+    "SYS": 0x09000000,
+    "SYSDBA": 0x09000001,
+    "SYSAUDITOR": 0x09000002,
+    "SYSSSO": 0x09000003,
+    "CTISYS": 0x09000004,
+}
 
 
 @dataclass(frozen=True)
@@ -39,8 +52,11 @@ class OfflineTableResolution:
     index_child: SysObjectIndexChildCandidate
     storage_index: SysIndexCandidate
     columns: tuple[SysColumnCandidate, ...]
+    schema_id: int | None = None
     control_file_data_files: dict[str, object] | None = None
     segment_root: dict[str, object] | None = None
+    partition_objects: tuple[SysObjectRowCandidate, ...] = ()
+    partition_index_children: tuple[SysObjectIndexChildCandidate, ...] = ()
 
     def as_manifest(self) -> dict[str, object]:
         data_files = [
@@ -84,6 +100,8 @@ class OfflineTableResolution:
                     "name": column.name,
                     "type_name": column.type_name,
                     "length": column.length,
+                    "scale": column.scale,
+                    "nullable": column.nullable,
                     "column_id": column.column_id,
                     "offset": column.offset,
                     "page_no": column.page_no,
@@ -106,6 +124,29 @@ class OfflineTableResolution:
                 "type_name": self.storage_index.type_name,
                 "flag": self.storage_index.flag,
             },
+            "partitions": [
+                {
+                    "name": row.name,
+                    "object_id": row.object_id,
+                    "parent_id": row.parent_id,
+                    "schema_id": row.schema_id,
+                    "offset": row.offset,
+                    "page_no": row.page_no,
+                    "page_offset": row.page_offset,
+                }
+                for row in self.partition_objects
+            ],
+            "partition_storage_indexes": [
+                {
+                    "parent_object_id": item.parent_object_id,
+                    "storage_index_id": item.index_id,
+                    "name": item.name,
+                    "offset": item.offset,
+                    "page_no": item.page_no,
+                    "page_offset": item.page_offset,
+                }
+                for item in self.partition_index_children
+            ],
             "data_files": data_files,
             "control_file_data_files": self.control_file_data_files,
             "segment_root": self.segment_root,
@@ -120,6 +161,7 @@ def resolve_offline_table_metadata(
     page_size: int = 8192,
     owner: str | None = None,
     scan_pages: int = 64,
+    sysobject_rows: tuple[SysObjectRowCandidate, ...] | None = None,
 ) -> OfflineTableResolution:
     """Resolve enough offline metadata to scan an ordinary table.
 
@@ -137,45 +179,97 @@ def resolve_offline_table_metadata(
     files = discover_data_files(database_dir, page_size=page_size)
     system_file = _select_system_file(files)
     owner_name, object_name = _split_table_name(table_name, owner=owner)
-    table_object = _select_table_object(
-        find_sysobject_candidates(system_file.path, object_name, page_size=page_size),
-        table_name=object_name,
+    resolved_sysobject_rows = tuple(
+        sysobject_rows
+        if sysobject_rows is not None
+        else _cached_sysobject_rows_for_file(system_file.path, page_size=page_size)
     )
-    table_object_id = _select_table_object_id(table_object)
+    table_object_row = _select_owner_table_object_row(
+        system_file.path,
+        table_name=object_name,
+        owner_name=owner_name,
+        page_size=page_size,
+        sysobject_rows=resolved_sysobject_rows,
+    )
+    table_schema_id = None
+    if table_object_row is not None:
+        table_object = _table_object_candidate_from_row(table_object_row)
+        table_object_id = _required_int(table_object_row.object_id, "table object id")
+        table_schema_id = table_object_row.schema_id
+    else:
+        table_object = _select_table_object(
+            find_sysobject_candidates(system_file.path, object_name, page_size=page_size),
+            table_name=object_name,
+        )
+        table_object_id = _select_table_object_id(table_object)
     columns = _select_columns(
         find_syscolumn_candidates(system_file.path, table_object_id, page_size=page_size)
     )
-    index_child = _select_index_child(
-        find_sysobject_index_child_candidates(
-            system_file.path,
-            table_object_id,
-            page_size=page_size,
-        )
+    partition_objects = _select_leaf_partition_object_rows(
+        resolved_sysobject_rows,
+        parent_object_id=table_object_id,
+        schema_id=table_schema_id,
     )
-    storage_index = _select_storage_index(
-        find_sysindex_candidates(
-            system_file.path,
-            index_child.index_id,
-            page_size=page_size,
+    if partition_objects:
+        partition_index_children = tuple(
+            _select_index_child(
+                _index_child_candidates_from_sysobject_rows(
+                    resolved_sysobject_rows,
+                    parent_object_id=_required_int(partition.object_id, "partition object id"),
+                )
+            )
+            for partition in partition_objects
         )
-    )
+        partition_storage_indexes = tuple(
+            _select_storage_index(
+                find_sysindex_candidates(
+                    system_file.path,
+                    index_child.index_id,
+                    page_size=page_size,
+                )
+            )
+            for index_child in partition_index_children
+        )
+        index_child = partition_index_children[0]
+        storage_index = partition_storage_indexes[0]
+    else:
+        partition_index_children = ()
+        partition_storage_indexes = ()
+        index_child = _select_index_child(
+            _index_child_candidates_from_sysobject_rows(
+                resolved_sysobject_rows,
+                parent_object_id=table_object_id,
+            )
+            or find_sysobject_index_child_candidates(
+                system_file.path,
+                table_object_id,
+                page_size=page_size,
+            )
+        )
+        storage_index = _select_storage_index(
+            find_sysindex_candidates(
+                system_file.path,
+                index_child.index_id,
+                page_size=page_size,
+            )
+        )
+    storage_indexes_for_plan = partition_storage_indexes or (storage_index,)
     data_file = _select_data_file(
         files,
         group_id=_required_int(storage_index.group_id, "storage group id"),
         file_no=_required_int(storage_index.root_file, "storage root file"),
     )
-    known_file_nos = {
-        item.file_no_hint
-        for item in files
-        if item.group_id == data_file.group_id
-    }
-    segment_root = analyze_segment_root(
-        path=data_file.path,
-        page_size=data_file.page_size,
-        group_id=_required_int(storage_index.group_id, "storage group id"),
-        file_no=_required_int(storage_index.root_file, "storage root file"),
-        root_page=_required_int(storage_index.root_page, "storage root page"),
-        known_file_nos=known_file_nos,
+    segment_root = _analyze_storage_roots(
+        files=files,
+        storage_indexes=storage_indexes_for_plan,
+        page_size=page_size,
+    )
+    page_refs = tuple(
+        StoragePageRef(
+            file_no=_required_int(item.root_file, "storage root file"),
+            page_no=_required_int(item.root_page, "storage root page"),
+        )
+        for item in storage_indexes_for_plan
     )
     table = TableMeta(
         owner=owner_name,
@@ -185,6 +279,8 @@ def resolve_offline_table_metadata(
                 name=column.name,
                 type_name=column.type_name,
                 length=column.length,
+                scale=column.scale,
+                nullable=(column.nullable != "N"),
             )
             for column in columns
         ),
@@ -193,7 +289,8 @@ def resolve_offline_table_metadata(
             file_no=_required_int(storage_index.root_file, "storage root file"),
             root_page=_required_int(storage_index.root_page, "storage root page"),
             scan_pages=scan_pages,
-            storage_id=index_child.index_id,
+            storage_id=None if partition_objects else index_child.index_id,
+            page_refs=page_refs if partition_objects else (),
         ),
     )
     group_data_files = tuple(
@@ -222,8 +319,11 @@ def resolve_offline_table_metadata(
         index_child=index_child,
         storage_index=storage_index,
         columns=columns,
+        schema_id=table_schema_id,
         control_file_data_files=database_summary.get("control_file_data_files"),
         segment_root=segment_root,
+        partition_objects=partition_objects,
+        partition_index_children=partition_index_children,
     )
 
 
@@ -268,13 +368,225 @@ def _select_table_object_id(candidate: SysObjectCandidate) -> int:
     raise OfflineResolveError(f"no preferred object id for {candidate.name}")
 
 
+def _select_owner_table_object_row(
+    system_file: Path,
+    *,
+    table_name: str,
+    owner_name: str,
+    page_size: int,
+    sysobject_rows: tuple[SysObjectRowCandidate, ...] | None = None,
+) -> SysObjectRowCandidate | None:
+    rows = list(
+        sysobject_rows
+        if sysobject_rows is not None
+        else _cached_sysobject_rows_for_file(system_file, page_size=page_size)
+    )
+    schema_id = _schema_id_for_owner(rows, owner_name)
+    if schema_id is None:
+        return None
+    usable = [
+        row
+        for row in rows
+        if row.type_name == "SCHOBJ"
+        and row.subtype_name in {"UTAB", "STAB"}
+        and row.object_id is not None
+        and row.name.upper() == table_name.upper()
+        and row.schema_id == schema_id
+    ]
+    if not usable:
+        return None
+    return sorted(usable, key=lambda item: (-item.score, item.offset))[0]
+
+
+def _select_leaf_partition_object_rows(
+    rows: tuple[SysObjectRowCandidate, ...],
+    *,
+    parent_object_id: int,
+    schema_id: int | None,
+) -> tuple[SysObjectRowCandidate, ...]:
+    children_by_parent: dict[int, list[SysObjectRowCandidate]] = {}
+    for row in rows:
+        if (
+            row.type_name == "SCHOBJ"
+            and row.subtype_name in {"UTAB", "STAB"}
+            and row.object_id is not None
+            and row.parent_id is not None
+            and (schema_id is None or row.schema_id == schema_id)
+        ):
+            children_by_parent.setdefault(row.parent_id, []).append(row)
+
+    leaves: list[SysObjectRowCandidate] = []
+
+    def visit(object_id: int) -> None:
+        children = children_by_parent.get(object_id, [])
+        if not children:
+            return
+        for child in children:
+            child_id = _required_int(child.object_id, "partition object id")
+            if children_by_parent.get(child_id):
+                visit(child_id)
+            else:
+                leaves.append(child)
+
+    visit(parent_object_id)
+    partitions = [
+        row
+        for row in leaves
+        if row.parent_id is not None
+    ]
+    best_by_id: dict[int, SysObjectRowCandidate] = {}
+    for row in partitions:
+        object_id = _required_int(row.object_id, "partition object id")
+        current = best_by_id.get(object_id)
+        if current is None or (row.score, -row.offset) > (current.score, -current.offset):
+            best_by_id[object_id] = row
+    return tuple(best_by_id[key] for key in sorted(best_by_id))
+
+
+def _index_child_candidates_from_sysobject_rows(
+    rows: tuple[SysObjectRowCandidate, ...],
+    *,
+    parent_object_id: int,
+) -> list[SysObjectIndexChildCandidate]:
+    candidates: list[SysObjectIndexChildCandidate] = []
+    for row in rows:
+        if row.type_name != "TABOBJ" or row.subtype_name != "INDEX":
+            continue
+        if row.parent_id != parent_object_id or row.object_id is None:
+            continue
+        candidates.append(
+            SysObjectIndexChildCandidate(
+                parent_object_id=parent_object_id,
+                index_id=row.object_id,
+                name=row.name,
+                offset=row.offset,
+                page_no=row.page_no,
+                page_offset=row.page_offset,
+                score=row.score + 50,
+                type_name=row.type_name,
+                name_offset=0,
+                index_id_offset=None,
+            )
+        )
+    return candidates
+
+
+def _cached_sysobject_rows_for_file(
+    system_file: Path,
+    *,
+    page_size: int,
+) -> tuple[SysObjectRowCandidate, ...]:
+    stat = system_file.stat()
+    return _cached_sysobject_rows(
+        str(system_file),
+        page_size,
+        stat.st_mtime_ns,
+        stat.st_size,
+    )
+
+
+@lru_cache(maxsize=8)
+def _cached_sysobject_rows(
+    system_file: str,
+    page_size: int,
+    mtime_ns: int,
+    size: int,
+) -> tuple[SysObjectRowCandidate, ...]:
+    del mtime_ns, size
+    return tuple(dump_sysobject_rows(Path(system_file), page_size=page_size))
+
+
+def _analyze_storage_roots(
+    *,
+    files: list[DiscoveredDataFile],
+    storage_indexes: tuple[SysIndexCandidate, ...],
+    page_size: int,
+) -> dict[str, object]:
+    roots: list[dict[str, object]] = []
+    for storage_index in storage_indexes:
+        data_file = _select_data_file(
+            files,
+            group_id=_required_int(storage_index.group_id, "storage group id"),
+            file_no=_required_int(storage_index.root_file, "storage root file"),
+        )
+        known_file_nos = {
+            item.file_no_hint
+            for item in files
+            if item.group_id == data_file.group_id
+        }
+        root = analyze_segment_root(
+            path=data_file.path,
+            page_size=data_file.page_size,
+            group_id=_required_int(storage_index.group_id, "storage group id"),
+            file_no=_required_int(storage_index.root_file, "storage root file"),
+            root_page=_required_int(storage_index.root_page, "storage root page"),
+            known_file_nos=known_file_nos,
+        )
+        root["storage_index_id"] = storage_index.index_id
+        roots.append(root)
+    if len(roots) == 1:
+        return roots[0]
+    return {"partition_roots": roots}
+
+
+def _schema_id_for_owner(
+    rows: list[SysObjectRowCandidate],
+    owner_name: str,
+) -> int | None:
+    normalized_owner = owner_name.upper()
+    builtin = BUILTIN_SCHEMA_IDS_BY_OWNER.get(normalized_owner)
+    if builtin is not None:
+        return builtin
+    candidates = [
+        row.object_id
+        for row in rows
+        if row.type_name == "SCH"
+        and row.object_id is not None
+        and row.name.upper() == normalized_owner
+        and 0x09000000 <= row.object_id <= 0x09FFFFFF
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates)[0]
+
+
+def _table_object_candidate_from_row(row: SysObjectRowCandidate) -> SysObjectCandidate:
+    object_id = _required_int(row.object_id, "table object id")
+    return SysObjectCandidate(
+        name=row.name,
+        offset=row.offset,
+        page_no=row.page_no,
+        page_offset=row.page_offset,
+        score=row.score,
+        object_ids=(object_id,),
+        likely_object_ids=(object_id,),
+        preferred_object_ids=(object_id,),
+        has_schobj=True,
+        has_utab=row.subtype_name == "UTAB",
+    )
+
+
 def _select_columns(
     candidates: list[SysColumnCandidate],
 ) -> tuple[SysColumnCandidate, ...]:
     usable = [item for item in candidates if item.column_id is not None]
     if not usable:
         raise OfflineResolveError("table columns not found")
-    return tuple(sorted(usable, key=lambda item: item.column_id or 0))
+    best_by_column_id: dict[int, SysColumnCandidate] = {}
+    for item in usable:
+        column_id = _required_int(item.column_id, "column id")
+        current = best_by_column_id.get(column_id)
+        if current is None or (item.score, -item.offset) > (current.score, -current.offset):
+            best_by_column_id[column_id] = item
+    selected = tuple(best_by_column_id[key] for key in sorted(best_by_column_id))
+    expected = tuple(range(len(selected)))
+    observed = tuple(_required_int(item.column_id, "column id") for item in selected)
+    if observed != expected:
+        raise OfflineResolveError(
+            "table columns are not a contiguous zero-based sequence: "
+            f"observed={observed}, expected={expected}"
+        )
+    return selected
 
 
 def _select_index_child(

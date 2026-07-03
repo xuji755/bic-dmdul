@@ -126,6 +126,73 @@ class DatabaseSummaryTest(unittest.TestCase):
             1,
         )
 
+    def test_control_file_dbf_matching_is_not_limited_by_sample_display(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            hints = b"".join(
+                f"DATAFILE=/dmdata/data/DAMENG/DUMMY{i:02d}.DBF\0".encode("ascii")
+                for i in range(12)
+            )
+            (root / "dm.ctl").write_bytes(
+                hints
+                + b"DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                + b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(_page0(0, 0x13))
+            (root / "DMDUL_TS01.DBF").write_bytes(_page0(6, 0x13))
+
+            summary = summarize_database_dir(
+                database_dir=root,
+                page_size=128,
+                catalog_pages=0,
+                sample_limit=2,
+            )
+
+        by_basename = {
+            item["basename"]: item
+            for item in summary["control_file_data_files"]["entries"]
+        }
+        self.assertEqual(
+            by_basename["dmdul_ts01.dbf"]["matched_paths"],
+            [str(root / "DMDUL_TS01.DBF")],
+        )
+        self.assertEqual(
+            by_basename["system.dbf"]["matched_paths"],
+            [str(root / "SYSTEM.DBF")],
+        )
+        self.assertEqual(
+            len(summary["control_files"][0]["printable_string_records"]),
+            2,
+        )
+
+    def test_control_file_matching_survives_zero_sample_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "dm.ctl").write_bytes(
+                b"\0DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\0"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\0"
+            )
+            (root / "SYSTEM.DBF").write_bytes(_page0(0, 0x13))
+            (root / "DMDUL_TS01.DBF").write_bytes(_page0(6, 0x13))
+
+            summary = summarize_database_dir(
+                database_dir=root,
+                page_size=128,
+                catalog_pages=0,
+                sample_limit=0,
+            )
+
+        self.assertEqual(summary["control_files"][0]["printable_string_records"], [])
+        by_basename = {
+            item["basename"]: item
+            for item in summary["control_file_data_files"]["entries"]
+        }
+        self.assertEqual(
+            by_basename["dmdul_ts01.dbf"]["matched_paths"],
+            [str(root / "DMDUL_TS01.DBF")],
+        )
+        self.assertEqual(summary["control_file_data_files"]["unmatched_entries"], [])
+
     def test_reports_file_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

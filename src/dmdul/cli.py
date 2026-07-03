@@ -33,12 +33,13 @@ from .evidence import (
     parse_page_selection,
     verify_evidence_manifest,
 )
-from .extract import extract_csv_with_calibrated_metadata
+from .extract import extract_csv_with_calibrated_metadata, extract_split_parts_with_calibrated_metadata
 from .metadata import CalibratedMetadata
 from .page import ObservedPageHeader, format_hex_dump
 from .page_catalog import catalog_data_file_pages
 from .preflight import evaluate_database_summary_preflight
 from .resolver import OfflineResolveError, resolve_offline_table_metadata
+from .row_archive import import_data_to_sql
 from .row import iter_observed_rows, scan_observed_row_chain
 from .storage import DataFile
 from .sysdict import (
@@ -490,6 +491,7 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         owner=args.owner,
         scan_pages=args.scan_pages,
         experimental_heuristic_dicts=args.experimental_heuristic_dicts or args.download_dictionaries,
+        source_dict_dir=None if args.source_dict_dir is None else Path(args.source_dict_dir),
         progress=progress,
     )
     if args.json:
@@ -612,25 +614,45 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
             or (requested_user is not None and _normalize_identifier(table.owner) == requested_user)
         )
     ]
+    partition_names = _partition_names(args.partition)
+    if partition_names and len(tables) != 1:
+        print(
+            "dmdul: --partition requires exactly one matched table",
+            file=sys.stderr,
+        )
+        return 2
     output_dir.mkdir(parents=True, exist_ok=True)
     progress = None if args.json else _dump_data_progress_printer()
     if progress is not None:
         print(
-            f"[dump-data] start tables_total={len(tables)} parallel={max(1, workers)} output_dir={output_dir}",
+            f"[dump-data] start tables_total={len(tables)} parallel={max(1, workers)} partition_parallel={max(1, args.partition_parallel)} output_dir={output_dir}",
             file=sys.stderr,
             flush=True,
         )
+    extract_func = (
+        extract_split_parts_with_calibrated_metadata
+        if max(1, args.partition_parallel) > 1
+        else extract_csv_with_calibrated_metadata
+    )
     reports = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         futures = {
             executor.submit(
-                extract_csv_with_calibrated_metadata,
+                extract_func,
                 metadata=metadata,
                 table_name=table.qualified_name,
-                output=output_dir / f"{_safe_output_name(table.qualified_name)}.dul",
+                output=output_dir / f"{_safe_output_name(table.qualified_name)}.{_output_extension(args.output_format)}",
                 page_plan_fallback_level="error" if args.strict_page_plan else "warning",
                 delimiter=delimiter,
-                include_sql_header=True,
+                lob_mode=args.lob_mode,
+                lob_hash=args.lob_hash,
+                output_format=args.output_format,
+                partition_names=partition_names,
+                **(
+                    {"part_workers": max(1, args.partition_parallel)}
+                    if max(1, args.partition_parallel) > 1
+                    else {"include_sql_header": True}
+                ),
                 progress=progress,
             ): table
             for table in tables
@@ -644,7 +666,7 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
                     {
                         "table": table.qualified_name,
                         "ok": False,
-                        "output": str(output_dir / f"{_safe_output_name(table.qualified_name)}.dul"),
+                        "output": str(output_dir / f"{_safe_output_name(table.qualified_name)}.{_output_extension(args.output_format)}"),
                         "rows_written": 0,
                         "diagnostics": [{"level": "error", "code": "dump-data-table-failed", "message": str(exc)}],
                     }
@@ -655,7 +677,9 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
         "dict_dir": str(dict_dir),
         "output_dir": str(output_dir),
         "delimiter": delimiter,
+        "output_format": args.output_format,
         "parallel": max(1, workers),
+        "partition_parallel": max(1, args.partition_parallel),
         "tables_total": len(tables),
         "tables_ok": sum(1 for item in reports if item.get("ok")),
         "tables_failed": sum(1 for item in reports if not item.get("ok")),
@@ -694,6 +718,8 @@ def _cmd_extract_dicts(args: argparse.Namespace) -> int:
                 table_name=table.qualified_name,
                 output=output_dir / f"{_safe_output_name(table.qualified_name)}.csv",
                 page_plan_fallback_level="error" if args.strict_page_plan else "warning",
+                lob_mode=args.lob_mode,
+                lob_hash=args.lob_hash,
             ): table
             for table in tables
         }
@@ -804,6 +830,39 @@ def _safe_output_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in value)
 
 
+def _output_extension(output_format: str) -> str:
+    return "row" if output_format == "row" else "dul"
+
+
+def _partition_names(values: list[str] | None) -> tuple[str, ...]:
+    names: list[str] = []
+    for value in values or ():
+        for item in value.split(","):
+            stripped = item.strip()
+            if stripped:
+                names.append(stripped)
+    return tuple(names)
+
+
+def _cmd_import_row(args: argparse.Namespace) -> int:
+    report = import_data_to_sql(
+        input_path=Path(args.input),
+        output_sql=Path(args.output_sql),
+        input_format=args.input_format,
+        table_name=args.table,
+        include_create_table=not args.no_create_table,
+        delimiter=args.delimiter,
+    )
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+    else:
+        print(f"input={report.input}")
+        print(f"output_sql={report.output_sql}")
+        print(f"table={report.table}")
+        print(f"rows={report.rows}")
+    return 0
+
+
 def _cmd_extract_csv(args: argparse.Namespace) -> int:
     if (
         args.metadata_json is None
@@ -863,6 +922,10 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         output=Path(args.output),
         page_plan_fallback_level=page_plan_fallback_level,
         initial_diagnostics=initial_diagnostics,
+        lob_mode=args.lob_mode,
+        lob_dir=Path(args.lob_dir) if args.lob_dir else None,
+        lob_hash=args.lob_hash,
+        output_format=args.output_format,
     )
     if args.report_output:
         Path(args.report_output).write_text(
@@ -875,6 +938,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
     print(f"rows_skipped_deleted={report.rows_skipped_deleted}")
     print(f"rows_skipped_decode_error={report.rows_skipped_decode_error}")
     print(f"ok={str(report.ok).lower()}")
+    print(f"strict_ok={str(report.strict_ok).lower()}")
     for diagnostic in report.diagnostics:
         print(
             f"diagnostic={diagnostic['code']} level={diagnostic['level']}",
@@ -882,10 +946,16 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         )
     for error in report.decode_errors:
         print(f"decode_error={error}", file=sys.stderr)
+    if args.strict and not report.strict_ok:
+        for diagnostic in report.strict_failures:
+            print(
+                f"strict_failure={diagnostic['code']} level={diagnostic['level']}",
+                file=sys.stderr,
+            )
     print(f"mode={report.mode}")
-    if args.strict_page_plan and not report.ok:
-        return 1
-    return 0
+    if args.strict:
+        return 0 if report.strict_ok else 1
+    return 0 if report.ok else 1
 
 
 def _read_json_file(path: Path) -> dict[str, object]:
@@ -1489,6 +1559,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="target table to resolve into user.dict/tab.dict/col.dict; repeatable",
     )
     bootstrap_dicts.add_argument("--owner")
+    bootstrap_dicts.add_argument(
+        "--source-dict-dir",
+        help="filter requested table dictionaries from an existing dict directory instead of rescanning SYSTEM.DBF",
+    )
     bootstrap_dicts.add_argument("--scan-pages", type=int, default=64)
     bootstrap_dicts.add_argument(
         "-b",
@@ -1511,11 +1585,35 @@ def build_parser() -> argparse.ArgumentParser:
     dump_data.add_argument("--dict-dir")
     dump_data.add_argument("--output-dir")
     dump_data.add_argument("--table", action="append")
+    dump_data.add_argument(
+        "--partition",
+        action="append",
+        help="leaf partition/subpartition name to export; repeatable or comma-separated",
+    )
     dump_data.add_argument("--user")
     dump_data.add_argument("--parallel", type=int)
+    dump_data.add_argument(
+        "--partition-parallel",
+        type=int,
+        default=1,
+        help="workers inside one table; when >1 writes split part files under a parts subdirectory",
+    )
     dump_data.add_argument("--delimiter", choices=["|", "~"])
+    dump_data.add_argument(
+        "--output-format",
+        choices=["dul", "row"],
+        default="dul",
+        help="output DUL text or binary row archive with embedded row bytes, default: dul",
+    )
     dump_data.add_argument("--report-output")
     dump_data.add_argument("--strict-page-plan", action="store_true")
+    dump_data.add_argument(
+        "--lob-mode",
+        choices=["inline", "external"],
+        default="external",
+        help="write LOB values inline or as external attachment files, default: external",
+    )
+    dump_data.add_argument("--lob-hash", choices=["sha256"], default="sha256")
     dump_data.add_argument("--json", action="store_true")
     dump_data.set_defaults(func=_cmd_dump_data)
 
@@ -1529,6 +1627,13 @@ def build_parser() -> argparse.ArgumentParser:
     extract_dicts.add_argument("--workers", type=int, default=1)
     extract_dicts.add_argument("--report-output")
     extract_dicts.add_argument("--strict-page-plan", action="store_true")
+    extract_dicts.add_argument(
+        "--lob-mode",
+        choices=["inline", "external"],
+        default="external",
+        help="write LOB values inline or as external attachment files, default: external",
+    )
+    extract_dicts.add_argument("--lob-hash", choices=["sha256"], default="sha256")
     extract_dicts.add_argument("--json", action="store_true")
     extract_dicts.set_defaults(func=_cmd_extract_dicts)
 
@@ -1569,9 +1674,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="write extract-csv report JSON after row scanning",
     )
     extract_csv.add_argument(
+        "--output-format",
+        choices=["dul", "row"],
+        default="dul",
+        help="output CSV/DUL text or binary row archive with embedded row bytes, default: dul",
+    )
+    extract_csv.add_argument(
+        "--lob-mode",
+        choices=["inline", "external"],
+        default="external",
+        help="write LOB values inline or as external attachment files, default: external",
+    )
+    extract_csv.add_argument(
+        "--lob-dir",
+        help="directory for extract-csv LOB attachment files, default: output path with .lob suffix",
+    )
+    extract_csv.add_argument("--lob-hash", choices=["sha256"], default="sha256")
+    extract_csv.add_argument(
         "--strict-page-plan",
         action="store_true",
         help="fail if a segment manifest cannot provide a page-reference traversal plan",
+    )
+    extract_csv.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail on any decode error or known page/dictionary uncertainty in the extraction report",
     )
     extract_csv.add_argument(
         "--scan-pages",
@@ -1582,6 +1709,45 @@ def build_parser() -> argparse.ArgumentParser:
     extract_csv.add_argument("--table", required=True)
     extract_csv.add_argument("--output", required=True)
     extract_csv.set_defaults(func=_cmd_extract_csv)
+
+    def add_import_data_parser(name: str, help_text: str) -> None:
+        import_data = subparsers.add_parser(
+            name,
+            help=help_text,
+        )
+        import_data.add_argument("--input", required=True)
+        import_data.add_argument("--output-sql", required=True)
+        import_data.add_argument(
+            "--input-format",
+            choices=["auto", "dul", "row", "parts"],
+            default="auto",
+            help="input format, default: auto",
+        )
+        import_data.add_argument(
+            "--delimiter",
+            choices=[",", "|", "~"],
+            help="DUL text delimiter; default detects from the data header",
+        )
+        import_data.add_argument(
+            "--table",
+            help="target table name for INSERT statements; default uses the archived table name",
+        )
+        import_data.add_argument(
+            "--no-create-table",
+            action="store_true",
+            help="do not emit the archived CREATE TABLE statement",
+        )
+        import_data.add_argument("--json", action="store_true")
+        import_data.set_defaults(func=_cmd_import_row)
+
+    add_import_data_parser(
+        "import-data",
+        "generate SQL from DUL text or binary dmdul row archive",
+    )
+    add_import_data_parser(
+        "import-row",
+        "compatibility alias for import-data",
+    )
 
     resolve_table = subparsers.add_parser(
         "resolve-table",

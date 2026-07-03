@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from dmdul.cli import _dump_data_progress_printer, build_parser, main
 
@@ -366,8 +367,80 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertTrue(report["ok"])
+        self.assertTrue(report["strict_ok"])
         self.assertEqual(report["rows_written"], 1)
         self.assertEqual(report["diagnostics"], [])
+
+    def test_extract_csv_returns_failure_when_report_not_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            metadata_file = root / "metadata.json"
+            output = root / "out.csv"
+            report_output = root / "report.json"
+            page = bytearray(8192)
+            page[0x62:0x71] = (
+                bytes.fromhex("00 0f 01")
+                + (7).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x0F - 2 - 1 - 4)
+            )
+            data_file.write_bytes(bytes(page))
+            metadata_file.write_text(
+                json.dumps(
+                    {
+                        "data_files": [
+                            {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "path": str(data_file),
+                                "page_size": 8192,
+                            }
+                        ],
+                        "tables": [
+                            {
+                                "owner": "SYSDBA",
+                                "name": "DMDUL_BAD",
+                                "storage": {
+                                    "group_id": 6,
+                                    "file_no": 0,
+                                    "root_page": 0,
+                                },
+                                "columns": [
+                                    {"name": "ID", "type_name": "INT"},
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--metadata-json",
+                    str(metadata_file),
+                    "--table",
+                    "SYSDBA.DMDUL_BAD",
+                    "--output",
+                    str(output),
+                    "--report-output",
+                    str(report_output),
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+            report = json.loads(report_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["strict_ok"])
+        self.assertEqual(report["rows_skipped_decode_error"], 1)
+        self.assertEqual(report["diagnostics"][0]["code"], "unsupported-row-metadata")
+        self.assertIn("decode_error=page=0 offset=98", stderr.getvalue())
 
     def test_bootstrap_dicts_writes_dict_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -479,7 +552,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("manifest=", stdout.getvalue())
         self.assertIn("[bootstrap] start:", stderr.getvalue())
         self.assertIn("[bootstrap] scan database directory:", stderr.getvalue())
-        self.assertIn("[bootstrap] scan SYSTEM.DBF", stderr.getvalue())
+        self.assertIn("[bootstrap] download SYS dictionaries from SYSTEM storage roots", stderr.getvalue())
         self.assertIn("[bootstrap] bootstrap complete", stderr.getvalue())
 
     def test_bootstrap_reads_defaults_from_init_dul(self) -> None:
@@ -550,7 +623,7 @@ class CliTest(unittest.TestCase):
         rows_by_kind = {row["object_kind"]: row for row in table_rows}
         self.assertEqual(manifest["rows"]["tab.dict"], 2)
         self.assertEqual(manifest["rows"]["col.dict"], 1)
-        self.assertEqual(manifest["steps"][2]["status"], "system-scan-output")
+        self.assertEqual(manifest["steps"][2]["status"], "system-storage-output")
         self.assertEqual(set(rows_by_kind), {"table", "index"})
         self.assertEqual(rows_by_kind["table"]["name"], "DMDUL_MANY")
         self.assertEqual(rows_by_kind["table"]["object_id"], "33629")
@@ -751,6 +824,193 @@ class CliTest(unittest.TestCase):
         self.assertIn("-- DATA", dumped)
         self.assertIn("ID\n7\n", dumped)
 
+    def test_dump_data_uses_dict_page_refs_without_resolving_system_dicts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "dump"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            data_file.write_bytes(
+                _leaf_page(page_no=0, value=1, storage_id=33595349)
+                + _leaf_page(page_no=1, value=2, storage_id=33595350)
+            )
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "page_type_raw", "page0_kind_raw", "page0_kind_label", "system_candidate"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 16384, "page_size": 8192, "pages": 2, "group_id": 6, "file_no": 0}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "parent_object_id", "schema_id", "subtype_name", "storage_index_id", "storage_index_ids", "group_id", "root_file", "root_page", "page_refs", "scan_pages", "source"],
+                [{"dict_type": "table", "object_kind": "table", "owner": "SYSDBA", "name": "DMDUL_PART", "qualified_name": "SYSDBA.DMDUL_PART", "object_id": 33629, "storage_index_id": "", "storage_index_ids": "33595349;33595350", "group_id": 6, "root_file": 0, "root_page": 0, "page_refs": "0:0;0:1", "scan_pages": 1}],
+            )
+            _write_dict(
+                dict_dir / "col.dict",
+                ["dict_type", "owner", "table_name", "qualified_table_name", "object_id", "column_id", "ordinal", "name", "type_name", "length", "source"],
+                [{"dict_type": "column", "owner": "SYSDBA", "table_name": "DMDUL_PART", "qualified_table_name": "SYSDBA.DMDUL_PART", "object_id": 33629, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4}],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--table",
+                    "SYSDBA.DMDUL_PART",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with patch("dmdul.cli.resolve_offline_table_metadata", side_effect=AssertionError("must not resolve")):
+                with redirect_stdout(stdout):
+                    exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            dumped = (output_dir / "SYSDBA.DMDUL_PART.dul").read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["reports"][0]["scanned_page_refs"], [{"file_no": 0, "page_no": 0}, {"file_no": 0, "page_no": 1}])
+        self.assertIn("1\n2\n", dumped)
+
+    def test_dump_data_partition_parallel_writes_parts_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "dump"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            data_file.write_bytes(
+                _leaf_page(page_no=0, value=1, storage_id=33595349)
+                + _leaf_page(page_no=1, value=2, storage_id=33595350)
+            )
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "page_type_raw", "page0_kind_raw", "page0_kind_label", "system_candidate"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 16384, "page_size": 8192, "pages": 2, "group_id": 6, "file_no": 0}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "parent_object_id", "schema_id", "subtype_name", "storage_index_id", "storage_index_ids", "group_id", "root_file", "root_page", "page_refs", "scan_pages", "source"],
+                [{"dict_type": "table", "object_kind": "table", "owner": "SYSDBA", "name": "DMDUL_PART", "qualified_name": "SYSDBA.DMDUL_PART", "object_id": 33629, "storage_index_id": "", "storage_index_ids": "33595349;33595350", "group_id": 6, "root_file": 0, "root_page": 0, "page_refs": "0:0;0:1", "scan_pages": 1}],
+            )
+            _write_dict(
+                dict_dir / "col.dict",
+                ["dict_type", "owner", "table_name", "qualified_table_name", "object_id", "column_id", "ordinal", "name", "type_name", "length", "source"],
+                [{"dict_type": "column", "owner": "SYSDBA", "table_name": "DMDUL_PART", "qualified_table_name": "SYSDBA.DMDUL_PART", "object_id": 33629, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4}],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--table",
+                    "SYSDBA.DMDUL_PART",
+                    "--partition-parallel",
+                    "2",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            parts_manifest = output_dir / "SYSDBA.DMDUL_PART.dul"
+            parts_text = parts_manifest.read_text(encoding="utf-8")
+            import_sql = root / "import.sql"
+            import_args = parser.parse_args(
+                [
+                    "import-data",
+                    "--input",
+                    str(parts_manifest),
+                    "--output-sql",
+                    str(import_sql),
+                    "--json",
+                ]
+            )
+            import_stdout = io.StringIO()
+            with redirect_stdout(import_stdout):
+                import_exit_code = import_args.func(import_args)
+            import_report = json.loads(import_stdout.getvalue())
+            import_text = import_sql.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["partition_parallel"], 2)
+        self.assertEqual(manifest["reports"][0]["rows_written"], 2)
+        self.assertIn("DMDUL-PARTS 1", parts_text)
+        self.assertIn("PART_DIR SYSDBA.DMDUL_PART.dul.parts", parts_text)
+        self.assertIn("PART 1 part-000001.dul ROWS 1 OK true", parts_text)
+        self.assertIn("PART 2 part-000002.dul ROWS 1 OK true", parts_text)
+        self.assertEqual(import_exit_code, 0)
+        self.assertEqual(import_report["input_format"], "parts")
+        self.assertEqual(import_report["rows"], 2)
+        self.assertIn("INSERT INTO SYSDBA.DMDUL_PART (ID) VALUES (1);", import_text)
+        self.assertIn("INSERT INTO SYSDBA.DMDUL_PART (ID) VALUES (2);", import_text)
+
+    def test_dump_data_exports_selected_partitions_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "dump"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            data_file.write_bytes(
+                _leaf_page(page_no=0, value=1, storage_id=33595349)
+                + _leaf_page(page_no=1, value=2, storage_id=33595350)
+                + _leaf_page(page_no=2, value=3, storage_id=33595351)
+            )
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "page_type_raw", "page0_kind_raw", "page0_kind_label", "system_candidate"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 8192 * 3, "page_size": 8192, "pages": 3, "group_id": 6, "file_no": 0}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "parent_object_id", "schema_id", "subtype_name", "storage_index_id", "storage_index_ids", "group_id", "root_file", "root_page", "page_refs", "partition_names", "scan_pages", "source"],
+                [{"dict_type": "table", "object_kind": "table", "owner": "SYSDBA", "name": "DMDUL_PART", "qualified_name": "SYSDBA.DMDUL_PART", "object_id": 33629, "storage_index_id": "", "storage_index_ids": "33595349;33595350;33595351", "group_id": 6, "root_file": 0, "root_page": 0, "page_refs": "0:0;0:1;0:2", "partition_names": "P1;P2;P3", "scan_pages": 1}],
+            )
+            _write_dict(
+                dict_dir / "col.dict",
+                ["dict_type", "owner", "table_name", "qualified_table_name", "object_id", "column_id", "ordinal", "name", "type_name", "length", "source"],
+                [{"dict_type": "column", "owner": "SYSDBA", "table_name": "DMDUL_PART", "qualified_table_name": "SYSDBA.DMDUL_PART", "object_id": 33629, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4}],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--table",
+                    "SYSDBA.DMDUL_PART",
+                    "--partition",
+                    "p2,P3",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            dumped = (output_dir / "SYSDBA.DMDUL_PART.dul").read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["reports"][0]["rows_written"], 2)
+        self.assertEqual(
+            manifest["reports"][0]["scanned_page_refs"],
+            [{"file_no": 0, "page_no": 1}, {"file_no": 0, "page_no": 2}],
+        )
+        self.assertIn("ID\n2\n3\n", dumped)
+        self.assertNotIn("\n1\n", dumped)
+
     def test_dump_data_formats_storage_scan_progress(self) -> None:
         stderr = io.StringIO()
         progress = _dump_data_progress_printer()
@@ -928,6 +1188,78 @@ class CliTest(unittest.TestCase):
         self.assertEqual(manifest["tables_total"], 1)
         self.assertEqual(manifest["tables_ok"], 1)
 
+    def test_dump_data_exports_all_tables_for_user_in_parallel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "dump"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            data_file.write_bytes(
+                _leaf_page(page_no=0, value=7, storage_id=33595349)
+                + _leaf_page(page_no=1, value=8, storage_id=33595350)
+                + _leaf_page(page_no=2, value=9, storage_id=33595351)
+            )
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "page_type_raw", "page0_kind_raw", "page0_kind_label", "system_candidate"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 8192 * 3, "page_size": 8192, "pages": 3, "group_id": 6, "file_no": 0}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "parent_object_id", "schema_id", "subtype_name", "storage_index_id", "group_id", "root_file", "root_page", "scan_pages", "source"],
+                [
+                    {"dict_type": "table", "object_kind": "table", "owner": "SYSDBA", "name": "DMDUL_A", "qualified_name": "SYSDBA.DMDUL_A", "object_id": 33629, "storage_index_id": 33595349, "group_id": 6, "root_file": 0, "root_page": 0, "scan_pages": 1},
+                    {"dict_type": "table", "object_kind": "table", "owner": "SYSDBA", "name": "DMDUL_B", "qualified_name": "SYSDBA.DMDUL_B", "object_id": 33630, "storage_index_id": 33595350, "group_id": 6, "root_file": 0, "root_page": 1, "scan_pages": 1},
+                    {"dict_type": "table", "object_kind": "table", "owner": "OTHER", "name": "DMDUL_A", "qualified_name": "OTHER.DMDUL_A", "object_id": 33631, "storage_index_id": 33595351, "group_id": 6, "root_file": 0, "root_page": 2, "scan_pages": 1},
+                ],
+            )
+            _write_dict(
+                dict_dir / "col.dict",
+                ["dict_type", "owner", "table_name", "qualified_table_name", "object_id", "column_id", "ordinal", "name", "type_name", "length", "source"],
+                [
+                    {"dict_type": "column", "owner": "SYSDBA", "table_name": "DMDUL_A", "qualified_table_name": "SYSDBA.DMDUL_A", "object_id": 33629, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4},
+                    {"dict_type": "column", "owner": "SYSDBA", "table_name": "DMDUL_B", "qualified_table_name": "SYSDBA.DMDUL_B", "object_id": 33630, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4},
+                    {"dict_type": "column", "owner": "OTHER", "table_name": "DMDUL_A", "qualified_table_name": "OTHER.DMDUL_A", "object_id": 33631, "column_id": 0, "ordinal": 1, "name": "ID", "type_name": "INT", "length": 4},
+                ],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--user",
+                    "sysdba",
+                    "--parallel",
+                    "2",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+            dumped_a = (output_dir / "SYSDBA.DMDUL_A.dul").read_text(encoding="utf-8")
+            dumped_b = (output_dir / "SYSDBA.DMDUL_B.dul").read_text(encoding="utf-8")
+            output_a_exists = (output_dir / "SYSDBA.DMDUL_A.dul").exists()
+            output_b_exists = (output_dir / "SYSDBA.DMDUL_B.dul").exists()
+            other_output_exists = (output_dir / "OTHER.DMDUL_A.dul").exists()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(manifest["parallel"], 2)
+        self.assertEqual(manifest["tables_total"], 2)
+        self.assertEqual(manifest["tables_ok"], 2)
+        self.assertEqual(manifest["tables_failed"], 0)
+        self.assertTrue(output_a_exists)
+        self.assertTrue(output_b_exists)
+        self.assertFalse(other_output_exists)
+        self.assertIn("ID\n7\n", dumped_a)
+        self.assertIn("ID\n8\n", dumped_b)
+
     def test_resolve_table_writes_segment_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -1085,6 +1417,58 @@ class CliTest(unittest.TestCase):
             "page-plan-fallback-scan-range",
         )
 
+    def test_extract_csv_strict_fails_scan_range_fallback_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            segment_file = root / "segment.json"
+            output = root / "out.csv"
+            report_output = root / "report.json"
+            page = bytearray(8192)
+            page[0x62:0x73] = (
+                bytes.fromhex("00 11 00")
+                + (7).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x11 - 2 - 1 - 4)
+            )
+            data_file.write_bytes(bytes(page))
+            segment_file.write_text(
+                json.dumps(_segment_manifest_without_page_plan(data_file)),
+                encoding="utf-8",
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--segment-json",
+                    str(segment_file),
+                    "--table",
+                    "SYSDBA.DMDUL_ONE",
+                    "--output",
+                    str(output),
+                    "--report-output",
+                    str(report_output),
+                    "--strict",
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+            report = json.loads(report_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["strict_ok"])
+        self.assertEqual(
+            report["strict_failures"][0]["code"],
+            "page-plan-fallback-scan-range",
+        )
+        self.assertIn(
+            "strict_failure=page-plan-fallback-scan-range level=warning",
+            stderr.getvalue(),
+        )
+
     def test_extract_csv_segment_json_preserves_manifest_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -1200,6 +1584,64 @@ class CliTest(unittest.TestCase):
             "diagnostic=segment-root-candidate-ref-non-data-page level=warning",
             stderr.getvalue(),
         )
+
+    def test_extract_csv_strict_does_not_fail_on_segment_root_candidate_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            segment_file = root / "segment.json"
+            output = root / "out.csv"
+            report_output = root / "report.json"
+            page = bytearray(8192)
+            page[0x62:0x73] = (
+                bytes.fromhex("00 11 00")
+                + (7).to_bytes(4, "little", signed=True)
+                + b"\0" * (0x11 - 2 - 1 - 4)
+            )
+            data_file.write_bytes(bytes(page))
+            manifest = _segment_manifest_without_page_plan(data_file)
+            manifest["page_refs"] = [{"file_no": 0, "page_no": 0}]
+            manifest["segment_root"] = {
+                "diagnostics": [
+                    {
+                        "level": "warning",
+                        "code": "segment-root-candidate-ref-non-data-page",
+                        "message": "non-data exploratory root ref",
+                    }
+                ]
+            }
+            segment_file.write_text(json.dumps(manifest), encoding="utf-8")
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "extract-csv",
+                    "--segment-json",
+                    str(segment_file),
+                    "--table",
+                    "SYSDBA.DMDUL_ONE",
+                    "--output",
+                    str(output),
+                    "--report-output",
+                    str(report_output),
+                    "--strict",
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = args.func(args)
+            report = json.loads(report_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["strict_ok"])
+        self.assertEqual(report["strict_failures"], [])
+        self.assertEqual(
+            report["diagnostics"][0]["code"],
+            "segment-root-candidate-ref-non-data-page",
+        )
+        self.assertNotIn("strict_failure=", stderr.getvalue())
 
     def test_extract_csv_strict_page_plan_fails_scan_range_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

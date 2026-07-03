@@ -23,6 +23,12 @@ class StoragePageRef:
 
 
 @dataclass(frozen=True)
+class StoragePartitionRef:
+    name: str
+    page_ref: StoragePageRef
+
+
+@dataclass(frozen=True)
 class StorageRoot:
     group_id: int
     file_no: int
@@ -31,6 +37,7 @@ class StorageRoot:
     storage_id: int | None = None
     page_numbers: tuple[int, ...] = ()
     page_refs: tuple[StoragePageRef, ...] = ()
+    partition_page_refs: tuple[StoragePartitionRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +106,11 @@ class CalibratedMetadata:
             if object_id is None or group_id is None or root_file is None or root_page is None:
                 continue
             columns = tuple(columns_by_object_id.get(object_id, ()))
+            page_refs = _csv_page_refs(row.get("page_refs"))
+            partition_page_refs = _csv_partition_page_refs(
+                names_value=row.get("partition_names"),
+                refs=page_refs,
+            )
             tables.append(
                 TableMeta(
                     owner=str(row.get("owner") or ""),
@@ -109,7 +121,9 @@ class CalibratedMetadata:
                         file_no=root_file,
                         root_page=root_page,
                         scan_pages=int(row.get("scan_pages") or 1),
-                        storage_id=_optional_int(row.get("storage_index_id")),
+                        storage_id=None if page_refs else _optional_int(row.get("storage_index_id")),
+                        page_refs=page_refs,
+                        partition_page_refs=partition_page_refs,
                     ),
                 )
             )
@@ -151,7 +165,7 @@ class CalibratedMetadata:
                 type_name=str(column["type_name"]).upper(),
                 length=_optional_int(column.get("length")),
                 scale=_optional_int(column.get("scale")),
-                nullable=bool(column.get("nullable", True)),
+                nullable=_optional_bool(column.get("nullable"), default=True),
             )
             for column in payload.get("columns", [])
         )
@@ -201,7 +215,7 @@ def _table_from_dict(item: dict[str, Any]) -> TableMeta:
             type_name=str(column["type_name"]).upper(),
             length=_optional_int(column.get("length")),
             scale=_optional_int(column.get("scale")),
-            nullable=bool(column.get("nullable", True)),
+            nullable=_optional_bool(column.get("nullable"), default=True),
         )
         for column in item.get("columns", [])
     )
@@ -218,6 +232,7 @@ def _table_from_dict(item: dict[str, Any]) -> TableMeta:
             storage_id=_optional_int(storage.get("storage_id") or storage.get("storage_index_id")),
             page_numbers=tuple(int(value) for value in storage.get("page_numbers", ())),
             page_refs=_storage_page_refs(storage),
+            partition_page_refs=_storage_partition_page_refs(storage),
         ),
     )
 
@@ -309,6 +324,48 @@ def _storage_page_refs(storage: dict[str, Any]) -> tuple[StoragePageRef, ...]:
     return tuple(
         StoragePageRef(file_no=file_no, page_no=int(page_no))
         for page_no in storage.get("page_numbers", ())
+    )
+
+
+def _storage_partition_page_refs(storage: dict[str, Any]) -> tuple[StoragePartitionRef, ...]:
+    partition_refs = storage.get("partition_page_refs")
+    if not partition_refs:
+        return ()
+    refs: list[StoragePartitionRef] = []
+    for item in partition_refs:
+        page_ref = StoragePageRef(
+            file_no=int(item["file_no"]),
+            page_no=int(item["page_no"]),
+        )
+        refs.append(StoragePartitionRef(name=str(item["name"]), page_ref=page_ref))
+    return tuple(refs)
+
+
+def _csv_page_refs(value: Any) -> tuple[StoragePageRef, ...]:
+    if value is None or value == "":
+        return ()
+    refs: list[StoragePageRef] = []
+    for item in str(value).split(";"):
+        if not item:
+            continue
+        file_no, page_no = item.split(":", 1)
+        refs.append(StoragePageRef(file_no=int(file_no), page_no=int(page_no)))
+    return tuple(refs)
+
+
+def _csv_partition_page_refs(
+    *,
+    names_value: Any,
+    refs: tuple[StoragePageRef, ...],
+) -> tuple[StoragePartitionRef, ...]:
+    if names_value is None or names_value == "":
+        return ()
+    names = [item for item in str(names_value).split(";") if item]
+    if len(names) != len(refs):
+        return ()
+    return tuple(
+        StoragePartitionRef(name=name, page_ref=page_ref)
+        for name, page_ref in zip(names, refs)
     )
 
 

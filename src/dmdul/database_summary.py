@@ -27,7 +27,10 @@ def summarize_database_dir(
     dbf_paths = find_dbf_files(database_dir)
     control_paths = find_control_files(database_dir)
     control_files = [
-        summarize_control_file(path, sample_limit=sample_limit)
+        summarize_control_file(
+            path,
+            sample_limit=sample_limit,
+        )
         for path in control_paths
     ]
     files = discover_data_files(database_dir, page_size=page_size)

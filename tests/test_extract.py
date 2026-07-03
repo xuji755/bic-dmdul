@@ -6,11 +6,112 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dmdul.extract import extract_csv_with_calibrated_metadata
-from dmdul.metadata import CalibratedMetadata
+from dmdul.extract import _create_table_sql, extract_csv_with_calibrated_metadata
+from dmdul.metadata import CalibratedMetadata, ColumnMeta, StorageRoot, TableMeta
 
 
 class ExtractCsvScaffoldTest(unittest.TestCase):
+    def _metadata_for_single_page(
+        self,
+        *,
+        data_file: Path,
+        columns: tuple[ColumnMeta, ...],
+    ) -> CalibratedMetadata:
+        return CalibratedMetadata.from_dict(
+            {
+                "data_files": [
+                    {
+                        "group_id": 6,
+                        "file_no": 0,
+                        "path": str(data_file),
+                        "page_size": 8192,
+                    }
+                ],
+                "tables": [
+                    {
+                        "owner": "SYSDBA",
+                        "name": "DMDUL_LOB",
+                        "storage": {"group_id": 6, "file_no": 0, "root_page": 0},
+                        "columns": [
+                            {"name": item.name, "type_name": item.type_name}
+                            for item in columns
+                        ],
+                    }
+                ],
+            }
+        )
+
+    def _single_row_page(self, row_payload: bytes) -> bytes:
+        page = bytearray(b"\0" * 8192)
+        row = (len(row_payload) + 2).to_bytes(2, "big") + row_payload
+        page[0x62 : 0x62 + len(row)] = row
+        return bytes(page)
+
+    def _var_payload(self, payload: bytes) -> bytes:
+        self.assertLess(len(payload), 128)
+        return bytes([0x80 | len(payload)]) + payload
+
+    def _inline_lob(self, payload: bytes) -> bytes:
+        return (
+            bytes.fromhex("01 33 a6 06 00 00 00 00 00")
+            + len(payload).to_bytes(4, "little")
+            + payload
+        )
+
+    def _page_ref(self, page_no: int | None) -> bytes:
+        if page_no is None:
+            return b"\xff" * 6
+        return (0).to_bytes(2, "little") + page_no.to_bytes(4, "little")
+
+    def _lob_locator(self, *, lob_id: int, byte_length: int, start_page: int) -> bytes:
+        return (
+            b"\x02"
+            + lob_id.to_bytes(4, "little")
+            + b"\0" * 4
+            + byte_length.to_bytes(4, "little")
+            + (6).to_bytes(4, "little")
+            + start_page.to_bytes(4, "little")
+        )
+
+    def _lob_page(
+        self,
+        *,
+        page_no: int,
+        lob_id: int,
+        payload: bytes,
+        prev_page: int | None,
+        next_page: int | None,
+    ) -> bytes:
+        page = bytearray(b"\0" * 8192)
+        page[0:4] = (6).to_bytes(4, "little")
+        page[4:8] = page_no.to_bytes(4, "little")
+        page[8:14] = self._page_ref(prev_page)
+        page[14:20] = self._page_ref(next_page)
+        page[20:24] = (0x20).to_bytes(4, "little")
+        page[0x24:0x28] = lob_id.to_bytes(4, "little")
+        page[0x2C:0x2E] = len(payload).to_bytes(2, "little")
+        page[0x38 : 0x38 + len(payload)] = payload
+        return bytes(page)
+
+    def test_create_table_sql_includes_numeric_and_temporal_scale(self) -> None:
+        sql = _create_table_sql(
+            TableMeta(
+                owner="SYSDBA",
+                name="DMDUL_TYPES3",
+                columns=(
+                    ColumnMeta(name="ID", type_name="INT", length=4, scale=0),
+                    ColumnMeta(name="AMOUNT", type_name="DECIMAL", length=18, scale=4),
+                    ColumnMeta(name="TS", type_name="TIMESTAMP", length=8, scale=6),
+                    ColumnMeta(name="VC", type_name="VARCHAR", length=40),
+                ),
+                storage=StorageRoot(group_id=6, file_no=0, root_page=0),
+            )
+        )
+
+        self.assertIn("  AMOUNT DECIMAL(18,4),", sql)
+        self.assertIn("  TS TIMESTAMP(6),", sql)
+        self.assertIn("  VC VARCHAR(40)", sql)
+
     def test_writes_decoded_live_rows_from_root_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -158,6 +259,169 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
             {item["code"] for item in report.diagnostics},
         )
 
+    def test_external_lob_mode_writes_inline_lobs_as_attachments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            clob_payload = self._inline_lob("CLOB_一".encode("gb18030"))
+            blob_payload = self._inline_lob(bytes.fromhex("ca fe ba be"))
+            row_payload = (
+                b"\0"
+                + self._var_payload(clob_payload)
+                + self._var_payload(blob_payload)
+            )
+            data_file.write_bytes(self._single_row_page(row_payload))
+            output_path = root / "SYSDBA.DMDUL_LOB.dul"
+            metadata = self._metadata_for_single_page(
+                data_file=data_file,
+                columns=(
+                    ColumnMeta(name="DOC", type_name="CLOB"),
+                    ColumnMeta(name="BIN", type_name="BLOB"),
+                ),
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_LOB",
+                output=output_path,
+                lob_mode="external",
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+            manifest_path = root / "SYSDBA.DMDUL_LOB.lob" / "manifest.jsonl"
+            manifest = [
+                json.loads(line)
+                for line in manifest_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertTrue(report.ok)
+            self.assertEqual(rows[0], ["DOC", "BIN"])
+            self.assertEqual(
+                rows[1],
+                [
+                    "@LOB:SYSDBA.DMDUL_LOB.lob/00000001/DOC.clob",
+                    "@LOB:SYSDBA.DMDUL_LOB.lob/00000001/BIN.blob",
+                ],
+            )
+            self.assertEqual(
+                (root / "SYSDBA.DMDUL_LOB.lob/00000001/DOC.clob").read_text(
+                    encoding="utf-8"
+                ),
+                "CLOB_一",
+            )
+            self.assertEqual(
+                (root / "SYSDBA.DMDUL_LOB.lob/00000001/BIN.blob").read_bytes(),
+                bytes.fromhex("ca fe ba be"),
+            )
+            self.assertEqual({item["status"] for item in manifest}, {"inline"})
+            self.assertEqual({item["column"] for item in manifest}, {"DOC", "BIN"})
+
+    def test_external_lob_mode_reports_unresolved_locator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            locator = bytes.fromhex("02 00 00 00 11 22 33 44")
+            row_payload = b"\0" + self._var_payload(locator)
+            data_file.write_bytes(self._single_row_page(row_payload))
+            output_path = root / "SYSDBA.DMDUL_LOB.dul"
+            metadata = self._metadata_for_single_page(
+                data_file=data_file,
+                columns=(ColumnMeta(name="DOC", type_name="CLOB"),),
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_LOB",
+                output=output_path,
+                lob_mode="external",
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+
+            self.assertFalse(report.ok)
+            self.assertFalse(report.strict_ok)
+            self.assertEqual(
+                rows[1],
+                ["@LOB:SYSDBA.DMDUL_LOB.lob/00000001/DOC.locator.hex"],
+            )
+            self.assertIn(
+                "lob-locator-not-followed",
+                {item["code"] for item in report.diagnostics},
+            )
+
+    def test_external_lob_mode_follows_out_of_line_clob_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            lob_id = 0x12345678
+            lob_payload = "hello一world".encode("gb18030")
+            locator = self._lob_locator(
+                lob_id=lob_id,
+                byte_length=len(lob_payload),
+                start_page=1,
+            )
+            row_payload = (
+                b"\0"
+                + (1).to_bytes(4, "little", signed=True)
+                + self._var_payload(locator)
+            )
+            pages = [
+                self._single_row_page(row_payload),
+                self._lob_page(
+                    page_no=1,
+                    lob_id=lob_id,
+                    payload=lob_payload[:6],
+                    prev_page=None,
+                    next_page=2,
+                ),
+                self._lob_page(
+                    page_no=2,
+                    lob_id=lob_id,
+                    payload=lob_payload[6:],
+                    prev_page=1,
+                    next_page=None,
+                ),
+            ]
+            data_file.write_bytes(b"".join(pages))
+            output_path = root / "SYSDBA.DMDUL_LOB.dul"
+            metadata = self._metadata_for_single_page(
+                data_file=data_file,
+                columns=(
+                    ColumnMeta(name="ID", type_name="INT"),
+                    ColumnMeta(name="DOC", type_name="CLOB"),
+                ),
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_LOB",
+                output=output_path,
+                lob_mode="external",
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+            manifest = [
+                json.loads(line)
+                for line in (root / "SYSDBA.DMDUL_LOB.lob/manifest.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+
+            self.assertTrue(report.ok)
+            self.assertTrue(report.strict_ok)
+            self.assertEqual(
+                rows[1],
+                ["1", "@LOB:SYSDBA.DMDUL_LOB.lob/00000001/DOC.clob"],
+            )
+            self.assertEqual(
+                (root / "SYSDBA.DMDUL_LOB.lob/00000001/DOC.clob").read_text(
+                    encoding="utf-8"
+                ),
+                "hello一world",
+            )
+            self.assertEqual(manifest[0]["status"], "out-of-line")
+            self.assertEqual(manifest[0]["pages"], [1, 2])
+
     def test_global_storage_id_scan_finds_pages_before_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -218,6 +482,7 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
 
         self.assertTrue(report.ok)
         self.assertEqual(report.rows_written, 1)
+        self.assertEqual(report.mode, "storage-id-global-scan")
         self.assertEqual(report.scanned_pages, (1,))
         self.assertIn(
             "page-plan-storage-id-global-scan",
@@ -332,12 +597,109 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
 
         self.assertEqual(report.rows_written, 3)
+        self.assertEqual(report.mode, "btree-internal-descent")
         self.assertEqual(report.scanned_pages, (10, 20, 35))
         self.assertEqual(rows, [["ID"], ["10"], ["20"], ["35"]])
         self.assertIn(
             "page-plan-btree-internal-descent",
             {item["code"] for item in report.diagnostics},
         )
+
+    def test_strict_fails_when_btree_root_entry_is_not_covered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            data_file = root / "DMDUL_TS01.DBF"
+            pages = [bytearray(b"\0" * 8192) for _ in range(40)]
+            storage_id = 33595349
+
+            def init_header(page_no: int, kind: int) -> None:
+                page = pages[page_no]
+                page[0:4] = (6).to_bytes(4, "little")
+                page[4:8] = page_no.to_bytes(4, "little")
+                page[8:14] = b"\xff" * 6
+                page[14:20] = b"\xff" * 6
+                page[20:24] = kind.to_bytes(4, "little")
+                page[0x3A:0x3E] = storage_id.to_bytes(4, "little")
+
+            def page_ref(page_no: int | None) -> bytes:
+                if page_no is None:
+                    return b"\xff" * 6
+                return (0).to_bytes(2, "little") + page_no.to_bytes(4, "little")
+
+            def put_row(page_no: int, value: int) -> None:
+                pages[page_no][0x62:0x71] = (
+                    bytes.fromhex("00 0f 00")
+                    + value.to_bytes(4, "little", signed=True)
+                    + b"\0" * (0x0F - 2 - 1 - 4)
+                )
+
+            init_header(0, 0x15)
+            pages[0][0x2C:0x2E] = (1).to_bytes(2, "little")
+            pages[0][0x52:0x56] = (10).to_bytes(4, "little")
+            pages[0][8180:8182] = (0x100).to_bytes(2, "little")
+            pages[0][0x100:0x10F] = (
+                bytes.fromhex("00 0f 00")
+                + (35).to_bytes(4, "little")
+                + b"\0\0"
+                + (99).to_bytes(4, "little")
+                + b"\0\0"
+            )
+            for page_no, prev_page, next_page, value in (
+                (10, None, 20, 10),
+                (20, 10, None, 20),
+                (35, None, None, 35),
+            ):
+                init_header(page_no, 0x14)
+                pages[page_no][8:14] = page_ref(prev_page)
+                pages[page_no][14:20] = page_ref(next_page)
+                put_row(page_no, value)
+
+            data_file.write_bytes(b"".join(bytes(page) for page in pages))
+            output_path = root / "btree_incomplete.csv"
+            metadata = CalibratedMetadata.from_dict(
+                {
+                    "data_files": [
+                        {
+                            "group_id": 6,
+                            "file_no": 0,
+                            "path": str(data_file),
+                            "page_size": 8192,
+                        }
+                    ],
+                    "tables": [
+                        {
+                            "owner": "SYSDBA",
+                            "name": "DMDUL_BTREE_INCOMPLETE",
+                            "storage": {
+                                "group_id": 6,
+                                "file_no": 0,
+                                "root_page": 0,
+                                "scan_pages": 40,
+                                "storage_id": storage_id,
+                            },
+                            "columns": [{"name": "ID", "type_name": "INT"}],
+                        }
+                    ],
+                }
+            )
+
+            report = extract_csv_with_calibrated_metadata(
+                metadata=metadata,
+                table_name="SYSDBA.DMDUL_BTREE_INCOMPLETE",
+                output=output_path,
+            )
+            with output_path.open(newline="", encoding="utf-8") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(report.rows_written, 2)
+        self.assertEqual(report.mode, "btree-internal-descent")
+        self.assertEqual(report.scanned_pages, (10, 20))
+        self.assertFalse(report.strict_ok)
+        self.assertIn(
+            "page-plan-btree-root-entry-mismatch",
+            {item["code"] for item in report.strict_failures},
+        )
+        self.assertEqual(rows, [["ID"], ["10"], ["20"]])
 
     def test_descends_multiple_btree_internal_levels_before_leaf_chain(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -368,9 +730,28 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 )
 
             init_header(0, 0x15)
+            pages[0][0x2C:0x2E] = (1).to_bytes(2, "little")
             pages[0][0x52:0x56] = (3).to_bytes(4, "little")
+            pages[0][8180:8182] = (0x100).to_bytes(2, "little")
+            pages[0][0x100:0x10F] = (
+                bytes.fromhex("00 0f 00")
+                + (4).to_bytes(4, "little")
+                + b"\0\0"
+                + (8).to_bytes(4, "little")
+                + b"\0\0"
+            )
             init_header(3, 0x15)
             pages[3][0x52:0x56] = (7).to_bytes(4, "little")
+            init_header(4, 0x15)
+            pages[4][0x2C:0x2E] = (1).to_bytes(2, "little")
+            pages[4][8180:8182] = (0x100).to_bytes(2, "little")
+            pages[4][0x100:0x10F] = (
+                bytes.fromhex("00 0f 00")
+                + (8).to_bytes(4, "little")
+                + b"\0\0"
+                + (8).to_bytes(4, "little")
+                + b"\0\0"
+            )
             for page_no, prev_page, next_page, value in ((7, None, 8, 7), (8, 7, None, 8)):
                 init_header(page_no, 0x14)
                 pages[page_no][8:14] = page_ref(prev_page)
@@ -402,10 +783,13 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
 
         self.assertEqual(report.rows_written, 2)
+        self.assertEqual(report.mode, "btree-internal-descent")
         self.assertEqual(report.scanned_pages, (7, 8))
         diagnostics = {item["code"]: item for item in report.diagnostics}
         self.assertIn("page-plan-btree-internal-descent", diagnostics)
         self.assertEqual(diagnostics["page-plan-btree-internal-descent"]["descent_pages"], (0, 3, 7))
+        self.assertEqual(diagnostics["page-plan-btree-internal-descent"]["root_entry_child_pages"], [4])
+        self.assertNotIn("page-plan-btree-root-entry-mismatch", diagnostics)
         self.assertEqual(rows, [["ID"], ["7"], ["8"]])
 
     def test_tries_next_internal_page_before_global_storage_scan(self) -> None:
@@ -473,6 +857,7 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                 rows = list(csv.reader(file))
 
         self.assertEqual(report.rows_written, 1)
+        self.assertEqual(report.mode, "btree-internal-descent")
         self.assertEqual(report.scanned_pages, (7,))
         self.assertEqual(rows, [["ID"], ["7"]])
         self.assertIn("page-plan-btree-internal-descent", {item["code"] for item in report.diagnostics})

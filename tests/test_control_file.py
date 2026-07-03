@@ -63,16 +63,30 @@ class ControlFileTest(unittest.TestCase):
             [0, 1, 2],
         )
 
-    def test_summarize_control_file_respects_zero_sample_limit(self) -> None:
+    def test_summarize_control_file_sample_limit_only_caps_printable_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "dm.ctl"
             path.write_bytes(b"\x00DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\x00")
 
             summary = summarize_control_file(path, sample_limit=0)
 
-        self.assertEqual(summary["dbf_path_hints"], [])
-        self.assertEqual(summary["dbf_path_hint_records"], [])
-        self.assertEqual(summary["dbf_path_occurrences"], [])
+        self.assertEqual(summary["dbf_path_hints"], ["/dmdata/data/DAMENG/SYSTEM.DBF"])
+        self.assertEqual(len(summary["dbf_path_hint_records"]), 1)
+        self.assertEqual(len(summary["dbf_path_occurrences"]), 1)
+        self.assertEqual(summary["printable_string_records"], [])
+
+    def test_summarize_control_file_dbf_hint_limit_is_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "dm.ctl"
+            path.write_bytes(
+                b"\x00DATAFILE=/dmdata/data/DAMENG/SYSTEM.DBF\x00"
+                b"DATAFILE=/dmdata/data/DAMENG/DMDUL_TS01.DBF\x00"
+            )
+
+            summary = summarize_control_file(path, sample_limit=0, dbf_hint_limit=1)
+
+        self.assertEqual(summary["dbf_path_hints"], ["/dmdata/data/DAMENG/SYSTEM.DBF"])
+        self.assertEqual(len(summary["dbf_path_occurrences"]), 1)
         self.assertEqual(summary["printable_string_records"], [])
 
     def test_compare_control_files_reports_changed_ranges(self) -> None:

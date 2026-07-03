@@ -3,14 +3,150 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from dmdul.resolver import resolve_offline_table_metadata
+from dmdul.resolver import (
+    OfflineResolveError,
+    _cached_sysobject_rows,
+    _select_leaf_partition_object_rows,
+    _select_columns,
+    _select_owner_table_object_row,
+    resolve_offline_table_metadata,
+)
+from dmdul.sysdict import SysColumnCandidate, SysObjectRowCandidate
 
 
 PAGE_SIZE = 8192
 
 
 class OfflineResolverTest(unittest.TestCase):
+    def test_select_columns_deduplicates_by_column_id_score(self) -> None:
+        selected = _select_columns(
+            [
+                _column_candidate(0, "ID", "INT", 4, score=140, offset=100),
+                _column_candidate(1, "C1", "INT", 4, score=140, offset=150),
+                _column_candidate(1, "FINDEXID", "INT", 3061, score=105, offset=50),
+                _column_candidate(2, "C2", "VARCHAR", 40, score=140, offset=200),
+            ]
+        )
+
+        self.assertEqual(
+            [(item.column_id, item.name, item.type_name, item.length) for item in selected],
+            [(0, "ID", "INT", 4), (1, "C1", "INT", 4), (2, "C2", "VARCHAR", 40)],
+        )
+
+    def test_select_columns_rejects_column_id_gap(self) -> None:
+        with self.assertRaises(OfflineResolveError):
+            _select_columns(
+                [
+                    _column_candidate(0, "ID", "INT", 4),
+                    _column_candidate(2, "C2", "VARCHAR", 40),
+                ]
+            )
+
+    def test_select_owner_table_object_row_distinguishes_duplicate_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "SYSTEM.DBF"
+            sysdba_schema = 0x09000001
+            test_schema = 0x090003ED
+            path.write_bytes(
+                b"\0" * PAGE_SIZE
+                + _schema_row(test_schema, "TEST")
+                + _sysobject_table_row(34019, sysdba_schema, "DMDUL_DUP_SCHEMA2")
+                + _sysobject_table_row(34020, test_schema, "DMDUL_DUP_SCHEMA2")
+            )
+
+            row = _select_owner_table_object_row(
+                path,
+                table_name="DMDUL_DUP_SCHEMA2",
+                owner_name="TEST",
+                page_size=PAGE_SIZE,
+            )
+
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row.object_id, 34020)
+        self.assertEqual(row.schema_id, test_schema)
+
+    def test_owner_table_object_row_reuses_cached_sysobjects_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "SYSTEM.DBF"
+            path.write_bytes(b"\0" * PAGE_SIZE)
+            schema_id = 0x090003ED
+            rows = [
+                SysObjectRowCandidate(
+                    name="TEST",
+                    object_id=schema_id,
+                    schema_id=schema_id,
+                    parent_id=None,
+                    type_name="SCH",
+                    subtype_name="",
+                    offset=100,
+                    page_no=0,
+                    page_offset=100,
+                    score=150,
+                    source="test",
+                ),
+                SysObjectRowCandidate(
+                    name="DMDUL_DUP_SCHEMA2",
+                    object_id=34020,
+                    schema_id=schema_id,
+                    parent_id=None,
+                    type_name="SCHOBJ",
+                    subtype_name="UTAB",
+                    offset=200,
+                    page_no=0,
+                    page_offset=200,
+                    score=150,
+                    source="test",
+                ),
+            ]
+            _cached_sysobject_rows.cache_clear()
+            with patch("dmdul.resolver.dump_sysobject_rows", return_value=rows) as mocked:
+                first = _select_owner_table_object_row(
+                    path,
+                    table_name="DMDUL_DUP_SCHEMA2",
+                    owner_name="TEST",
+                    page_size=PAGE_SIZE,
+                )
+                second = _select_owner_table_object_row(
+                    path,
+                    table_name="DMDUL_DUP_SCHEMA2",
+                    owner_name="TEST",
+                    page_size=PAGE_SIZE,
+                )
+
+        self.assertEqual(first, second)
+        self.assertEqual(mocked.call_count, 1)
+
+    def test_select_leaf_partition_object_rows_recurses_subpartitions(self) -> None:
+        schema_id = 0x09000001
+        rows = (
+            _sysobject_row("DMDUL_PART_RANGE_HASH", 34111, schema_id, None),
+            _sysobject_row("DMDUL_PART_RANGE_HASH_P_LOW", 34112, schema_id, 34111),
+            _sysobject_row("DMDUL_PART_RANGE_HASH_P_HIGH", 34113, schema_id, 34111),
+            _sysobject_row("DMDUL_PART_RANGE_HASH_P_LOW_DMHASHPART0", 34114, schema_id, 34112),
+            _sysobject_row("DMDUL_PART_RANGE_HASH_P_LOW_DMHASHPART1", 34115, schema_id, 34112),
+            _sysobject_row("DMDUL_PART_RANGE_HASH_P_HIGH_DMHASHPART0", 34116, schema_id, 34113),
+            _sysobject_row("DMDUL_PART_RANGE_HASH_P_HIGH_DMHASHPART1", 34117, schema_id, 34113),
+        )
+
+        leaves = _select_leaf_partition_object_rows(
+            rows,
+            parent_object_id=34111,
+            schema_id=schema_id,
+        )
+
+        self.assertEqual(
+            [(item.object_id, item.parent_id, item.name) for item in leaves],
+            [
+                (34114, 34112, "DMDUL_PART_RANGE_HASH_P_LOW_DMHASHPART0"),
+                (34115, 34112, "DMDUL_PART_RANGE_HASH_P_LOW_DMHASHPART1"),
+                (34116, 34113, "DMDUL_PART_RANGE_HASH_P_HIGH_DMHASHPART0"),
+                (34117, 34113, "DMDUL_PART_RANGE_HASH_P_HIGH_DMHASHPART1"),
+            ],
+        )
+
     def test_resolves_table_metadata_from_synthetic_database_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             database_dir = Path(tmp_dir)
@@ -167,6 +303,52 @@ def _page0(*, group_raw: int, kind: int) -> bytes:
     return bytes(page)
 
 
+def _column_candidate(
+    column_id: int,
+    name: str,
+    type_name: str,
+    length: int,
+    *,
+    score: int = 140,
+    offset: int = 0,
+) -> SysColumnCandidate:
+    return SysColumnCandidate(
+        object_id=1,
+        offset=offset,
+        page_no=0,
+        page_offset=offset,
+        score=score,
+        column_id=column_id,
+        length=length,
+        scale=0,
+        nullable="Y",
+        name=name,
+        type_name=type_name,
+        name_offset=offset + 1,
+        type_offset=offset + 2,
+    )
+
+def _sysobject_row(
+    name: str,
+    object_id: int,
+    schema_id: int,
+    parent_id: int | None,
+) -> SysObjectRowCandidate:
+    return SysObjectRowCandidate(
+        name=name,
+        object_id=object_id,
+        schema_id=schema_id,
+        parent_id=parent_id,
+        type_name="SCHOBJ",
+        subtype_name="UTAB",
+        offset=object_id,
+        page_no=0,
+        page_offset=object_id,
+        score=150,
+        source="test",
+    )
+
+
 def _write_dbf(path: Path, payload: bytes) -> None:
     path.write_bytes(payload + b"\0" * PAGE_SIZE)
 
@@ -232,6 +414,36 @@ def _sysobject_table_name(table_id: int) -> bytes:
         + b"SCHOBJ"
         + bytes([0x84])
         + b"UTAB"
+    )
+
+
+def _schema_row(schema_id: int, name: str) -> bytes:
+    encoded_name = name.encode("ascii")
+    return (
+        schema_id.to_bytes(4, "little")
+        + b"\0" * 4
+        + bytes([0x83])
+        + b"SCH"
+        + bytes([0x80 + len(encoded_name)])
+        + encoded_name
+        + b"\0" * 16
+    )
+
+
+def _sysobject_table_row(table_id: int, schema_id: int, name: str) -> bytes:
+    encoded_name = name.encode("ascii")
+    return (
+        table_id.to_bytes(4, "little")
+        + schema_id.to_bytes(4, "little")
+        + b"\xff" * 4
+        + b"\0" * 8
+        + bytes([0x80 + len(encoded_name)])
+        + encoded_name
+        + bytes([0x86])
+        + b"SCHOBJ"
+        + bytes([0x84])
+        + b"UTAB"
+        + b"\0" * 16
     )
 
 
