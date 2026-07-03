@@ -96,6 +96,8 @@ class CalibratedMetadata:
                 )
             )
         tables: list[TableMeta] = []
+        skipped_table_rows: list[dict[str, str]] = []
+        table_by_owner_name: dict[tuple[str, str], TableMeta] = {}
         for row in table_rows:
             if row.get("object_kind") != "table":
                 continue
@@ -104,6 +106,7 @@ class CalibratedMetadata:
             root_file = _optional_int(row.get("root_file"))
             root_page = _optional_int(row.get("root_page"))
             if object_id is None or group_id is None or root_file is None or root_page is None:
+                skipped_table_rows.append(row)
                 continue
             columns = tuple(columns_by_object_id.get(object_id, ()))
             page_refs = _csv_page_refs(row.get("page_refs"))
@@ -111,22 +114,30 @@ class CalibratedMetadata:
                 names_value=row.get("partition_names"),
                 refs=page_refs,
             )
-            tables.append(
-                TableMeta(
-                    owner=str(row.get("owner") or ""),
-                    name=str(row["name"]),
-                    columns=columns,
-                    storage=StorageRoot(
-                        group_id=group_id,
-                        file_no=root_file,
-                        root_page=root_page,
-                        scan_pages=int(row.get("scan_pages") or 1),
-                        storage_id=None if page_refs else _optional_int(row.get("storage_index_id")),
-                        page_refs=page_refs,
-                        partition_page_refs=partition_page_refs,
-                    ),
-                )
+            table = TableMeta(
+                owner=str(row.get("owner") or ""),
+                name=str(row["name"]),
+                columns=columns,
+                storage=StorageRoot(
+                    group_id=group_id,
+                    file_no=root_file,
+                    root_page=root_page,
+                    scan_pages=int(row.get("scan_pages") or 1),
+                    storage_id=None if page_refs else _optional_int(row.get("storage_index_id")),
+                    page_refs=page_refs,
+                    partition_page_refs=partition_page_refs,
+                ),
             )
+            tables.append(table)
+            table_by_owner_name[(table.owner.upper(), table.name.upper())] = table
+        for row in skipped_table_rows:
+            mapped = _huge_table_from_raux_storage(
+                row,
+                columns_by_object_id=columns_by_object_id,
+                table_by_owner_name=table_by_owner_name,
+            )
+            if mapped is not None:
+                tables.append(mapped)
         return cls(data_files=data_files, tables=tuple(tables))
 
     @classmethod
@@ -234,6 +245,33 @@ def _table_from_dict(item: dict[str, Any]) -> TableMeta:
             page_refs=_storage_page_refs(storage),
             partition_page_refs=_storage_partition_page_refs(storage),
         ),
+    )
+
+
+def _huge_table_from_raux_storage(
+    row: dict[str, str],
+    *,
+    columns_by_object_id: dict[int, list[ColumnMeta]],
+    table_by_owner_name: dict[tuple[str, str], TableMeta],
+) -> TableMeta | None:
+    object_id = _optional_int(row.get("object_id"))
+    if object_id is None:
+        return None
+    columns = tuple(columns_by_object_id.get(object_id, ()))
+    if not columns:
+        return None
+    owner = str(row.get("owner") or "")
+    name = str(row.get("name") or "")
+    if not owner or not name or "$" in name:
+        return None
+    raux = table_by_owner_name.get((owner.upper(), f"{name}$RAUX".upper()))
+    if raux is None:
+        return None
+    return TableMeta(
+        owner=owner,
+        name=name,
+        columns=columns,
+        storage=raux.storage,
     )
 
 

@@ -98,6 +98,110 @@ class MetadataTest(unittest.TestCase):
         self.assertEqual(column.scale, 4)
         self.assertFalse(column.nullable)
 
+    def test_dict_dir_maps_huge_table_to_raux_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            _write_csv(
+                root / "file.dict",
+                [
+                    "dict_type",
+                    "ordinal",
+                    "path",
+                    "basename",
+                    "bytes",
+                    "page_size",
+                    "pages",
+                    "group_id",
+                    "file_no",
+                ],
+                [
+                    {
+                        "dict_type": "file",
+                        "ordinal": 1,
+                        "path": str(root / "MAIN.DBF"),
+                        "basename": "MAIN.DBF",
+                        "bytes": 8192,
+                        "page_size": 8192,
+                        "pages": 1,
+                        "group_id": 4,
+                        "file_no": 0,
+                    }
+                ],
+            )
+            _write_csv(
+                root / "tab.dict",
+                [
+                    "dict_type",
+                    "object_kind",
+                    "owner",
+                    "name",
+                    "qualified_name",
+                    "object_id",
+                    "storage_index_id",
+                    "group_id",
+                    "root_file",
+                    "root_page",
+                ],
+                [
+                    {
+                        "dict_type": "table",
+                        "object_kind": "table",
+                        "owner": "SYSDBA",
+                        "name": "DMDUL_HUGE_COMP_T",
+                        "qualified_name": "SYSDBA.DMDUL_HUGE_COMP_T",
+                        "object_id": 34171,
+                        "storage_index_id": "",
+                        "group_id": "",
+                        "root_file": "",
+                        "root_page": "",
+                    },
+                    {
+                        "dict_type": "table",
+                        "object_kind": "table",
+                        "owner": "SYSDBA",
+                        "name": "DMDUL_HUGE_COMP_T$RAUX",
+                        "qualified_name": "SYSDBA.DMDUL_HUGE_COMP_T$RAUX",
+                        "object_id": 34173,
+                        "storage_index_id": 33596002,
+                        "group_id": 4,
+                        "root_file": 0,
+                        "root_page": 949488,
+                    },
+                ],
+            )
+            _write_csv(
+                root / "col.dict",
+                [
+                    "dict_type",
+                    "object_id",
+                    "name",
+                    "type_name",
+                    "length",
+                    "scale",
+                    "nullable",
+                ],
+                [
+                    {
+                        "dict_type": "column",
+                        "object_id": 34171,
+                        "name": "ID",
+                        "type_name": "INT",
+                        "length": 4,
+                        "scale": 0,
+                        "nullable": "Y",
+                    }
+                ],
+            )
+
+            metadata = CalibratedMetadata.from_dict_dir(root)
+
+        table = metadata.find_table("SYSDBA.DMDUL_HUGE_COMP_T")
+        self.assertEqual(table.name, "DMDUL_HUGE_COMP_T")
+        self.assertEqual(table.columns[0].name, "ID")
+        self.assertEqual(table.storage.group_id, 4)
+        self.assertEqual(table.storage.file_no, 0)
+        self.assertEqual(table.storage.root_page, 949488)
+
     def test_builds_metadata_from_segment_manifest(self) -> None:
         metadata = CalibratedMetadata.from_segment_manifest(
             {
