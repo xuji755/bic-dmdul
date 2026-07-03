@@ -13,7 +13,8 @@
 - 对大型分区表支持按分区名导出、表内 split-part 并发导出；
 - 支持 DUL 文本、二进制 row 归档、parts manifest 三种导出结构；
 - 支持从 DUL/row/parts 生成重装载 SQL；
-- 支持已验证的短内联 LOB 和 out-of-line LOB 页链读取。
+- 支持已验证的短内联 LOB 和 out-of-line LOB 页链读取；
+- 支持已验证的压缩 `HUGE TABLE` 主表导出，工具会自动映射到内部 `$RAUX` 行存储。
 
 当前暂不作为主流程支持：
 
@@ -718,7 +719,56 @@ TMPDIR=./tmp ./bin/dmdul \
 - 指定分区时本次必须只匹配一张表，避免把分区名误应用到多张表；
 - 分区过滤可和 `--partition-parallel` 同时使用。
 
-### 7.6 并发导出
+### 7.6 导出压缩 HUGE 表
+
+达梦压缩 `HUGE TABLE` 不是普通 BTREE 表段。已验证的建表语法示例：
+
+```sql
+CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
+  ID INT,
+  K INT,
+  C2 CHAR(2),
+  V VARCHAR(64),
+  PAD VARCHAR(1000)
+) COMPRESS LEVEL 1 FOR 'QUERY LOW';
+```
+
+在线字典中该表表现为：
+
+- `DBA_TABLES.COMPRESSION = ENABLED`；
+- 主表在 `DBA_SEGMENTS` 中可能显示 `HEADER_FILE=-1`、`HEADER_BLOCK=-1`、`BYTES=0`；
+- `SYSOBJECTS` 中会出现同名内部辅助表，如：
+  - `DMDUL_HUGE_COMP_T$AUX`
+  - `DMDUL_HUGE_COMP_T$RAUX`
+  - `DMDUL_HUGE_COMP_T$DAUX`
+  - `DMDUL_HUGE_COMP_T$UAUX`
+
+当前验证表明，主表的逻辑行数据存放在 `主表名$RAUX` 中，`$RAUX` 的列结构与主表一致。`bootstrap` 下载字典时会看到主表和这些辅助表；`dmdul` 在装配离线元数据时，如果发现主 HUGE 表没有普通 storage、但存在同 owner 的 `$RAUX` storage，会自动把主表列定义与 `$RAUX` storage 组合成可导出的主表元数据。
+
+因此用户仍然使用主表名导出，不需要手工指定 `$RAUX`：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  --init-file /recovery/work/init.dul \
+  dump-data \
+  --table SYSDBA.DMDUL_HUGE_COMP_T \
+  --output-format row \
+  --json
+```
+
+已验证用例：
+
+| 表 | 类型 | 行数 | 导出结果 | 导入比对 |
+| --- | --- | ---: | --- | --- |
+| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `rows_written=5000`, `decode_error=0` | 导入 `DMTEST.DMDUL_HUGE_COMP_T_RT` 后双向 `MINUS=0` |
+
+注意：
+
+- 普通 `CREATE TABLE ... COMPRESS` 在当前测试库中并未让 `DBA_TABLES.COMPRESSION` 变为 `ENABLED`，不能作为压缩表测试依据。
+- `COMPRESS_MODE=1` 是建表缺省压缩参数，但当前测试中普通表仍显示 `COMPRESSION=DISABLED`。
+- 当前支持结论只覆盖已验证的压缩 `HUGE TABLE` + `$RAUX` 行存储形态。其他压缩等级、列级压缩、`QUERY HIGH`、带分区/LOB 的 HUGE 压缩表还需要独立测试。
+
+### 7.7 并发导出
 
 当用户下表很多时，可以启用多表并发：
 
@@ -797,7 +847,7 @@ TMPDIR=./tmp ./bin/dmdul \
 
 当前导入命令会把所有 part 合并生成一个 SQL 文件；文件结构已经保留了 part 边界，后续直接执行导入时可以按 part 文件启动多个导入 worker。
 
-### 7.7 导出报告
+### 7.8 导出报告
 
 可以把 JSON 报告写入文件：
 
@@ -882,7 +932,7 @@ table_failed=TEST2.BMSQL_ITEM
 
 如果看到 `tables_failed>0`，优先查看 stderr 中的 `table_failed`、`diagnostic` 和 `decode_error`。也可以同时加 `--report-output` 保存完整 JSON 报告。
 
-### 7.8 strict page plan
+### 7.9 strict page plan
 
 默认情况下，如果 page plan 有可恢复的 warning，工具会继续导出并在 report 中记录 diagnostics。
 
@@ -899,7 +949,7 @@ TMPDIR=./tmp ./bin/dmdul \
 
 生产恢复建议先不使用 `--strict-page-plan` 完成最大化导出，再根据 report 复核 diagnostics。
 
-### 7.9 导入和重装载 SQL
+### 7.10 导入和重装载 SQL
 
 `import-data` 的作用是把 dmdul 导出的文件转换成可在目标 DM 数据库执行的 SQL。当前它不直接连接数据库执行 SQL，而是生成 `.sql` 文件，便于审计、分批执行或后续接入并发执行器。
 
@@ -976,7 +1026,7 @@ LOB 导入规则：
 
 注意：对于超大 LOB，单条 SQL 字面量可能受目标数据库 SQL 长度限制。当前工具先保证导出结构完整和可审计；后续直接入库执行器应使用分块绑定或批量装载方式处理超大 LOB。
 
-### 7.10 dump-data 参数组合规则
+### 7.11 dump-data 参数组合规则
 
 `dump-data` 当前是正式导出主入口。常用参数：
 
@@ -1475,25 +1525,39 @@ TEST2.DMDUL_MANY.dul
 
 使用 `--output-format row` 时，LOB payload 直接写入 `.row` 文件内的 LOB block，不再依赖外置 `.lob/` 附件目录。导入端只需要 `.row` 文件即可生成包含 LOB 值的 SQL。
 
-### 15.3 未知行结构
+### 15.3 压缩表
 
-遇到未知 row metadata、NULL bitmap 变体、压缩、迁移行、行外列等情况时，当前可能产生 `row-decode-error` 或 `unsupported-row-metadata`。此时应保留 raw evidence，不得猜测导出。
+当前已验证支持一种达梦压缩表形态：`HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'`。这种表的主对象没有普通 BTREE storage，逻辑行位于内部 `主表名$RAUX` 表中。`dmdul` 会在离线字典装配阶段自动把主表映射到 `$RAUX` storage，用户仍按主表名导出。
 
-### 15.4 索引
+尚未覆盖的压缩相关场景：
+
+- `QUERY HIGH`；
+- 列级压缩或 `EXCEPT` 列排除；
+- 压缩 HUGE 分区表；
+- 压缩 HUGE 表包含 LOB；
+- 其他版本/参数组合下的普通表压缩。
+
+如果遇到未验证压缩形态导致 `row-decode-error`、`unsupported-row-metadata` 或找不到 storage，应保留 raw evidence，不得猜测导出。
+
+### 15.4 未知行结构
+
+遇到未知 row metadata、NULL bitmap 变体、迁移行、行外列等情况时，当前可能产生 `row-decode-error` 或 `unsupported-row-metadata`。此时应保留 raw evidence，不得猜测导出。
+
+### 15.5 索引
 
 表数据导出当前不依赖独立索引段分析。表 storage 对象本身可能是 BTree 组织；独立主键/普通索引需要后续通过 `SYSINDEXES` 区分。目前不建议把表 storage BTree 和独立索引段混为一谈。
 
-### 15.5 ASM
+### 15.6 ASM
 
 `init.dul` 中预留了 `diskgroups` 参数，但当前阶段暂不支持 ASM 磁盘组读取。
 
-### 15.6 parts 并发导入边界
+### 15.7 parts 并发导入边界
 
 `--partition-parallel` 已经支持导出端多 worker、每个 worker 写独立 part 文件。`import-data` 当前可以读取 parts manifest，并把所有 part 合并生成一个 SQL 文件。
 
 尚未实现的是：直接连接目标 DM 数据库，按 part 启动多个导入 worker 并行执行。后续实现时应优先使用绑定变量、批量提交或数据库装载接口，而不是为超大 LOB 生成巨大的单条 SQL 字面量。
 
-### 15.7 超大 LOB SQL 限制
+### 15.8 超大 LOB SQL 限制
 
 当前 `import-data` 生成 SQL 时：
 

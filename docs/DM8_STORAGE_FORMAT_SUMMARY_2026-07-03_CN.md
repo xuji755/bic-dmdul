@@ -98,6 +98,49 @@ SYSINDEXES:  storage id, group id, root file, root page
 
 `bootstrap` 会把分区表所有叶子 root 写入 `tab.dict.page_refs`，后续 `dump-data` 直接按这些 page refs 导出。
 
+### 4.1 压缩 HUGE 表定位
+
+已验证达梦压缩 `HUGE TABLE` 与普通 BTREE 表段不同。测试语法：
+
+```sql
+CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
+  ID INT,
+  K INT,
+  C2 CHAR(2),
+  V VARCHAR(64),
+  PAD VARCHAR(1000)
+) COMPRESS LEVEL 1 FOR 'QUERY LOW';
+```
+
+在线字典表现：
+
+- `DBA_TABLES.COMPRESSION = ENABLED`；
+- 主表 `DBA_SEGMENTS.HEADER_FILE=-1`、`HEADER_BLOCK=-1`、`BYTES=0`；
+- `SYSOBJECTS` 中出现主表和内部辅助表：
+  - `DMDUL_HUGE_COMP_T$AUX`
+  - `DMDUL_HUGE_COMP_T$RAUX`
+  - `DMDUL_HUGE_COMP_T$DAUX`
+  - `DMDUL_HUGE_COMP_T$UAUX`
+
+当前验证结论：
+
+- 主表对象保存逻辑列定义；
+- `$RAUX` 辅助表保存真实逻辑行，列结构与主表一致；
+- `$RAUX` 有普通 BTREE storage root，可按现有 page plan 导出；
+- `dmdul` 离线装配元数据时，如果主表没有普通 storage、同 owner 存在 `主表名$RAUX` 且主表有列定义，会使用主表列定义 + `$RAUX` storage 作为主表导出入口。
+
+验证结果：
+
+| 表 | 类型 | 行数 | 导出结果 | 导入比对 |
+| --- | --- | ---: | --- | --- |
+| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `rows_written=5000`, `decode_error=0` | 导入 `DMTEST.DMDUL_HUGE_COMP_T_RT` 后双向 `MINUS=0` |
+
+边界：
+
+- 普通 `CREATE TABLE ... COMPRESS` 在当前测试库中没有让 `DBA_TABLES.COMPRESSION` 变为 `ENABLED`；
+- `COMPRESS_MODE=1` 能设置参数值，但普通表仍显示 `COMPRESSION=DISABLED`；
+- `QUERY HIGH`、列级压缩、带分区或 LOB 的压缩 HUGE 表尚未验证。
+
 ## 5. BTREE 表页与 page plan
 
 达梦普通表以 BTREE 组织存储。当前抽取策略：
@@ -331,4 +374,4 @@ row 归档可以脱离原始 DBF 复制到另一台服务器。`import-data` 默
 - ASM 磁盘组读取尚未实现。
 - 未提交事务、异常崩溃中间态、回滚未清理版本仍需单独实验。
 - row tail/control 与完整 MVCC/undo 可见性尚未完全解析。
-- 压缩、加密、特殊迁移行、跨文件 LOB 链尚未覆盖。
+- 已验证压缩 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 可通过 `$RAUX` storage 导出；其他压缩形态、加密、特殊迁移行、跨文件 LOB 链尚未覆盖。
