@@ -1045,6 +1045,106 @@ class CliTest(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("--tablespace requires", stderr.getvalue())
 
+    def test_recover_orphan_table_selects_storage_by_supplied_columns_and_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "recover"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            bad_page = bytearray(_leaf_page(page_no=0, value=11, storage_id=33596006))
+            bad_page[0x64] = 0x01
+            data_file.write_bytes(
+                bytes(bad_page)
+                + _leaf_page(page_no=1, value=42, storage_id=33596007)
+            )
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "tablespace_name"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 16384, "page_size": 8192, "pages": 2, "group_id": 6, "file_no": 0, "tablespace_name": "DMDUL_TS"}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "storage_index_id"],
+                [],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "recover-orphan-table",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--column",
+                    "ID:INT:4",
+                    "--sample-rows",
+                    "4",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+            dumped = (output_dir / "tab_33596007.dul").read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["selected_candidate"]["storage_id"], 33596007)
+        self.assertEqual(payload["selected_candidate"]["decode_ok"], 1)
+        self.assertIn("CREATE TABLE tab_33596007", dumped)
+        self.assertIn("ID\n42\n", dumped)
+
+    def test_recover_orphan_table_without_columns_writes_raw_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dicts"
+            output_dir = root / "recover"
+            data_file = root / "DMDUL_TS01.DBF"
+            dict_dir.mkdir()
+            data_file.write_bytes(_leaf_page(page_no=0, value=7, storage_id=33596007))
+            _write_dict(
+                dict_dir / "file.dict",
+                ["dict_type", "ordinal", "path", "basename", "bytes", "page_size", "pages", "group_id", "file_no", "tablespace_name"],
+                [{"dict_type": "file", "ordinal": 1, "path": str(data_file), "basename": data_file.name, "bytes": 8192, "page_size": 8192, "pages": 1, "group_id": 6, "file_no": 0, "tablespace_name": "DMDUL_TS"}],
+            )
+            _write_dict(
+                dict_dir / "tab.dict",
+                ["dict_type", "object_kind", "owner", "name", "qualified_name", "object_id", "storage_index_id"],
+                [],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "recover-orphan-table",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--storage-id",
+                    "33596007",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            payload = json.loads(stdout.getvalue())
+            schema_text = Path(payload["schema_output"]).read_text(encoding="utf-8")
+            raw_text = Path(payload["raw_output"]).read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["status"], "raw-exported")
+        self.assertEqual(payload["schema"]["table_name"], "tab_33596007")
+        self.assertEqual(payload["schema"]["strategy"], "raw-export-with-heuristic-field-report")
+        self.assertEqual(payload["schema"]["inferred_columns"][0]["type_name"], "INT")
+        self.assertIn("CREATE TABLE tab_33596007", schema_text)
+        self.assertIn("raw_row VARBINARY(17)", schema_text)
+        self.assertIn("-- DATA", raw_text)
+        self.assertIn("raw_row\n00110007000000", raw_text)
+
     def test_dump_data_partition_parallel_writes_parts_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

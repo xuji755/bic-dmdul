@@ -29,6 +29,7 @@ from .dul_config import (
     write_init_dul,
 )
 from .database_summary import summarize_database_dir
+from .decode import DecodeError, decode_observed_row_values
 from .discovery import discover_data_files
 from .evidence import (
     capture_data_file_evidence,
@@ -36,7 +37,7 @@ from .evidence import (
     verify_evidence_manifest,
 )
 from .extract import extract_csv_with_calibrated_metadata, extract_split_parts_with_calibrated_metadata
-from .metadata import CalibratedMetadata
+from .metadata import CalibratedMetadata, ColumnMeta, DataFileMeta, StorageRoot, TableMeta
 from .page import ObservedPageHeader, format_hex_dump
 from .page_catalog import catalog_data_file_pages
 from .preflight import evaluate_database_summary_preflight
@@ -955,6 +956,161 @@ def _cmd_scan_orphan_storages(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_recover_orphan_table(args: argparse.Namespace) -> int:
+    dict_dir = Path(args.dict_dir)
+    output_dir = Path(args.output_dir)
+    columns = _load_analysis_columns(args)
+    tablespaces = _tablespace_filters(args.tablespace)
+    if tablespaces and not _file_dict_has_tablespace_mapping(dict_dir / "file.dict"):
+        print(
+            "dmdul: --tablespace requires tablespace_name/tablespace/group_name in file.dict; "
+            "use --group-id or refresh dictionaries with tablespace metadata",
+            file=sys.stderr,
+        )
+        return 2
+    known_storage_ids = _known_storage_ids_from_tab_dict(dict_dir / "tab.dict")
+    candidates = _scan_orphan_storage_candidates(
+        dict_dir=dict_dir,
+        known_storage_ids=known_storage_ids,
+        group_id=args.group_id,
+        tablespaces=tablespaces,
+        min_pages=max(1, args.min_pages),
+        sample_rows=0,
+    )
+    if args.storage_id is not None:
+        candidates = [
+            item for item in candidates if int(item["storage_id"]) == args.storage_id
+        ]
+    if not candidates:
+        print("dmdul: no orphan storage candidates matched recovery criteria", file=sys.stderr)
+        return 1
+
+    if columns:
+        scored = [
+            _score_orphan_candidate_columns(
+                dict_dir=dict_dir,
+                candidate=item,
+                columns=columns,
+                sample_rows=max(1, args.sample_rows),
+            )
+            for item in candidates
+        ]
+        scored.sort(
+            key=lambda item: (
+                -int(item["decode_ok"]),
+                int(item["decode_errors"]),
+                -int(item["pages"]),
+                int(item["storage_id"]),
+            )
+        )
+        best = scored[0]
+        if int(best["decode_ok"]) == 0:
+            payload = {
+                "mode": "dm-recover-orphan-table",
+                "status": "no-decodable-candidate",
+                "candidates": scored[: args.max_candidates],
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2, ensure_ascii=False))
+            else:
+                print("dmdul: no candidate rows decoded with the supplied columns", file=sys.stderr)
+            return 1
+        table_name = args.table_name or f"tab_{best['storage_id']}"
+        metadata = _metadata_for_orphan_candidate(
+            dict_dir=dict_dir,
+            candidate=best,
+            table_name=table_name,
+            columns=columns,
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        suffix = ".row" if args.output_format == "row" else ".dul"
+        output = output_dir / f"{table_name}{suffix}"
+        report = extract_csv_with_calibrated_metadata(
+            metadata=metadata,
+            table_name=table_name,
+            output=output,
+            include_sql_header=args.output_format == "dul",
+            delimiter=args.delimiter,
+            output_format=args.output_format,
+            orphan_scan_storage_id=int(best["storage_id"]),
+            lob_mode=args.lob_mode,
+            lob_dir=output_dir / "lob",
+            lob_hash=args.lob_hash,
+            initial_diagnostics=(
+                {
+                    "level": "info",
+                    "code": "orphan-storage-column-fit",
+                    "message": "orphan storage was selected by decoding row samples with supplied columns",
+                    "decode_ok": int(best["decode_ok"]),
+                    "decode_errors": int(best["decode_errors"]),
+                    "sample_rows": int(best["sample_rows"]),
+                },
+            ),
+        )
+        payload = {
+            "mode": "dm-recover-orphan-table",
+            "status": "exported",
+            "selected_candidate": best,
+            "output": str(output),
+            "report": report.as_dict(),
+        }
+        if args.report_output:
+            Path(args.report_output).write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        if args.json:
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+        else:
+            print(f"selected_storage_id={best['storage_id']}")
+            print(f"table={table_name}")
+            print(f"output={output}")
+            print(f"rows_written={report.rows_written}")
+            print(f"rows_skipped_decode_error={report.rows_skipped_decode_error}")
+        return 0 if report.ok else 1
+
+    selected = candidates[0]
+    schema = _infer_raw_orphan_schema(
+        dict_dir=dict_dir,
+        candidate=selected,
+        sample_rows=max(1, args.sample_rows),
+        table_name=args.table_name or f"tab_{selected['storage_id']}",
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    schema_path = output_dir / f"{schema['table_name']}.schema.sql"
+    schema_path.write_text(str(schema["create_table_sql"]) + "\n", encoding="utf-8")
+    raw_output = output_dir / f"{schema['table_name']}.raw.dul"
+    raw_rows = _write_raw_orphan_rows(
+        dict_dir=dict_dir,
+        candidate=selected,
+        table_name=str(schema["table_name"]),
+        output=raw_output,
+    )
+    payload = {
+        "mode": "dm-recover-orphan-table",
+        "status": "raw-exported",
+        "selected_candidate": selected,
+        "schema_output": str(schema_path),
+        "raw_output": str(raw_output),
+        "raw_rows_written": raw_rows,
+        "schema": schema,
+    }
+    if args.report_output:
+        Path(args.report_output).write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"selected_storage_id={selected['storage_id']}")
+        print(f"schema_output={schema_path}")
+        print(f"raw_output={raw_output}")
+        print(f"raw_rows_written={raw_rows}")
+        print(schema["create_table_sql"])
+    return 0
+
+
 def _known_storage_ids_from_tab_dict(path: Path) -> set[int]:
     known: set[int] = set()
     if not path.exists():
@@ -1058,6 +1214,426 @@ def _scan_orphan_storage_candidates(
     ]
     candidates.sort(key=lambda item: (-int(item["pages"]), int(item["storage_id"])))
     return candidates
+
+
+def _score_orphan_candidate_columns(
+    *,
+    dict_dir: Path,
+    candidate: dict[str, object],
+    columns: tuple[ColumnMeta, ...],
+    sample_rows: int,
+) -> dict[str, object]:
+    rows = _sample_rows_for_storage_id(
+        dict_dir=dict_dir,
+        group_id=int(candidate["group_id"]),
+        file_no=int(candidate["file_no"]),
+        storage_id=int(candidate["storage_id"]),
+        sample_rows=sample_rows,
+    )
+    decode_ok = 0
+    decode_errors = 0
+    first_errors: list[str] = []
+    for row in rows:
+        if row.is_deleted:
+            continue
+        try:
+            decode_observed_row_values(row, columns)
+            decode_ok += 1
+        except DecodeError as exc:
+            decode_errors += 1
+            if len(first_errors) < 5:
+                first_errors.append(str(exc))
+        except ValueError as exc:
+            decode_errors += 1
+            if len(first_errors) < 5:
+                first_errors.append(str(exc))
+    result = dict(candidate)
+    result.update(
+        {
+            "sample_rows": len(rows),
+            "decode_ok": decode_ok,
+            "decode_errors": decode_errors,
+            "first_decode_errors": first_errors,
+        }
+    )
+    return result
+
+
+def _metadata_for_orphan_candidate(
+    *,
+    dict_dir: Path,
+    candidate: dict[str, object],
+    table_name: str,
+    columns: tuple[ColumnMeta, ...],
+) -> CalibratedMetadata:
+    group_id = int(candidate["group_id"])
+    file_no = int(candidate["file_no"])
+    data_files = tuple(_data_file_meta_for_group(dict_dir=dict_dir, group_id=group_id))
+    table = TableMeta(
+        owner="",
+        name=table_name,
+        columns=columns,
+        storage=StorageRoot(
+            group_id=group_id,
+            file_no=file_no,
+            root_page=0,
+            scan_pages=1,
+            storage_id=int(candidate["storage_id"]),
+        ),
+    )
+    return CalibratedMetadata(data_files=data_files, tables=(table,))
+
+
+def _infer_raw_orphan_schema(
+    *,
+    dict_dir: Path,
+    candidate: dict[str, object],
+    sample_rows: int,
+    table_name: str,
+) -> dict[str, object]:
+    rows = _sample_rows_for_storage_id(
+        dict_dir=dict_dir,
+        group_id=int(candidate["group_id"]),
+        file_no=int(candidate["file_no"]),
+        storage_id=int(candidate["storage_id"]),
+        sample_rows=sample_rows,
+    )
+    row_lengths = [row.length for row in rows if not row.is_deleted]
+    max_row_len = max(row_lengths, default=1)
+    inferred_columns = _infer_columns_from_observed_rows(rows)
+    ddl_columns = [
+        {
+            "name": "raw_row",
+            "type_name": "VARBINARY",
+            "length": max(1, max_row_len),
+            "source": "full_physical_row_bytes",
+        }
+    ]
+    strategy = "raw-export-with-heuristic-field-report" if inferred_columns else "raw-row-single-column"
+    confidence = "medium" if inferred_columns and len(rows) >= 8 else "low"
+    reason = (
+        "guessed recovery exports only full physical row bytes; inferred_columns "
+        "are advisory and are not used to transform row data"
+    )
+    create_sql = _create_inferred_table_sql(table_name, ddl_columns)
+    return {
+        "table_name": table_name,
+        "strategy": strategy,
+        "confidence": confidence,
+        "reason": reason,
+        "sample_rows": len(rows),
+        "max_row_length": max_row_len,
+        "columns": ddl_columns,
+        "inferred_columns": inferred_columns,
+        "create_table_sql": create_sql,
+    }
+
+
+def _infer_columns_from_observed_rows(rows: list[object]) -> list[dict[str, object]]:
+    active_rows = [row for row in rows if not row.is_deleted and len(row.data) >= 4]
+    if not active_rows:
+        return []
+    if any(row.data[2] != 0 for row in active_rows):
+        return []
+    payloads = [row.data[3:] for row in active_rows]
+    offset = 0
+    columns: list[dict[str, object]] = []
+    while offset < min(len(payload) for payload in payloads) and len(columns) < 64:
+        if all(_all_zero(payload[offset:]) for payload in payloads):
+            break
+        inferred = _infer_field_at_offset(payloads, offset, len(columns) + 1)
+        if inferred is None:
+            break
+        columns.append(inferred["column"])
+        offset += int(inferred["consumed"])
+    return columns
+
+
+def _infer_field_at_offset(
+    payloads: list[bytes],
+    offset: int,
+    ordinal: int,
+) -> dict[str, object] | None:
+    variable_payloads: list[bytes] = []
+    variable_consumed: list[int] = []
+    variable_ok = True
+    for payload in payloads:
+        try:
+            decoded = _decode_var_prefix_for_inference(payload[offset:])
+        except ValueError:
+            variable_ok = False
+            break
+        end = offset + decoded.encoded_size + decoded.length
+        if end > len(payload):
+            variable_ok = False
+            break
+        variable_payloads.append(payload[offset + decoded.encoded_size : end])
+        variable_consumed.append(decoded.encoded_size + decoded.length)
+    if variable_ok and len(set(variable_consumed)) <= max(2, len(variable_consumed)):
+        if all(_looks_like_number_payload(raw) for raw in variable_payloads):
+            return {
+                "consumed": max(variable_consumed),
+                "column": {
+                    "name": f"col{ordinal}",
+                    "type_name": "NUMBER",
+                    "source": "inferred_var_number",
+                    "confidence": "medium",
+                },
+            }
+        if all(_looks_like_text(raw) for raw in variable_payloads):
+            max_len = max((len(raw) for raw in variable_payloads), default=1)
+            return {
+                "consumed": max(variable_consumed),
+                "column": {
+                    "name": f"col{ordinal}",
+                    "type_name": "VARCHAR",
+                    "length": max(1, max_len),
+                    "source": "inferred_var_text",
+                    "confidence": "medium",
+                },
+            }
+        if all(variable_consumed):
+            max_len = max((len(raw) for raw in variable_payloads), default=1)
+            return {
+                "consumed": max(variable_consumed),
+                "column": {
+                    "name": f"col{ordinal}",
+                    "type_name": "VARBINARY",
+                    "length": max(1, max_len),
+                    "source": "inferred_var_binary",
+                    "confidence": "low",
+                },
+            }
+    if _fixed_slice_available(payloads, offset, 8) and all(
+        _looks_like_timestamp(payload[offset : offset + 8]) for payload in payloads
+    ):
+        return {
+            "consumed": 8,
+            "column": {
+                "name": f"col{ordinal}",
+                "type_name": "TIMESTAMP",
+                "source": "inferred_fixed_timestamp",
+                "confidence": "medium",
+            },
+        }
+    if _fixed_slice_available(payloads, offset, 3) and all(
+        _looks_like_date(payload[offset : offset + 3]) for payload in payloads
+    ):
+        return {
+            "consumed": 3,
+            "column": {
+                "name": f"col{ordinal}",
+                "type_name": "DATE",
+                "source": "inferred_fixed_date",
+                "confidence": "medium",
+            },
+        }
+    if _fixed_slice_available(payloads, offset, 4):
+        values = [
+            int.from_bytes(payload[offset : offset + 4], "little", signed=True)
+            for payload in payloads
+        ]
+        if any(value != 0 for value in values) and all(abs(value) < 2_000_000_000 for value in values):
+            return {
+                "consumed": 4,
+                "column": {
+                    "name": f"col{ordinal}",
+                    "type_name": "INT",
+                    "length": 4,
+                    "source": "inferred_fixed_int",
+                    "confidence": "medium",
+                    "sample_min": min(values),
+                    "sample_max": max(values),
+                },
+            }
+    for length in (2, 1):
+        if _fixed_slice_available(payloads, offset, length):
+            chunks = [payload[offset : offset + length] for payload in payloads]
+            if all(_looks_like_fixed_char(raw) for raw in chunks):
+                return {
+                    "consumed": length,
+                    "column": {
+                        "name": f"col{ordinal}",
+                        "type_name": "CHAR",
+                        "length": length,
+                        "source": "inferred_fixed_char",
+                        "confidence": "low",
+                    },
+                }
+    return None
+
+
+def _decode_var_prefix_for_inference(data: bytes):
+    from .row import decode_observed_var_length
+
+    return decode_observed_var_length(data)
+
+
+def _create_inferred_table_sql(table_name: str, columns: list[dict[str, object]]) -> str:
+    lines = []
+    for column in columns:
+        type_name = str(column["type_name"])
+        length = column.get("length")
+        type_sql = f"{type_name}({length})" if length else type_name
+        lines.append(f"  {column['name']} {type_sql}")
+    return f"CREATE TABLE {table_name} (\n" + ",\n".join(lines) + "\n);"
+
+
+def _write_raw_orphan_rows(
+    *,
+    dict_dir: Path,
+    candidate: dict[str, object],
+    table_name: str,
+    output: Path,
+) -> int:
+    group_id = int(candidate["group_id"])
+    file_no = int(candidate["file_no"])
+    storage_id = int(candidate["storage_id"])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    rows_written = 0
+    with output.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter="|", lineterminator="\n")
+        file.write(
+            f"CREATE TABLE {table_name} (\n"
+            "  raw_row VARBINARY\n"
+            ");\n"
+            "-- DATA\n"
+        )
+        writer.writerow(["raw_row"])
+        for data_file in _data_file_meta_for_group(dict_dir=dict_dir, group_id=group_id):
+            if data_file.file_no != file_no or not data_file.path.exists():
+                continue
+            pages_total = data_file.path.stat().st_size // data_file.page_size
+            with data_file.path.open("rb") as raw_file:
+                with mmap.mmap(raw_file.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    for page_no in range(pages_total):
+                        page_start = page_no * data_file.page_size
+                        if int.from_bytes(mm[page_start + 0x14 : page_start + 0x18], "little") != 0x14:
+                            continue
+                        page_storage_id = int.from_bytes(mm[page_start + 0x3A : page_start + 0x3E], "little")
+                        if page_storage_id != storage_id:
+                            continue
+                        page = mm[page_start : page_start + data_file.page_size]
+                        observed_rows = iter_observed_rows_by_slots(page) or [
+                            row for row in scan_observed_row_chain(page) if not row.is_deleted
+                        ]
+                        for row in observed_rows:
+                            if row.is_deleted:
+                                continue
+                            writer.writerow([row.data.hex()])
+                            rows_written += 1
+    return rows_written
+
+
+def _fixed_slice_available(payloads: list[bytes], offset: int, length: int) -> bool:
+    return all(offset + length <= len(payload) for payload in payloads)
+
+
+def _all_zero(value: bytes) -> bool:
+    return all(byte == 0 for byte in value)
+
+
+def _looks_like_text(raw: bytes) -> bool:
+    if not raw:
+        return True
+    printable = sum(1 for byte in raw if byte in (9, 10, 13) or 32 <= byte < 127)
+    return printable == len(raw)
+
+
+def _looks_like_fixed_char(raw: bytes) -> bool:
+    return bool(raw) and _looks_like_text(raw) and any(byte != 0x20 for byte in raw)
+
+
+def _looks_like_number_payload(raw: bytes) -> bool:
+    if raw == b"\x80":
+        return True
+    if not raw:
+        return False
+    if raw[0] >= 0x80:
+        return all(1 <= byte <= 100 for byte in raw[1:])
+    payload = raw[1:-1] if raw.endswith(b"\x66") else raw[1:]
+    return all(1 <= byte <= 101 for byte in payload)
+
+
+def _looks_like_date(raw: bytes) -> bool:
+    if len(raw) != 3:
+        return False
+    value = int.from_bytes(raw, "little")
+    year = value & 0x7FFF
+    month = (value >> 15) & 0x0F
+    day = (value >> 19) & 0x1F
+    return 1900 <= year <= 2200 and 1 <= month <= 12 and 1 <= day <= 31
+
+
+def _looks_like_timestamp(raw: bytes) -> bool:
+    if len(raw) != 8 or not _looks_like_date(raw[:3]):
+        return False
+    value = int.from_bytes(raw[3:8], "little")
+    hour = value & 0x1F
+    minute = (value >> 5) & 0x3F
+    second = (value >> 11) & 0x3F
+    microsecond = (value >> 17) & 0xFFFFF
+    return hour <= 23 and minute <= 59 and second <= 59 and microsecond <= 999999
+
+
+def _sample_rows_for_storage_id(
+    *,
+    dict_dir: Path,
+    group_id: int,
+    file_no: int,
+    storage_id: int,
+    sample_rows: int,
+) -> list[object]:
+    rows: list[object] = []
+    for data_file in _data_file_meta_for_group(dict_dir=dict_dir, group_id=group_id):
+        if data_file.file_no != file_no:
+            continue
+        path = data_file.path
+        if not path.exists():
+            continue
+        pages_total = path.stat().st_size // data_file.page_size
+        with path.open("rb") as file:
+            with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                for page_no in range(pages_total):
+                    page_start = page_no * data_file.page_size
+                    if int.from_bytes(mm[page_start + 0x14 : page_start + 0x18], "little") != 0x14:
+                        continue
+                    page_storage_id = int.from_bytes(mm[page_start + 0x3A : page_start + 0x3E], "little")
+                    if page_storage_id != storage_id:
+                        continue
+                    page = mm[page_start : page_start + data_file.page_size]
+                    observed_rows = iter_observed_rows_by_slots(page) or [
+                        row for row in scan_observed_row_chain(page) if not row.is_deleted
+                    ]
+                    for row in observed_rows:
+                        rows.append(row)
+                        if len(rows) >= sample_rows:
+                            return rows
+    return rows
+
+
+def _data_file_meta_for_group(
+    *,
+    dict_dir: Path,
+    group_id: int,
+) -> list[DataFileMeta]:
+    result: list[DataFileMeta] = []
+    file_dict = dict_dir / "file.dict"
+    if not file_dict.exists():
+        return result
+    with file_dict.open("r", encoding="utf-8", newline="") as file:
+        for row in csv.DictReader(file):
+            if int(row.get("group_id") or 0) != group_id:
+                continue
+            result.append(
+                DataFileMeta(
+                    group_id=group_id,
+                    file_no=int(row.get("file_no") or 0),
+                    path=Path(row["path"]),
+                    page_size=int(row.get("page_size") or 8192),
+                )
+            )
+    return result
 
 
 def _tablespace_filters(values: list[str] | None) -> tuple[str, ...]:
@@ -1911,6 +2487,49 @@ def build_parser() -> argparse.ArgumentParser:
     scan_orphan.add_argument("--sample-rows", type=int, default=3)
     scan_orphan.add_argument("--json", action="store_true")
     scan_orphan.set_defaults(func=_cmd_scan_orphan_storages)
+
+    recover_orphan = subparsers.add_parser(
+        "recover-orphan-table",
+        help="recover a dropped table from orphan storage pages using supplied columns or inferred raw DDL",
+    )
+    recover_orphan.add_argument("--dict-dir", required=True)
+    recover_orphan.add_argument("--output-dir", required=True)
+    recover_orphan.add_argument("--storage-id", type=int)
+    recover_orphan.add_argument("--group-id", type=int)
+    recover_orphan.add_argument(
+        "--tablespace",
+        action="append",
+        help="tablespace name to scan; repeatable or comma-separated. Defaults to all data files when omitted",
+    )
+    recover_orphan.add_argument("--min-pages", type=int, default=1)
+    recover_orphan.add_argument("--sample-rows", type=int, default=64)
+    recover_orphan.add_argument("--max-candidates", type=int, default=10)
+    recover_orphan.add_argument("--table-name")
+    recover_orphan.add_argument(
+        "--column",
+        action="append",
+        help="column spec NAME:TYPE[:LENGTH], repeatable; when provided, candidates are scored by row decode success and the best match is exported",
+    )
+    recover_orphan.add_argument(
+        "--columns-jsonl",
+        help="read supplied columns from col.dict CSV or legacy JSONL",
+    )
+    recover_orphan.add_argument("--delimiter", choices=["|", "~"], default="|")
+    recover_orphan.add_argument(
+        "--output-format",
+        choices=["dul", "row"],
+        default="dul",
+        help="output DUL text or binary row archive when columns are supplied, default: dul",
+    )
+    recover_orphan.add_argument(
+        "--lob-mode",
+        choices=["inline", "external"],
+        default="external",
+    )
+    recover_orphan.add_argument("--lob-hash", choices=["sha256"], default="sha256")
+    recover_orphan.add_argument("--report-output")
+    recover_orphan.add_argument("--json", action="store_true")
+    recover_orphan.set_defaults(func=_cmd_recover_orphan_table)
 
     extract_dicts = subparsers.add_parser(
         "extract-dicts",

@@ -866,6 +866,99 @@ TMPDIR=./tmp ./bin/dmdul \
 - 完整字段导出仍需要列定义。列定义可能来自 DROP 前 dict、`SYSTEM.DBF` raw 残留、备份元数据或人工提供；
 - 如果旧页已被重用覆盖，该 storage id 的页数、样例内容和行解码结果都会变差，需要人工判断。
 
+### 7.5.3 DROP 后按字段列表适配 orphan storage
+
+如果表已经被 DROP，但用户还能提供字段列表，可以让工具对 orphan storage 候选逐个试解码。工具会选择样本行解码成功最多的 storage id，并按该字段列表直接导出：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  recover-orphan-table \
+  --dict-dir /recovery/work/dict_after_drop \
+  --output-dir /recovery/work/drop_recover \
+  --tablespace DMDUL_TS \
+  --column ID:INT:4 \
+  --column K:INT:4 \
+  --column C2:CHAR:2 \
+  --column AMT:DECIMAL \
+  --column V:VARCHAR:64 \
+  --column PAD:VARCHAR:400 \
+  --sample-rows 200 \
+  --json
+```
+
+也可以直接指定已经确认的 storage id：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  recover-orphan-table \
+  --dict-dir /recovery/work/dict_after_drop \
+  --output-dir /recovery/work/drop_recover \
+  --storage-id 33596007 \
+  --column ID:INT:4 \
+  --column V:VARCHAR:64 \
+  --json
+```
+
+规则：
+
+- 未指定 `--storage-id` 时，先按 `file.dict` 和当前 `tab.dict` 扫描 orphan storage；
+- 如果指定 `--tablespace`，仍然依赖 `file.dict.tablespace_name`，该字段来自控制文件；
+- 对每个候选 storage，抽取样本行并用用户提供的字段列表解码；
+- 选择 `decode_ok` 最高、`decode_errors` 更少的候选；
+- 默认输出 `tab_<storage_id>.dul`，表名也默认为 `tab_<storage_id>`；
+- 可用 `--table-name` 覆盖默认表名；
+- 可用 `--output-format row` 输出 row archive。
+
+这条路径的前提是字段列表基本正确。字段顺序、固定/变长类型、长度错误都会导致候选评分下降或导出时报解码错误。
+
+### 7.5.4 DROP 后无字段列表的 raw-safe 导出
+
+如果找不到字段定义，也无法人工提供字段列表，工具不能保证自动恢复语义列边界。此时工具只导出 raw 格式：完整物理行 bytes 作为一列保存，同时在 JSON 报告里给出启发式字段候选，供后续人工判断。
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  recover-orphan-table \
+  --dict-dir /recovery/work/dict_after_drop \
+  --output-dir /recovery/work/drop_recover \
+  --storage-id 33596007 \
+  --json
+```
+
+输出文件示例：
+
+```text
+/recovery/work/drop_recover/tab_33596007.schema.sql
+/recovery/work/drop_recover/tab_33596007.raw.dul
+```
+
+建表脚本内容类似：
+
+```sql
+CREATE TABLE tab_33596007 (
+  raw_row VARBINARY(370)
+);
+```
+
+raw 数据文件内容类似：
+
+```text
+CREATE TABLE tab_33596007 (
+  raw_row VARBINARY
+);
+-- DATA
+raw_row
+0011001500000054528...
+```
+
+说明：
+
+- 表名默认为 `tab_<storage_id>`；
+- 数据导出只使用 `raw_row`，不把猜测字段转换成业务值；
+- 工具会采集多条非删除行，尝试识别 `INT`、`DATE`、`TIMESTAMP`、`NUMBER`、`VARCHAR`、`CHAR` 等候选字段；
+- 候选字段写在 JSON 输出的 `schema.inferred_columns` 中，带 `source/confidence/sample_min/sample_max` 等辅助信息；
+- raw 行保留完整物理 bytes，即使字段候选猜错，也不会破坏可恢复数据；
+- 后续可根据 `inferred_columns` 生成二次解析脚本或人工补充 `--column` 后重新执行字段列表适配导出。
+
 ### 7.6 导出压缩 HUGE 表
 
 达梦压缩 `HUGE TABLE` 不是普通 BTREE 表段。已验证的建表语法示例：
