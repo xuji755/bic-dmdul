@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import mmap
 from pathlib import Path
 from typing import Any, Callable
 
@@ -9,6 +10,7 @@ from .control_map import write_control_ctl
 from .database_summary import summarize_database_dir
 from .discovery import discover_data_files
 from .resolver import OfflineResolveError, resolve_offline_table_metadata
+from .row import iter_observed_rows_by_slots, scan_observed_row_chain
 from .sysdict import (
     SysObjectRowCandidate,
     dump_syscolumn_rows,
@@ -23,7 +25,7 @@ from .sysdict import (
 )
 
 
-DICT_FILENAMES = ("file.dict", "user.dict", "tab.dict", "col.dict")
+DICT_FILENAMES = ("file.dict", "user.dict", "tab.dict", "col.dict", "storage_scan.dict")
 
 SYSTEM_DICTIONARY_STORAGE_IDS = {
     # Verified DM8 bootstrap roots in SYSTEM.DBF. These are used only for
@@ -109,6 +111,20 @@ DICT_FIELDNAMES = {
         "nullable",
         "source",
     ),
+    "storage_scan.dict": (
+        "dict_type",
+        "storage_id",
+        "group_id",
+        "file_no",
+        "path",
+        "page_size",
+        "pages",
+        "page_refs",
+        "first_pages",
+        "row_samples",
+        "kind_counts",
+        "source",
+    ),
 }
 
 
@@ -123,6 +139,7 @@ def build_bootstrap_dicts(
     owner: str | None = None,
     scan_pages: int = 64,
     experimental_heuristic_dicts: bool = False,
+    scan_storages_without_system_dicts: bool = False,
     source_dict_dir: Path | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
@@ -160,7 +177,17 @@ def build_bootstrap_dicts(
     _emit_progress(progress, f"control.ctl rows={control_ctl_manifest['rows_total']}")
     file_rows = _file_dict_rows(summary)
     _emit_progress(progress, f"file.dict rows={len(file_rows)}")
-    if experimental_heuristic_dicts and tables and source_dict_dir is not None:
+    storage_scan_rows: list[dict[str, Any]] = []
+    if scan_storages_without_system_dicts:
+        _emit_progress(progress, "scan all data files by page-header storage_id without SYS dictionaries")
+        user_rows = []
+        column_rows = []
+        table_rows, storage_scan_rows, table_diagnostics = _dictionary_rows_from_storage_scan(
+            file_rows=file_rows,
+            sample_rows=max(1, sample_limit),
+            progress=progress,
+        )
+    elif experimental_heuristic_dicts and tables and source_dict_dir is not None:
         _emit_progress(progress, f"filter requested table dictionaries from source_dict_dir={source_dict_dir}")
         user_rows, table_rows, column_rows, table_diagnostics = _dictionary_rows_from_existing_dicts(
             source_dict_dir=source_dict_dir,
@@ -203,6 +230,7 @@ def build_bootstrap_dicts(
     _write_csv_dict(dict_paths["user.dict"], user_rows, DICT_FIELDNAMES["user.dict"])
     _write_csv_dict(dict_paths["tab.dict"], table_rows, DICT_FIELDNAMES["tab.dict"])
     _write_csv_dict(dict_paths["col.dict"], column_rows, DICT_FIELDNAMES["col.dict"])
+    _write_csv_dict(dict_paths["storage_scan.dict"], storage_scan_rows, DICT_FIELDNAMES["storage_scan.dict"])
 
     manifest = {
         "mode": "dm-bootstrap-dicts",
@@ -216,6 +244,7 @@ def build_bootstrap_dicts(
             "user.dict": len(user_rows),
             "tab.dict": len(table_rows),
             "col.dict": len(column_rows),
+            "storage_scan.dict": len(storage_scan_rows),
         },
         "steps": [
             {
@@ -238,12 +267,14 @@ def build_bootstrap_dicts(
                     table_rows=table_rows,
                     diagnostics=table_diagnostics,
                     experimental_heuristic_dicts=experimental_heuristic_dicts,
+                    scan_storages_without_system_dicts=scan_storages_without_system_dicts,
                 ),
-                "output": ["user.dict", "tab.dict", "col.dict"],
+                "output": ["user.dict", "tab.dict", "col.dict", "storage_scan.dict"],
             },
         ],
         "requested_tables": list(tables),
         "experimental_heuristic_dicts": experimental_heuristic_dicts,
+        "scan_storages_without_system_dicts": scan_storages_without_system_dicts,
         "source_dict_dir": None if source_dict_dir is None else str(source_dict_dir),
         "diagnostics": _bootstrap_diagnostics(
             summary,
@@ -251,6 +282,7 @@ def build_bootstrap_dicts(
             control_ctl_manifest=control_ctl_manifest,
             requested_tables=tables,
             experimental_heuristic_dicts=experimental_heuristic_dicts,
+            scan_storages_without_system_dicts=scan_storages_without_system_dicts,
             table_diagnostics=table_diagnostics,
         ),
         "database_summary": summary,
@@ -432,6 +464,148 @@ def _dictionary_rows_from_existing_dicts(
             }
         )
     return selected_users, selected_tables, selected_columns, diagnostics
+
+
+def _dictionary_rows_from_storage_scan(
+    *,
+    file_rows: list[dict[str, Any]],
+    sample_rows: int,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    by_storage: dict[tuple[int, int, int], dict[str, Any]] = {}
+    diagnostics: list[dict[str, Any]] = []
+    for file_row in file_rows:
+        path_text = str(file_row.get("path") or "")
+        if not path_text:
+            continue
+        path = Path(path_text)
+        if not path.exists():
+            diagnostics.append(
+                {
+                    "level": "warning",
+                    "code": "bootstrap-storage-scan-file-missing",
+                    "path": str(path),
+                }
+            )
+            continue
+        page_size = int(file_row.get("page_size") or 8192)
+        group_id = int(file_row.get("group_id") or 0)
+        file_no = int(file_row.get("file_no") or 0)
+        pages_total = path.stat().st_size // page_size
+        _emit_progress(progress, f"storage scan file={path} pages={pages_total}")
+        if pages_total == 0:
+            continue
+        with path.open("rb") as raw_file:
+            with mmap.mmap(raw_file.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                for page_no in range(pages_total):
+                    page_start = page_no * page_size
+                    page_kind = int.from_bytes(mm[page_start + 0x14 : page_start + 0x18], "little")
+                    if page_kind == 0:
+                        continue
+                    header_file_no = int.from_bytes(mm[page_start : page_start + 4], "little") >> 16
+                    header_page_no = int.from_bytes(mm[page_start + 4 : page_start + 8], "little")
+                    if header_file_no != file_no or header_page_no != page_no:
+                        continue
+                    storage_id = int.from_bytes(mm[page_start + 0x3A : page_start + 0x3E], "little")
+                    if storage_id == 0:
+                        continue
+                    key = (group_id, file_no, storage_id)
+                    item = by_storage.setdefault(
+                        key,
+                        {
+                            "dict_type": "storage_scan",
+                            "storage_id": storage_id,
+                            "group_id": group_id,
+                            "file_no": file_no,
+                            "path": str(path),
+                            "page_size": page_size,
+                            "pages": 0,
+                            "page_refs": [],
+                            "first_pages": [],
+                            "row_samples": [],
+                            "kind_counts": {},
+                            "source": "storage-id-full-scan",
+                        },
+                    )
+                    kind_counts = item["kind_counts"]
+                    assert isinstance(kind_counts, dict)
+                    kind_key = f"0x{page_kind:x}"
+                    kind_counts[kind_key] = int(kind_counts.get(kind_key, 0)) + 1
+                    if page_kind != 0x14:
+                        continue
+                    item["pages"] = int(item["pages"]) + 1
+                    page_refs = item["page_refs"]
+                    first_pages = item["first_pages"]
+                    row_samples = item["row_samples"]
+                    assert isinstance(page_refs, list)
+                    assert isinstance(first_pages, list)
+                    assert isinstance(row_samples, list)
+                    page_refs.append(f"{file_no}:{page_no}")
+                    if len(first_pages) < 16:
+                        first_pages.append(page_no)
+                    if len(row_samples) < sample_rows:
+                        page = mm[page_start : page_start + page_size]
+                        rows = iter_observed_rows_by_slots(page) or [
+                            row for row in scan_observed_row_chain(page) if not row.is_deleted
+                        ]
+                        for observed_row in rows:
+                            raw = observed_row.data[:128]
+                            row_samples.append(
+                                {
+                                    "page_no": page_no,
+                                    "offset": observed_row.page_offset,
+                                    "deleted": observed_row.is_deleted,
+                                    "len": observed_row.length,
+                                    "raw_hex": raw.hex(),
+                                    "ascii_hint": _storage_scan_ascii_hint(raw),
+                                }
+                            )
+                            if len(row_samples) >= sample_rows:
+                                break
+    storage_rows = [
+        item for item in by_storage.values() if int(item.get("pages") or 0) > 0
+    ]
+    storage_rows.sort(key=lambda item: (-int(item["pages"]), int(item["storage_id"])))
+    table_rows = [_storage_scan_table_row(item) for item in storage_rows]
+    diagnostics.append(
+        {
+            "level": "warning",
+            "code": "bootstrap-storage-scan-without-system-dicts",
+            "message": "SYSTEM dictionaries were not used; tab.dict contains SCAN.TAB_<storage_id> placeholders and row_samples are for manual identification",
+            "storages": len(storage_rows),
+        }
+    )
+    return table_rows, storage_rows, diagnostics
+
+
+def _storage_scan_table_row(item: dict[str, Any]) -> dict[str, Any]:
+    storage_id = int(item["storage_id"])
+    name = f"TAB_{storage_id}"
+    first_pages = item.get("first_pages") or [0]
+    return {
+        "dict_type": "storage_scan",
+        "object_kind": "scanned_storage",
+        "owner": "SCAN",
+        "name": name,
+        "qualified_name": f"SCAN.{name}",
+        "object_id": -storage_id,
+        "parent_object_id": "",
+        "schema_id": "",
+        "subtype_name": "STORAGE",
+        "storage_index_id": storage_id,
+        "storage_index_ids": "",
+        "group_id": item["group_id"],
+        "root_file": item["file_no"],
+        "root_page": first_pages[0],
+        "page_refs": ";".join(str(value) for value in item.get("page_refs", ())),
+        "partition_names": "",
+        "scan_pages": int(item.get("pages") or 1),
+        "source": "storage-id-full-scan",
+    }
+
+
+def _storage_scan_ascii_hint(raw: bytes) -> str:
+    return "".join(chr(byte) if 32 <= byte < 127 else "." for byte in raw[:64])
 
 
 def _split_requested_table(table_name: str, *, owner: str | None) -> tuple[str, str]:
@@ -1136,7 +1310,10 @@ def _dictionary_dump_status(
     table_rows: list[dict[str, Any]],
     diagnostics: list[dict[str, Any]],
     experimental_heuristic_dicts: bool,
+    scan_storages_without_system_dicts: bool = False,
 ) -> str:
+    if scan_storages_without_system_dicts:
+        return "storage-scan-output" if table_rows else "failed"
     if not experimental_heuristic_dicts:
         return "blocked-by-type-decoding" if requested_tables else "not-requested"
     if not requested_tables and table_rows:
@@ -1194,6 +1371,7 @@ def _bootstrap_diagnostics(
     control_ctl_manifest: dict[str, Any],
     requested_tables: tuple[str, ...],
     experimental_heuristic_dicts: bool,
+    scan_storages_without_system_dicts: bool = False,
     table_diagnostics: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
@@ -1208,7 +1386,9 @@ def _bootstrap_diagnostics(
                 "message": "no DBF files were available for file.dict",
             }
         )
-    if experimental_heuristic_dicts:
+    if scan_storages_without_system_dicts:
+        diagnostics.extend(table_diagnostics)
+    elif experimental_heuristic_dicts:
         diagnostics.append(
             {
                 "level": "warning",

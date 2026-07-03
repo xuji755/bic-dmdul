@@ -645,6 +645,103 @@ class CliTest(unittest.TestCase):
         self.assertEqual(column_rows[0]["name"], "ID")
         self.assertEqual(column_rows[0]["type_name"], "INT")
 
+    def test_bootstrap_scan_storages_without_system_dicts_and_dump_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output_dir = root / "dicts"
+            dump_dir = root / "out"
+            data_file = root / "DMDUL_TS01.DBF"
+            storage_id = 33596007
+            data_file.write_bytes(
+                _leaf_page(page_no=0, value=11, storage_id=storage_id)
+                + _leaf_page(page_no=1, value=22, storage_id=storage_id)
+            )
+
+            parser = build_parser()
+            bootstrap_args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "bootstrap",
+                    str(root),
+                    "--output-dir",
+                    str(output_dir),
+                    "--scan-storages-without-system-dicts",
+                    "--sample-limit",
+                    "2",
+                    "--json",
+                ]
+            )
+            bootstrap_stdout = io.StringIO()
+            with redirect_stdout(bootstrap_stdout):
+                bootstrap_exit_code = bootstrap_args.func(bootstrap_args)
+            manifest = json.loads(bootstrap_stdout.getvalue())
+            storage_rows = _read_dict_csv(output_dir / "storage_scan.dict")
+            table_rows = _read_dict_csv(output_dir / "tab.dict")
+
+            dump_args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(output_dir),
+                    "--output-dir",
+                    str(dump_dir),
+                    "--scan-storage-dict",
+                    "--table",
+                    f"SCAN.TAB_{storage_id}",
+                    "--json",
+                ]
+            )
+            dump_stdout = io.StringIO()
+            with redirect_stdout(dump_stdout):
+                dump_exit_code = dump_args.func(dump_args)
+            dump_manifest = json.loads(dump_stdout.getvalue())
+            dumped = (dump_dir / f"SCAN.TAB_{storage_id}.dul").read_text(encoding="utf-8")
+
+        self.assertEqual(bootstrap_exit_code, 0)
+        self.assertEqual(manifest["steps"][2]["status"], "storage-scan-output")
+        self.assertEqual(manifest["rows"]["storage_scan.dict"], 1)
+        self.assertEqual(storage_rows[0]["storage_id"], str(storage_id))
+        self.assertEqual(storage_rows[0]["page_refs"], '["0:0", "0:1"]')
+        self.assertIn("raw_hex", storage_rows[0]["row_samples"])
+        self.assertEqual(table_rows[0]["object_kind"], "scanned_storage")
+        self.assertEqual(table_rows[0]["qualified_name"], f"SCAN.TAB_{storage_id}")
+        self.assertEqual(dump_exit_code, 0)
+        self.assertEqual(dump_manifest["tables_ok"], 1)
+        self.assertIn("raw_row", dumped)
+        self.assertIn("0b000000", dumped)
+        self.assertIn("16000000", dumped)
+
+    def test_bootstrap_download_dictionaries_errors_when_system_dict_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            output_dir = root / "dicts"
+            (root / "DMDUL_TS01.DBF").write_bytes(_leaf_page(page_no=0, value=11, storage_id=33596007))
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "--page-size",
+                    "8192",
+                    "bootstrap",
+                    str(root),
+                    "--output-dir",
+                    str(output_dir),
+                    "-b",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn(
+            "bootstrap-system-file-not-found",
+            {item["code"] for item in manifest["diagnostics"] if item.get("level") == "error"},
+        )
+
     def test_bootstrap_dicts_keeps_target_table_dicts_empty_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

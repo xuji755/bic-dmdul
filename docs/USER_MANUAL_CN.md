@@ -102,7 +102,7 @@ TEMP.DBF
 控制文件 dm.ctl / *.ctl，如果存在
 ```
 
-当前阶段推荐至少保留 `SYSTEM.DBF`，因为 bootstrap 需要从系统字典中提取表、列、用户等信息。
+正常恢复路径推荐至少保留 `SYSTEM.DBF`，因为 bootstrap 需要从系统字典中提取表、列、用户等信息。如果 `SYSTEM.DBF` 或关键 SYS 字典损坏，可以使用 storage scan 降级模式先按页头 `storage_id` 聚合所有数据页，再用样本行人工识别目标对象。
 
 ### 2.3 文件复制注意事项
 
@@ -181,6 +181,7 @@ bootstrap 后会生成平面 CSV 字典文件，扩展名为 `.dict`：
 | `user.dict` | 用户/模式信息 |
 | `tab.dict` | 表对象信息，当前主流程用于表数据导出，也作为按需 DDL 导出的对象入口 |
 | `col.dict` | 表列定义 |
+| `storage_scan.dict` | 无系统字典模式下按 `storage_id` 聚合出的页清单和样本行 |
 | `index.dict` 或相关索引字典 | 当前不是 bootstrap 主流程必需；索引 DDL 导出会在命令执行时离线扫描 `SYSINDEXES` |
 
 字典文件不用 JSON，是为了适应大型系统中几十万张表的场景，便于流式读取和内存缓存。
@@ -352,6 +353,8 @@ TMPDIR=./tmp ./bin/dmdul \
 
 `-b` / `--download-dictionaries` 表示下载系统字典。
 
+如果指定了 `-b` 但 `SYSTEM.DBF` 或关键系统字典入口不可用，命令会返回非 0，并在 JSON diagnostics 中报告错误。不要在这种情况下继续把空 `tab.dict/col.dict` 当成正常字典使用。
+
 不使用 `--json` 时，bootstrap 会把执行进度输出到 stderr，例如：
 
 ```text
@@ -402,7 +405,63 @@ TMPDIR=./tmp ./bin/dmdul \
 | `--catalog-pages` | bootstrap summary 时每个文件采样页数。 |
 | `--sample-limit` | 采样数量。 |
 | `--experimental-heuristic-dicts` | 研究用启发式字典输出，正常恢复不建议使用。 |
+| `--scan-storages-without-system-dicts` | 不访问 SYS 字典，扫描所有 DBF 页头并按 `storage_id` 生成扫描字典。用于 `SYSTEM.DBF` 丢失或 SYS 字典损坏场景。 |
 | `--json` | 输出 JSON。 |
+
+### 6.2.1 SYSTEM.DBF 丢失时的 storage scan bootstrap
+
+当 `SYSTEM.DBF` 丢失，或 `SYSOBJECTS/SYSINDEXES/SYSCOLUMNS` 无法完整读取时，不能再生成真实的 owner/table/column 字典。此时可以显式启用扫描模式：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  bootstrap \
+  /recovery/dmcopy \
+  --output-dir /recovery/work/scan_dict \
+  --scan-storages-without-system-dicts \
+  --sample-limit 8 \
+  --json
+```
+
+该模式只依赖 DBF 页头和行槽：
+
+- 扫描所有数据文件；
+- 只把 `page_kind=0x14` 的数据页计入可导出页；
+- 按 `(group_id, file_no, storage_id)` 聚合；
+- 在 `storage_scan.dict` 中写出完整 `page_refs`、前若干页、样本行 raw hex 和 ASCII hint；
+- 在 `tab.dict` 中生成占位对象 `SCAN.TAB_<storage_id>`，`object_kind=scanned_storage`；
+- `user.dict` 和 `col.dict` 保持为空，因为此时没有可靠系统字典可以证明 owner、表名和列定义。
+
+示例查看候选：
+
+```sh
+head -20 /recovery/work/scan_dict/storage_scan.dict
+grep '33596007' /recovery/work/scan_dict/tab.dict
+```
+
+基于扫描字典导出某个 storage 的 raw 行：
+
+```sh
+TMPDIR=./tmp ./bin/dmdul \
+  dump-data \
+  --dict-dir /recovery/work/scan_dict \
+  --output-dir /recovery/work/scan_out \
+  --scan-storage-dict \
+  --table SCAN.TAB_33596007 \
+  --json
+```
+
+输出是 DUL 文本，只有一列：
+
+```sql
+CREATE TABLE SCAN.TAB_33596007 (
+  raw_row VARBINARY
+);
+-- DATA
+raw_row
+001100...
+```
+
+这条路径的目标是先找回完整物理行 bytes，并给出样本让人确认 storage 属于哪张表。确认字段列表后，可以再使用 `recover-orphan-table --column ... --storage-id ...` 做结构化导出。
 
 ### 6.3 bootstrap 输出文件
 
@@ -413,6 +472,7 @@ TMPDIR=./tmp ./bin/dmdul \
 /recovery/work/dict/user.dict
 /recovery/work/dict/tab.dict
 /recovery/work/dict/col.dict
+/recovery/work/dict/storage_scan.dict
 ```
 
 可以快速查看：
@@ -1788,7 +1848,14 @@ TEST2.DMDUL_MANY.dul
 
 ### 15.1 SYSTEM.DBF 缺失
 
-当前主流程依赖 `SYSTEM.DBF` 下载系统字典。如果 `SYSTEM.DBF` 丢失，后续需要实现全文件扫描、按 `storage_id` 聚合对象、重组表结构的模式。这个功能当前不是主流程。
+正常主流程依赖 `SYSTEM.DBF` 下载系统字典。如果 `SYSTEM.DBF` 丢失，可以使用 `bootstrap --scan-storages-without-system-dicts` 降级扫描所有数据文件，生成 `storage_scan.dict` 和 `SCAN.TAB_<storage_id>` 占位对象。
+
+限制：
+
+- 不能自动知道真实 owner、表名、列名和字段类型；
+- 只能按 `storage_id` 输出 raw 行，或在人工提供字段列表后再结构化恢复；
+- 如果多个历史对象复用了同一 storage id 或页已被覆盖，需要结合样本行、页数量、业务特征人工判断；
+- 该模式不输出索引、过程、约束等 DDL。
 
 ### 15.2 LOB
 
@@ -1908,7 +1975,7 @@ TMPDIR=./tmp ./bin/dmdul --help
 当前阶段已验证：
 
 ```text
-208 tests OK
+210 tests OK
 ```
 
 ## 18. 快速命令清单

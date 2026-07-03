@@ -7,6 +7,7 @@ import mmap
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable
 
 from .block import (
     analyze_data_file_block,
@@ -472,7 +473,7 @@ def _filelist_manifest_from_entries(
 
 
 def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
-    if args.command == "bootstrap":
+    if args.command == "bootstrap" and not args.scan_storages_without_system_dicts:
         args.download_dictionaries = True
     if args.database_dir is None or args.output_dir is None:
         print(
@@ -487,7 +488,8 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
             f"database_dir={args.database_dir} "
             f"output_dir={args.output_dir} "
             f"page_size={args.page_size} "
-            f"download_dictionaries={args.experimental_heuristic_dicts or args.download_dictionaries}"
+            f"download_dictionaries={args.experimental_heuristic_dicts or args.download_dictionaries} "
+            f"scan_storages_without_system_dicts={args.scan_storages_without_system_dicts}"
         )
     manifest = build_bootstrap_dicts(
         database_dir=Path(args.database_dir),
@@ -499,6 +501,7 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         owner=args.owner,
         scan_pages=args.scan_pages,
         experimental_heuristic_dicts=args.experimental_heuristic_dicts or args.download_dictionaries,
+        scan_storages_without_system_dicts=args.scan_storages_without_system_dicts,
         source_dict_dir=None if args.source_dict_dir is None else Path(args.source_dict_dir),
         progress=progress,
     )
@@ -508,7 +511,20 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         print(f"manifest={manifest['manifest_path']}")
         for name, path in manifest["dict_files"].items():
             print(f"{name}={path} rows={manifest['rows'][name]}")
+    if (
+        (args.experimental_heuristic_dicts or args.download_dictionaries)
+        and not args.scan_storages_without_system_dicts
+        and _manifest_has_error_diagnostics(manifest)
+    ):
+        return 1
     return 0
+
+
+def _manifest_has_error_diagnostics(manifest: dict[str, object]) -> bool:
+    for diagnostic in manifest.get("diagnostics", ()) or ():
+        if isinstance(diagnostic, dict) and diagnostic.get("level") == "error":
+            return True
+    return False
 
 
 
@@ -607,6 +623,14 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
         output_dir = Path(args.output_dir)
         delimiter = args.delimiter or "|"
         workers = args.parallel or 1
+    if args.scan_storage_dict:
+        return _cmd_dump_scan_storage_dict(
+            args=args,
+            dict_dir=dict_dir,
+            output_dir=output_dir,
+            delimiter=delimiter,
+            workers=workers,
+        )
     metadata = CalibratedMetadata.from_dict_dir(dict_dir)
     requested = {_normalize_identifier(value) for value in (args.table or ())}
     requested_names = {value.split(".", 1)[-1] for value in requested}
@@ -737,6 +761,154 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
     else:
         _print_dump_data_summary(manifest)
     return 0 if manifest["tables_failed"] == 0 else 1
+
+
+def _cmd_dump_scan_storage_dict(
+    *,
+    args: argparse.Namespace,
+    dict_dir: Path,
+    output_dir: Path,
+    delimiter: str,
+    workers: int,
+) -> int:
+    if args.output_format != "dul":
+        print("dmdul: --scan-storage-dict currently supports only --output-format dul raw_row output", file=sys.stderr)
+        return 2
+    if args.partition or args.partition_parallel != 1 or args.truncate or args.orphan_scan_storage_id is not None:
+        print("dmdul: --scan-storage-dict cannot be combined with partition/truncate/orphan options", file=sys.stderr)
+        return 2
+    requested = {_normalize_identifier(value) for value in (args.table or ())}
+    requested_names = {value.split(".", 1)[-1] for value in requested}
+    requested_user = _normalize_identifier(args.user) if args.user else None
+    tables = [
+        table
+        for table in _scan_storage_tables_from_tab_dict(dict_dir / "tab.dict")
+        if (
+            (not requested and requested_user is None)
+            or _normalize_identifier(str(table["name"])) in requested
+            or _normalize_identifier(str(table["name"])) in requested_names
+            or _normalize_identifier(str(table["qualified_name"])) in requested
+            or (requested_user is not None and _normalize_identifier(str(table["owner"])) == requested_user)
+        )
+    ]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    progress = None if args.json else _dump_data_progress_printer()
+    reports: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {
+            executor.submit(
+                _dump_one_scanned_storage_table,
+                dict_dir=dict_dir,
+                table=table,
+                output=output_dir / f"{_safe_output_name(str(table['qualified_name']))}.dul",
+                delimiter=delimiter,
+                progress=progress,
+            ): table
+            for table in tables
+        }
+        for future in as_completed(futures):
+            table = futures[future]
+            try:
+                reports.append(future.result())
+            except Exception as exc:  # pragma: no cover
+                reports.append(
+                    {
+                        "table": table.get("qualified_name"),
+                        "ok": False,
+                        "output": str(output_dir / f"{_safe_output_name(str(table['qualified_name']))}.dul"),
+                        "rows_written": 0,
+                        "diagnostics": [{"level": "error", "code": "scan-storage-dict-dump-failed", "message": str(exc)}],
+                    }
+                )
+    reports.sort(key=lambda item: str(item.get("table")))
+    manifest = {
+        "mode": "dm-dump-data-scan-storage-dict",
+        "dict_dir": str(dict_dir),
+        "output_dir": str(output_dir),
+        "delimiter": delimiter,
+        "output_format": "dul",
+        "parallel": max(1, workers),
+        "tables_total": len(tables),
+        "tables_ok": sum(1 for item in reports if item.get("ok")),
+        "tables_failed": sum(1 for item in reports if not item.get("ok")),
+        "reports": reports,
+    }
+    if args.report_output:
+        Path(args.report_output).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        _print_dump_data_summary(manifest)
+    return 0 if manifest["tables_failed"] == 0 else 1
+
+
+def _scan_storage_tables_from_tab_dict(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as file:
+        return [
+            row
+            for row in csv.DictReader(file)
+            if row.get("object_kind") == "scanned_storage"
+            or row.get("source") == "storage-id-full-scan"
+        ]
+
+
+def _dump_one_scanned_storage_table(
+    *,
+    dict_dir: Path,
+    table: dict[str, str],
+    output: Path,
+    delimiter: str,
+    progress: Callable[[dict[str, object]], None] | None,
+) -> dict[str, object]:
+    storage_id = int(table["storage_index_id"])
+    group_id = int(table["group_id"])
+    file_no = int(table.get("root_file") or 0)
+    candidate = {
+        "storage_id": storage_id,
+        "group_id": group_id,
+        "file_no": file_no,
+    }
+    table_name = str(table.get("qualified_name") or table.get("name") or f"TAB_{storage_id}")
+    if progress is not None:
+        progress({"kind": "start", "table": table_name, "output": str(output)})
+    rows_written = _write_raw_orphan_rows(
+        dict_dir=dict_dir,
+        candidate=candidate,
+        table_name=table_name,
+        output=output,
+        delimiter=delimiter,
+    )
+    if progress is not None:
+        progress(
+            {
+                "kind": "complete",
+                "table": table_name,
+                "ok": True,
+                "pages_done": int(table.get("scan_pages") or 0),
+                "rows_written": rows_written,
+                "rows_skipped_deleted": 0,
+                "rows_skipped_decode_error": 0,
+                "output": str(output),
+            }
+        )
+    return {
+        "table": table_name,
+        "ok": True,
+        "output": str(output),
+        "rows_written": rows_written,
+        "rows_skipped_deleted": 0,
+        "rows_skipped_decode_error": 0,
+        "diagnostics": [
+            {
+                "level": "warning",
+                "code": "scan-storage-dict-raw-row-output",
+                "message": "SYSTEM dictionaries were unavailable; exported full physical row bytes as raw_row",
+            }
+        ],
+        "mode": "scan-storage-dict-raw",
+    }
 
 
 def _cmd_extract_dicts(args: argparse.Namespace) -> int:
@@ -1829,6 +2001,7 @@ def _write_raw_orphan_rows(
     candidate: dict[str, object],
     table_name: str,
     output: Path,
+    delimiter: str = "|",
 ) -> int:
     group_id = int(candidate["group_id"])
     file_no = int(candidate["file_no"])
@@ -1836,7 +2009,7 @@ def _write_raw_orphan_rows(
     output.parent.mkdir(parents=True, exist_ok=True)
     rows_written = 0
     with output.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.writer(file, delimiter="|", lineterminator="\n")
+        writer = csv.writer(file, delimiter=delimiter, lineterminator="\n")
         file.write(
             f"CREATE TABLE {table_name} (\n"
             "  raw_row VARBINARY\n"
@@ -2764,6 +2937,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write target-table heuristic user/tab/col dict rows; research only",
     )
+    bootstrap_dicts.add_argument(
+        "--scan-storages-without-system-dicts",
+        action="store_true",
+        help="do not use SYS dictionaries; scan all DBF page headers by storage_id and write storage_scan.dict plus SCAN.TAB_<storage_id> placeholders",
+    )
     bootstrap_dicts.add_argument("--json", action="store_true")
     bootstrap_dicts.set_defaults(func=_cmd_bootstrap_dicts)
 
@@ -2806,6 +2984,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dump_data.add_argument("--report-output")
     dump_data.add_argument("--strict-page-plan", action="store_true")
+    dump_data.add_argument(
+        "--scan-storage-dict",
+        action="store_true",
+        help="use storage_scan.dict/tab.dict placeholders from bootstrap --scan-storages-without-system-dicts and export raw_row bytes",
+    )
     dump_data.add_argument(
         "--lob-mode",
         choices=["inline", "external"],
