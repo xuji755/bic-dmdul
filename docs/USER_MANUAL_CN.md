@@ -4,6 +4,8 @@
 
 版权信息：`Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.`。开源协议：`GPL-3.0-or-later`。
 
+免责说明：`bic-dmdul` 是达梦数据库灾难拯救工具。由于故障场景可能包含介质损坏、文件缺失、字典损坏、页面覆盖、事务状态不一致等复杂情况，本工具不承诺任何情况下都能无损、完整或正确恢复数据。完整免责说明见 [../NOTICE.md](../NOTICE.md)。
+
 文档导航：[双语文档中心](README.md)，[中文文档索引](README_CN.md)，[English Documentation Index](README_EN.md)。
 
 当前实现重点支持：

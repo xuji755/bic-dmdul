@@ -14,6 +14,8 @@ When a DM database instance cannot start but the data files or ASM disk groups a
 
 本项目采用 GNU General Public License v3.0 or later，详见 [LICENSE](LICENSE)。开源版权声明见 [NOTICE.md](NOTICE.md)。
 
+`bic-dmdul` 是数据库灾难拯救工具，故障场景可能导致无法无损恢复；关于数据损失、恢复不完整或恢复错误的免责说明见 [NOTICE.md](NOTICE.md)。
+
 ## Command
 
 安装后主命令为：
