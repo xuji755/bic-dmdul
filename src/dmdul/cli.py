@@ -2661,7 +2661,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog=__product__,
         description=(
             "BIC DM8 offline data extraction tool.\n"
-            f"{__copyright__}.\n"
+            f"{__copyright__}\n"
             f"License: {__license__}."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

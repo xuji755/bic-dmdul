@@ -6,7 +6,9 @@
 
 ## License
 
-本项目采用 GNU General Public License v3.0 or later，详见 [LICENSE](LICENSE)。
+版权所有 (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.
+
+本项目采用 GNU General Public License v3.0 or later，详见 [LICENSE](LICENSE)。开源版权声明见 [NOTICE.md](NOTICE.md)。
 
 ## Command
 

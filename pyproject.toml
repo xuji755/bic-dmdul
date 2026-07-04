@@ -6,7 +6,7 @@ requires-python = ">=3.8"
 dependencies = []
 license = { text = "GPL-3.0-or-later" }
 authors = [
-    { name = "佰晟智算（深圳）技术有限公司" },
+    { name = "佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd." },
 ]
 
 [project.scripts]

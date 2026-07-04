@@ -2,7 +2,7 @@
 
 本文档说明 `bic-dmdul` 当前阶段的完整使用方法。`bic-dmdul` 是佰晟智算（深圳）技术有限公司开发的、面向达梦 DM8 数据文件的离线数据导出工具，目标是在数据库实例不能正常启动、但数据文件仍可读取的情况下，从数据文件中恢复系统字典并导出用户表数据。
 
-版权信息：`Copyright (C) 2026 佰晟智算（深圳）技术有限公司`。开源协议：`GPL-3.0-or-later`。
+版权信息：`Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.`。开源协议：`GPL-3.0-or-later`。
 
 当前实现重点支持：
 
@@ -88,7 +88,7 @@ TMPDIR=./tmp ./bin/bic-dmdul <command> ...
 每个子命令执行时都会向 `stderr` 输出版权横幅，例如：
 
 ```text
-bic-dmdul 0.1.0 | Copyright (C) 2026 佰晟智算（深圳）技术有限公司 | License: GPL-3.0-or-later
+bic-dmdul 0.1.0 | Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd. | License: GPL-3.0-or-later
 ```
 
 版权横幅写入 `stderr`，不会破坏 `--json` 模式下 stdout 的 JSON 内容。
