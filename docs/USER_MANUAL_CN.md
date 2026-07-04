@@ -4,6 +4,8 @@
 
 版权信息：`Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.`。开源协议：`GPL-3.0-or-later`。
 
+文档导航：[双语文档中心](README.md)，[中文文档索引](README_CN.md)，[English Documentation Index](README_EN.md)。
+
 当前实现重点支持：
 
 - 识别离线数据文件清单；
