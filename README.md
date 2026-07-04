@@ -42,6 +42,27 @@ bic-dmdul --help
 TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli --help
 ```
 
+## Release Download / 发布版下载
+
+当前版本：`0.1.0`，Git tag：`v0.1.0`。
+
+- [releases/bic-dmdul-0.1.0.tar.gz](releases/bic-dmdul-0.1.0.tar.gz)
+- [releases/bic-dmdul-0.1.0.tar.gz.sha256](releases/bic-dmdul-0.1.0.tar.gz.sha256)
+
+下载后运行：
+
+```bash
+tar -xzf bic-dmdul-0.1.0.tar.gz
+cd bic-dmdul-0.1.0
+./bin/bic-dmdul --help
+```
+
+发布包可用以下命令重新生成：
+
+```bash
+./tools/build_release.sh
+```
+
 ## Documentation / 文档入口
 
 Start here when browsing the Git project:
