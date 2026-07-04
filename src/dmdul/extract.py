@@ -129,6 +129,7 @@ STRICT_UNCERTAIN_DIAGNOSTIC_CODES = frozenset(
         "page-plan-btree-root-entry-mismatch",
         "page-scan-skipped-non-data-pages",
         "page-scan-skipped-storage-id-mismatch",
+        "huge-raux-proxy-mapping",
     }
 )
 
@@ -193,7 +194,7 @@ def extract_csv_with_calibrated_metadata(
     pages_skipped_non_data = 0
     pages_skipped_storage_mismatch = 0
     decode_errors: list[str] = []
-    diagnostics: list[dict[str, Any]] = list(initial_diagnostics)
+    diagnostics: list[dict[str, Any]] = [*initial_diagnostics, *table.diagnostics]
     accepted_page_refs: list[StoragePageRef] = []
     if orphan_storage_ids and page_refs_override is None:
         if partition_names:

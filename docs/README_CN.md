@@ -9,6 +9,7 @@
 - [中文使用手册](USER_MANUAL_CN.md)：日常命令入口，优先阅读。
 - [DM8 存储格式阶段性总结](DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md)：当前最重要的存储结构总结。
 - [Bootstrap 与标准表下载优化设计](DM8_BOOTSTRAP_STANDARD_TABLE_DOWNLOAD.md)：离线字典与表下载主路径。
+- [AI Coding 二次开发指南](AI_CODING_DEVELOPMENT_GUIDE.md)：使用 Codex、Claude Code、Hermes、Trae、Qoder 等工具继续开发的操作规范。
 - [开源版权声明](../NOTICE.md)：GPL 和开发者声明。
 - [GPL 协议全文](../LICENSE)：GPL-3.0 完整协议文本。
 
@@ -41,6 +42,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [AI_CODING_DEVELOPMENT_GUIDE.md](AI_CODING_DEVELOPMENT_GUIDE.md) | AI Coding 二次开发指南，覆盖上下文加载、远端实验、测试门禁、严格模式、压缩 HUGE 表边界和提交前检查。 |
 | [TECHNICAL_EXPLORATION_ROADMAP.md](TECHNICAL_EXPLORATION_ROADMAP.md) | 技术路线图：从冷一致文件抽取到崩溃状态抽取的目标拆分。 |
 | [EXPLORATION_PLAN.md](EXPLORATION_PLAN.md) | 数据库级存储探索计划。 |
 | [EXPLORATION_TASKS.md](EXPLORATION_TASKS.md) | 探索和实现任务清单，记录已完成和待完成项。 |

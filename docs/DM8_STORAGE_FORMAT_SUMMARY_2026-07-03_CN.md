@@ -132,7 +132,7 @@ SYSINDEXES:  storage id, group id, root file, root page
 
 `bootstrap` 会把分区表所有叶子 root 写入 `tab.dict.page_refs`，后续 `dump-data` 直接按这些 page refs 导出。
 
-### 4.1 压缩 HUGE 表定位遗留问题
+### 4.1 压缩 HUGE 表定位
 
 已验证达梦压缩 `HUGE TABLE` 与普通 BTREE 表段不同。测试语法：
 
@@ -156,25 +156,45 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
   - `DMDUL_HUGE_COMP_T$DAUX`
   - `DMDUL_HUGE_COMP_T$UAUX`
 
-当前结构观察：
+当前结构观察与实现结论：
 
 - 主表对象保存逻辑列定义；
-- 可能存在 `$AUX`、`$RAUX`、`$DAUX`、`$UAUX` 等内部辅助对象；
-- 主表不呈现普通 BTREE storage；
-- HUGE 存储入口可能不使用普通数据文件编号。
+- 存在 `$AUX`、`$RAUX`、`$DAUX`、`$UAUX` 等内部辅助对象；
+- 主表自己的 storage 子对象 `INDEX33596000` 是 `ROOTFILE=-1`、`ROOTPAGE=-1`，离线解析时可表现为 `file=65535`，不能直接作为普通数据入口；
+- `$RAUX` 辅助表的 storage 子对象 `INDEX33596002` 是普通 BTREE 入口：`GROUPID=4`、`ROOTFILE=0`、`ROOTPAGE=949488`；
+- `bic-dmdul` 在定向 bootstrap 中遇到主表 `-1/-1` 入口时 fallback 到 SYSTEM 扫描，写出主表和辅助表字典；导出时用主表列定义 + `$RAUX` storage 恢复主表逻辑行。
+
+HUGE 表是列存储表。`$AUX` 的列定义与 `SYS.SYSTEMPLATEHUGEAUX` 模板一致，每行描述一个列区，关键字段包括 `COLID`、`SEC_ID`、`FILE_ID`、`OFFSET`、`COUNT`、`ACOUNT`、`N_LEN`、`CPR_FLAG`、`ENC_FLAG`、`CHKSUM`、`MAX_VAL`、`MIN_VAL`、`SUM_VAL`。`CPR_FLAG='Y'` 表示该列区存在压缩列数据；这类数据不等价于普通 BTREE 行页，不能用行解码器直接恢复。
+
+追加文件级观察：
+
+- `V$HUGE_TABLESPACE` 显示 `MAIN` 的 HUGE 路径为 `/dmdata/data/DAMENG/HMAIN`；
+- `DMDUL_HUGE_HIGH_T` 的列文件位于 `/dmdata/data/DAMENG/HMAIN/SCH150994945/TAB34295/`；
+- 每列一个 `.dta` 文件，如 `COL0000_0000000000.dta` 到 `COL0004_0000000000.dta`；
+- `.dta` 偏移 `0` 是列文件头，偏移 `4096` 开始每 4KB 一个 section；
+- section 头前 32 字节可见固定魔数和元数据，样例为 `09 ec 1d 02 ...`，其中包含列号、section id、压缩/编码标志等候选字段；
+- 变长列 `VARCHAR` 的 section 在偏移 `133` 处出现 zlib 头 `78 da`，可用 `zlib.decompress()` 解压；
+- 解压后的变长列 payload 前 4096 字节是 1024 个 little-endian end-offset，后面是连续拼接的数据区。例如 `COL0003` 的 `V` 列在解压后偏移 `4100` 出现 `V1V2V3...`，偏移表第一项为 `4228`；
+- `COL0004` 的 `PAD` 列解压后长度约 `823300` 字节，偏移 `4100` 开始是连续 `Z` 字符；
+- 定长/低基数字段使用不同编码：`COL0001` 的 `K=mod(level,17)` 在 section 中可见重复 `01..10` 片段，`COL0002` 的 `CHAR(2)='AA'` 在 section 偏移 164 附近可见 `4141`。
+
+因此，完整恢复 `QUERY HIGH` 需要实现三层逻辑：从控制文件/目录发现 HUGE 表空间路径和 `TAB<object_id>` 目录；按 `$AUX` 行定位列文件、section 和压缩标志；按列类型解压/解码后按行号重组为表行。
 
 2026-07-04 全面测试结果：
 
-| 表 | 类型 | 在线行数 | 离线结果 | 结论 |
+| 表 | 类型 | 行数 | 离线入口 | 导出/导入比对 |
 | --- | --- | ---: | --- | --- |
-| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `bootstrap` 解析到 `group=4,file=65535`，当前 `file.dict` 无对应文件，未生成可导出表字典 | 遗留问题，暂不支持 |
+| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `$RAUX` storage `33596002`, `group=4`, `root_file=0`, `root_page=949488` | `rows_written=5000`，导入 `DMDUL_RT.DMDUL_HUGE_COMP_T_RT3` 后双向 `MINUS=0/0` |
+| `SYSDBA.DMDUL_HUGE_HIGH_T` | `HUGE TABLE ... STORAGE(SECTION(1024)) COMPRESS LEVEL 9 FOR 'QUERY HIGH'` | 20000 | `$AUX` 100 条列区元数据，95 条 `CPR_FLAG=Y`；`$RAUX` 只有 544 行 | 当前只能导出 `$RAUX` 尾区行，`dump-data --strict` 返回 `strict_ok=false` |
 
 边界：
 
 - 普通 `CREATE TABLE ... COMPRESS` 在当前测试库中没有让 `DBA_TABLES.COMPRESSION` 变为 `ENABLED`；
 - `COMPRESS_MODE=1` 能设置参数值，但普通表仍显示 `COMPRESSION=DISABLED`；
-- HUGE 表 `file=65535` 存储入口映射尚未解析；
-- `QUERY HIGH`、列级压缩、带分区或 LOB 的压缩 HUGE 表尚未验证。
+- 当前完整导出结论只覆盖已验证的 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` + `$RAUX` 行存储形态；
+- `QUERY HIGH` 已验证会产生 `$AUX.CPR_FLAG='Y'` 的压缩列区，当前代码尚未实现列区容器、压缩算法和行重组；
+- 发现 `$RAUX` 代理映射时，`dump-data --strict` 会把 `huge-raux-proxy-mapping` 作为严格失败处理，避免部分导出被误认为完整恢复；
+- 列级压缩、带分区或 LOB 的压缩 HUGE 表尚未完成完整恢复验证。
 
 ## 5. BTREE 表页与 page plan
 
@@ -634,5 +654,18 @@ row 归档可以脱离原始 DBF 复制到另一台服务器。`import-data` 默
 - ASM 磁盘组读取尚未实现。
 - 未提交事务、异常崩溃中间态、回滚未清理版本仍需单独实验。
 - row tail/control 与完整 MVCC/undo 可见性尚未完全解析。
-- 压缩 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 当前未通过全面测试：`SYSDBA.DMDUL_HUGE_COMP_T` 在线 5000 行，但离线 bootstrap 解析到 `group=4,file=65535` 且无法映射到普通 file.dict，未生成可导出表字典。HUGE/压缩表作为遗留问题，不应宣称已支持。
-- 其他压缩形态、加密、特殊迁移行、跨文件 LOB 链尚未覆盖。
+- 已验证压缩 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 可通过 `$RAUX` storage 导出、导入并完成双向 `MINUS=0/0` 比对。
+- `dump-data --strict` 已能把 `$RAUX` 代理映射报告为 `huge-raux-proxy-mapping`，并通过 `tables_strict_failed` 和非零退出码避免把部分恢复误判为完整成功。
+- `QUERY HIGH` 已验证会使用 `HMAIN/SCH<schema_id>/TAB<object_id>/COL*.dta` 列文件和 `$AUX.CPR_FLAG='Y'` 压缩列区；变长列 section 中已观察到 zlib 流和 1024 行 offset 表，但当前代码尚未实现通用列区解压、定长列编码解析和按行重组。
+- 列级压缩、压缩 HUGE 分区表、压缩 HUGE LOB 表、加密、特殊迁移行、跨文件 LOB 链尚未完成完整恢复验证。
+
+## 12. 2026-07-04 本轮新增成果
+
+- 修复定向 bootstrap 遇到 HUGE 主表 `ROOTFILE=-1`、`ROOTPAGE=-1` 时无法保留辅助对象的问题：失败后 fallback 到 SYSTEM 扫描，并保留同 owner、同主表名前缀的 `$AUX/$RAUX/$DAUX/$UAUX` 字典行。
+- 为 HUGE `$RAUX` 代理映射新增 `huge-raux-proxy-mapping` 诊断，并纳入严格模式失败集合。
+- `dump-data` 聚合命令新增 `--strict`、`tables_strict_failed` 和严格模式退出码传播，避免批量导出时忽略单表 `strict_ok=false`。
+- 远端验证 `SYSDBA.DMDUL_HUGE_COMP_T`：5000 行通过 `$RAUX` 导出，导入 `DMDUL_RT.DMDUL_HUGE_COMP_T_RT3` 后双向 `MINUS=0/0`。
+- 远端验证 `SYSDBA.DMDUL_HUGE_HIGH_T`：20000 行 `QUERY HIGH` 表中 `$AUX` 有 100 条列区元数据，其中 95 条 `CPR_FLAG=Y`；当前只能从 `$RAUX` 得到 544 行尾区，`dump-data --strict` 正确返回 `strict_ok=false`、`tables_strict_failed=1`。
+- 找到 HUGE 列存物理路径：`V$HUGE_TABLESPACE` 的 `MAIN` 路径为 `/dmdata/data/DAMENG/HMAIN`，列文件在 `HMAIN/SCH150994945/TAB34295/COL0000_0000000000.dta` 等文件中。
+- 初步解析 `.dta`：文件偏移 `0` 为列文件头，`4096` 起每 4KB 一个 section；变长列 section 偏移 `133` 可见 zlib 头 `78 da`，解压后前 4096 字节是 1024 个 little-endian end-offset，后续为连续列值。
+- 新增 [AI Coding 二次开发指南](AI_CODING_DEVELOPMENT_GUIDE.md)，并加入 README、中文索引和英文索引。

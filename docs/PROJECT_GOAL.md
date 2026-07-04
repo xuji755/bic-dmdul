@@ -95,7 +95,7 @@ Later versions should handle:
 - partitioned tables;
 - secondary index assisted lookup;
 - LOB and long row storage;
-- compressed and HUGE tables, including the current unresolved `group=4,file=65535` HUGE storage-entry mapping;
+- compressed HUGE variants that require `$AUX.CPR_FLAG='Y'` column-section decompression, including `QUERY HIGH` and column-level compression;
 - encrypted tablespaces;
 - damaged but partially readable data files;
 - dictionary bootstrap without any hard-coded system table root pages.

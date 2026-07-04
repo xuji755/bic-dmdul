@@ -46,6 +46,7 @@ class TableMeta:
     name: str
     columns: tuple[ColumnMeta, ...]
     storage: StorageRoot
+    diagnostics: tuple[dict[str, Any], ...] = ()
 
     @property
     def qualified_name(self) -> str:
@@ -272,6 +273,18 @@ def _huge_table_from_raux_storage(
         name=name,
         columns=columns,
         storage=raux.storage,
+        diagnostics=(
+            {
+                "level": "warning",
+                "code": "huge-raux-proxy-mapping",
+                "message": (
+                    "HUGE table was mapped to the internal $RAUX storage. "
+                    "This recovers rows present in $RAUX, but does not decode "
+                    "compressed column sections referenced by $AUX."
+                ),
+                "raux_table": raux.qualified_name,
+            },
+        ),
     )
 
 

@@ -21,6 +21,8 @@
 - 支持从 DUL/row/parts 生成重装载 SQL；
 - 支持已验证的短内联 LOB 和 out-of-line LOB 页链读取；
 - 支持按需导出指定用户的存储过程 DDL 和普通索引 DDL。
+- 已验证支持一种压缩 `HUGE TABLE` 主链路导出：`HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'`，通过内部 `$RAUX` BTREE storage 恢复主表逻辑行。
+- `dump-data --strict` 会把不完整恢复风险传播为严格失败；例如 `huge-raux-proxy-mapping` 会导致 `strict_ok=false` 和 `tables_strict_failed>0`。
 
 当前暂不作为主流程支持：
 
@@ -28,7 +30,7 @@
 - 缺失 `SYSTEM.DBF` 时的真实表名、属主、列定义自动还原；当前只能显式使用 storage scan 生成 raw 恢复入口；
 - 直接连接目标 DM 库并执行并发入库；
 - 复杂索引类型的完整还原，例如虚拟索引、函数索引、位图索引。
-- 压缩 `HUGE TABLE` 主链路导出。2026-07-04 全面测试中，`SYSDBA.DMDUL_HUGE_COMP_T` 在线可读且有 5000 行，但离线 bootstrap 解析到 `group=4,file=65535`，当前 `file.dict` 无法映射该 HUGE 存储入口，因此未生成可导出的表字典。这是当前遗留问题，不能宣称已支持。
+- `QUERY HIGH`、列级压缩、带分区或 LOB 的压缩 HUGE 表完整恢复；当前已定位 `.dta` 列文件和 zlib 变长列结构，但尚未实现通用列区解码和行重组。
 
 ## 1. 基本原则
 
@@ -1034,9 +1036,9 @@ raw_row
 - raw 行保留完整物理 bytes，即使字段候选猜错，也不会破坏可恢复数据；
 - 后续可根据 `inferred_columns` 生成二次解析脚本或人工补充 `--column` 后重新执行字段列表适配导出。
 
-### 7.6 压缩 HUGE 表当前遗留问题
+### 7.6 导出压缩 HUGE 表
 
-达梦压缩 `HUGE TABLE` 不是普通 BTREE 表段。当前测试库中的典型建表语法示例：
+达梦压缩 `HUGE TABLE` 不是普通 BTREE 表段。当前已验证的建表语法示例：
 
 ```sql
 CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
@@ -1048,7 +1050,7 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
 ) COMPRESS LEVEL 1 FOR 'QUERY LOW';
 ```
 
-在线字典中该类表可能表现为：
+在线字典中该类表表现为：
 
 - `DBA_TABLES.COMPRESSION = ENABLED`；
 - 主表在 `DBA_SEGMENTS` 中可能显示 `HEADER_FILE=-1`、`HEADER_BLOCK=-1`、`BYTES=0`；
@@ -1058,17 +1060,39 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
   - `DMDUL_HUGE_COMP_T$DAUX`
   - `DMDUL_HUGE_COMP_T$UAUX`
 
-早期探索曾假设主表逻辑行可通过 `主表名$RAUX` 辅助表映射导出。但 2026-07-04 全面测试重新验证后，当前代码不能把该路径作为已支持能力：
+当前验证结论：
 
 - 源表 `SYSDBA.DMDUL_HUGE_COMP_T` 在线可读，行数为 5000；
-- `bootstrap` 能看到对象线索，但解析到 `group=4,file=65535`；
-- 当前控制文件/数据文件清单中没有可直接对应的 file id；
-- `tab.dict`、`col.dict` 未生成该表的可导出元数据；
-- `dump-data` 找不到该表，因此没有生成 `.row` 导出文件。
+- 主表自己的 storage 子对象是 `INDEX33596000`，`SYSINDEXES.ROOTFILE=-1`、`ROOTPAGE=-1`，不能直接作为普通表入口；
+- `$RAUX` 辅助表的 storage 子对象是 `INDEX33596002`，`SYSINDEXES.GROUPID=4`、`ROOTFILE=0`、`ROOTPAGE=949488`；
+- `bootstrap --table` 遇到主表 `-1/-1` 入口时会 fallback 到 SYSTEM 字典扫描，写出主表行和 `$AUX/$RAUX/$DAUX/$UAUX` 辅助表行；
+- `dump-data` 读取离线字典时，会使用主表列定义 + `$RAUX` storage 导出主表逻辑数据。
 
-因此当前版本不要把压缩 `HUGE TABLE` 当作已支持主流程。遇到这类表时，应保留 `bootstrap` JSON、`file.dict`、相关在线字典查询和页面证据，作为后续 HUGE 存储入口解析的研发输入。
+HUGE 表本质上是达梦的列存储表。`$AUX` 保存列区元数据，字段形态来自 `SYS.SYSTEMPLATEHUGEAUX`，包括 `COLID`、`SEC_ID`、`FILE_ID`、`OFFSET`、`COUNT`、`ACOUNT`、`N_LEN`、`CPR_FLAG`、`ENC_FLAG`、`MAX_VAL`、`MIN_VAL`、`SUM_VAL` 等。当前工具能够识别主表和 `$AUX/$RAUX/$DAUX/$UAUX` 辅助对象，并能用 `$RAUX` 的 BTREE 入口导出其中已经行式化的逻辑行；但还没有实现 `$AUX.CPR_FLAG='Y'` 所指向的列压缩区直接解压。
 
-当前如果仍执行：
+列压缩数据的物理位置不是普通 `MAIN.DBF` 的绝对偏移。在当前测试库中：
+
+- `V$HUGE_TABLESPACE` 中 `MAIN` 的 HUGE 路径为 `/dmdata/data/DAMENG/HMAIN`；
+- `SYSDBA.DMDUL_HUGE_HIGH_T` 的列文件在 `HMAIN/SCH150994945/TAB34295/` 下；
+- 每列一个 `.dta` 文件，例如 `COL0003_0000000000.dta` 对应 `V VARCHAR(64)`；
+- `.dta` 文件从偏移 `4096` 开始按 4KB section 存放列区；
+- 变长列 section 中可见 zlib 压缩流，解压后前 4096 字节是 1024 个行内 end-offset，后面是连续拼接的列值数据。
+
+因此，如果要继续实现 `QUERY HIGH` 完整恢复，不能只扫描 `$RAUX`；必须读取 `HMAIN/.../TAB<object_id>/COL*.dta` 并按 `$AUX` 元数据重组列数据。
+
+推荐先执行定向 bootstrap：
+
+```sh
+TMPDIR=./tmp ./bin/bic-dmdul \
+  --init-file /recovery/work/init.dul \
+  bootstrap \
+  --owner SYSDBA \
+  --table DMDUL_HUGE_COMP_T \
+  -b \
+  --json
+```
+
+再按主表名导出，不需要手工指定 `$RAUX`：
 
 ```sh
 TMPDIR=./tmp ./bin/bic-dmdul \
@@ -1079,19 +1103,20 @@ TMPDIR=./tmp ./bin/bic-dmdul \
   --json
 ```
 
-预期结果不是成功导出，而是可能出现表字典缺失或 storage/file 映射失败诊断。不要把空导出当作恢复成功。
+已验证用例：
 
-当前遗留问题记录：
-
-| 表 | 类型 | 在线行数 | 当前离线结果 | 状态 |
+| 表 | 类型 | 行数 | 离线入口 | 导出/导入比对 |
 | --- | --- | ---: | --- | --- |
-| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `bootstrap` 解析到 `group=4,file=65535`，未生成可导出表字典 | 遗留问题，暂不支持 |
+| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `$RAUX` storage `33596002`, `group=4`, `root_file=0`, `root_page=949488` | `rows_written=5000`，导入 `DMDUL_RT.DMDUL_HUGE_COMP_T_RT3` 后双向 `MINUS=0/0` |
+| `SYSDBA.DMDUL_HUGE_HIGH_T` | `HUGE TABLE ... STORAGE(SECTION(1024)) COMPRESS LEVEL 9 FOR 'QUERY HIGH'` | 20000 | `$AUX` 100 条列区元数据，其中 95 条 `CPR_FLAG=Y`；`$RAUX` 仅 544 行尾区数据 | 当前不能判定完整恢复；`dump-data --strict` 返回 `strict_ok=false`、`tables_strict_failed=1` |
 
 注意：
 
 - 普通 `CREATE TABLE ... COMPRESS` 在当前测试库中并未让 `DBA_TABLES.COMPRESSION` 变为 `ENABLED`，不能作为压缩表测试依据。
 - `COMPRESS_MODE=1` 是建表缺省压缩参数，但当前测试中普通表仍显示 `COMPRESSION=DISABLED`。
-- 压缩 `HUGE TABLE`、其他压缩等级、列级压缩、`QUERY HIGH`、带分区/LOB 的 HUGE 压缩表都需要独立研发和测试。
+- 当前完整导出结论只覆盖已验证的 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` + `$RAUX` 行存储形态。
+- 发现 `$RAUX` 代理映射时，报告会包含 `huge-raux-proxy-mapping` 诊断；在 `--strict` 模式下该诊断会导致 `strict_ok=false`，提醒用户必须用导入后比对确认完整性。
+- `QUERY HIGH`、列级压缩、带分区/LOB 的 HUGE 压缩表需要实现 `$AUX` 列区和压缩数据解码后才能宣称完整恢复。
 
 ### 7.7 并发导出
 
@@ -1503,6 +1528,7 @@ rows_written = 80
 | `unsupported-column-type` | 某列类型当前不能解码 | 需要补类型解码或 raw 输出策略 |
 | `row-decode-error` | 行解码失败 | 查看 report 中 decode_errors |
 | `unsupported-row-metadata` | 行 metadata/NULL bitmap 等尚未完全支持 | 需要进一步分析行结构 |
+| `huge-raux-proxy-mapping` | HUGE 主表通过 `$RAUX` 辅助 BTREE 代理导出 | 严格模式下视为不完整性风险；必须导入后比对，或继续实现 `$AUX` 列区解码 |
 
 ## 10. 数据类型支持状态
 
@@ -1913,19 +1939,20 @@ TEST2.DMDUL_MANY.dul
 
 ### 15.3 压缩表
 
-当前普通 BTREE 表链路已经完成导出、导入、比对测试，但压缩表不能泛化为已支持。尤其是达梦 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 在 2026-07-04 全面测试中暴露出 `group=4,file=65535` 的 HUGE 存储入口映射问题，当前不能按主表名完成离线导出。
+当前普通 BTREE 表链路已经完成导出、导入、比对测试；压缩表已验证一种达梦 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 形态。该形态的主对象没有普通 BTREE storage，逻辑行位于内部 `主表名$RAUX` 表中。`bic-dmdul` 会在离线字典装配阶段自动把主表列定义映射到 `$RAUX` storage，用户仍按主表名导出。由于 `$RAUX` 只是 HUGE 表的内部辅助结构，工具会报告 `huge-raux-proxy-mapping`；严格模式要求用户通过导入后比对确认完整性。
 
-当前压缩相关遗留范围：
+已验证但当前不能完整恢复的形态：
 
-- HUGE 存储入口 `file=65535` 的控制文件/空间映射；
-- `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 主表导出；
-- `QUERY HIGH`；
+- `HUGE TABLE ... STORAGE(SECTION(1024)) COMPRESS LEVEL 9 FOR 'QUERY HIGH'`：`$AUX` 出现 `CPR_FLAG='Y'` 的压缩列区，`$RAUX` 仅保存尾区行；当前 `dump-data --strict` 会返回 `strict_ok=false`。
+
+尚未覆盖的压缩相关场景：
+
 - 列级压缩或 `EXCEPT` 列排除；
 - 压缩 HUGE 分区表；
 - 压缩 HUGE 表包含 LOB；
 - 其他版本/参数组合下的普通表压缩。
 
-如果遇到未验证压缩形态导致 `row-decode-error`、`unsupported-row-metadata` 或找不到 storage，应保留 raw evidence，不得猜测导出。
+如果遇到未验证压缩形态导致 `row-decode-error`、`unsupported-row-metadata`、`huge-raux-proxy-mapping` 或找不到 storage，应保留 raw evidence，不得猜测为完整导出。
 
 ### 15.4 未知行结构
 

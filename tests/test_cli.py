@@ -759,6 +759,109 @@ class CliTest(unittest.TestCase):
             {item["code"] for item in manifest["diagnostics"] if item.get("level") == "error"},
         )
 
+    def test_dump_data_strict_fails_huge_raux_proxy_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dict_dir = root / "dict"
+            dump_dir = root / "dump"
+            dict_dir.mkdir()
+            data_file = root / "DMDUL_TS01.DBF"
+            data_file.write_bytes(_user_data_file_payload())
+            _write_cli_csv(
+                dict_dir / "file.dict",
+                ["dict_type", "path", "basename", "page_size", "group_id", "file_no"],
+                [
+                    {
+                        "dict_type": "file",
+                        "path": str(data_file),
+                        "basename": "DMDUL_TS01.DBF",
+                        "page_size": 8192,
+                        "group_id": 6,
+                        "file_no": 0,
+                    }
+                ],
+            )
+            _write_cli_csv(
+                dict_dir / "tab.dict",
+                [
+                    "dict_type",
+                    "object_kind",
+                    "owner",
+                    "name",
+                    "qualified_name",
+                    "object_id",
+                    "storage_index_id",
+                    "group_id",
+                    "root_file",
+                    "root_page",
+                ],
+                [
+                    {
+                        "dict_type": "table",
+                        "object_kind": "table",
+                        "owner": "SYSDBA",
+                        "name": "DMDUL_HUGE_T",
+                        "qualified_name": "SYSDBA.DMDUL_HUGE_T",
+                        "object_id": 34171,
+                    },
+                    {
+                        "dict_type": "table",
+                        "object_kind": "table",
+                        "owner": "SYSDBA",
+                        "name": "DMDUL_HUGE_T$RAUX",
+                        "qualified_name": "SYSDBA.DMDUL_HUGE_T$RAUX",
+                        "object_id": 34173,
+                        "storage_index_id": 33595349,
+                        "group_id": 6,
+                        "root_file": 0,
+                        "root_page": 96,
+                    },
+                ],
+            )
+            _write_cli_csv(
+                dict_dir / "col.dict",
+                ["dict_type", "object_id", "name", "type_name", "length", "scale", "nullable"],
+                [
+                    {
+                        "dict_type": "column",
+                        "object_id": 34171,
+                        "name": "ID",
+                        "type_name": "INT",
+                        "length": 4,
+                        "scale": 0,
+                        "nullable": "Y",
+                    }
+                ],
+            )
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "dump-data",
+                    "--dict-dir",
+                    str(dict_dir),
+                    "--output-dir",
+                    str(dump_dir),
+                    "--table",
+                    "SYSDBA.DMDUL_HUGE_T",
+                    "--strict",
+                    "--json",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = args.func(args)
+            manifest = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(manifest["tables_failed"], 0)
+        self.assertEqual(manifest["tables_strict_failed"], 1)
+        self.assertFalse(manifest["reports"][0]["strict_ok"])
+        self.assertEqual(
+            manifest["reports"][0]["strict_failures"][0]["code"],
+            "huge-raux-proxy-mapping",
+        )
+
     def test_bootstrap_dicts_keeps_target_table_dicts_empty_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -2257,6 +2360,13 @@ def _leaf_page(*, page_no: int, value: int, storage_id: int) -> bytes:
         + b"\0" * (0x11 - 2 - 1 - 4)
     )
     return bytes(page)
+
+
+def _write_cli_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _sysobject_table_name(table_id: int) -> bytes:

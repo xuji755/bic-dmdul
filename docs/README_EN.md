@@ -10,6 +10,7 @@ Website: [www.dbaiops.com](https://www.dbaiops.com)
 - [Project goal](PROJECT_GOAL.md): correctness target and scope.
 - [Storage architecture notes](DM8_STORAGE_ARCHITECTURE_NOTES.md): deep storage evidence.
 - [Page structure notes](DM8_PAGE_STRUCTURE_NOTES.md): page and row layout notes.
+- [AI coding development guide](AI_CODING_DEVELOPMENT_GUIDE.md): workflow for continuing development with Codex, Claude Code, Hermes, Trae, Qoder, or similar tools.
 - [Open source copyright notice](../NOTICE.md): GPL and developer notice.
 - [GPL license text](../LICENSE): full GPL-3.0 license.
 
@@ -42,6 +43,7 @@ Website: [www.dbaiops.com](https://www.dbaiops.com)
 
 | Document | English Reading Guide |
 | --- | --- |
+| [AI_CODING_DEVELOPMENT_GUIDE.md](AI_CODING_DEVELOPMENT_GUIDE.md) | Bilingual guide for AI-assisted second-stage development. It covers context loading, remote experiments, test gates, strict diagnostics, compressed HUGE boundaries, and commit checks. |
 | [TECHNICAL_EXPLORATION_ROADMAP.md](TECHNICAL_EXPLORATION_ROADMAP.md) | Technical roadmap from cold-consistent extraction toward crash-state extraction. |
 | [EXPLORATION_PLAN.md](EXPLORATION_PLAN.md) | Database-level storage exploration plan. |
 | [EXPLORATION_TASKS.md](EXPLORATION_TASKS.md) | Exploration and implementation checklist. |

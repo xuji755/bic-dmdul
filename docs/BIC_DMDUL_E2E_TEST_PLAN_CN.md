@@ -190,7 +190,7 @@
 - 多分区 LIST 导入后仅包含指定分区集合。
 - parts manifest 中列出的 part 文件完整存在，导入工具可自动找到并导入。
 
-### 4.5 压缩 HUGE 表遗留验证
+### 4.5 压缩 HUGE 表
 
 表名：`DMDUL_E2E_HUGE_COMP`
 
@@ -208,23 +208,21 @@ CREATE HUGE TABLE DMDUL_E2E_HUGE_COMP (
 
 - 至少 10,000 行。
 
-当前状态：
+当前已验证状态：
 
 - 2026-07-04 全面测试使用既有 `SYSDBA.DMDUL_HUGE_COMP_T` 验证，在线行数为 5000；
-- `bootstrap` 解析到 `group=4,file=65535`；
-- 当前 `file.dict` 无法映射该 HUGE 存储入口，未生成可导出表字典；
-- 该场景暂列为遗留问题，不能作为第一阶段通过项。
-
-通过标准：
-
-- 在实现 HUGE 存储入口解析前，本场景应稳定输出明确诊断，不得把空导出视为成功；
-- 后续实现后，必须按完整链路重新验证：导出、导入目标用户、源目标双向 `MINUS=0/0`。
+- 主表 storage 子对象为 `INDEX33596000`，`ROOTFILE=-1`、`ROOTPAGE=-1`，不能直接作为普通表入口；
+- `$RAUX` 辅助表 storage 子对象为 `INDEX33596002`，`GROUPID=4`、`ROOTFILE=0`、`ROOTPAGE=949488`；
+- `bootstrap --table` 会 fallback 到 SYSTEM 扫描，写出主表和 `$AUX/$RAUX/$DAUX/$UAUX` 辅助表行；
+- `dump-data` 用主表列定义 + `$RAUX` storage 导出主表逻辑数据。
+- 2026-07-04 追加 `SYSDBA.DMDUL_HUGE_HIGH_T` 测试：`HUGE TABLE ... STORAGE(SECTION(1024)) COMPRESS LEVEL 9 FOR 'QUERY HIGH'`，在线行数 20000，`$AUX` 有 100 条列区元数据，其中 95 条 `CPR_FLAG=Y`，`$RAUX` 只有 544 行。当前工具不能完整恢复该形态，`dump-data --strict` 必须返回 `strict_ok=false` 和 `tables_strict_failed=1`。
 
 通过标准：
 
 - `bic-dmdul` 通过 `$RAUX` storage 自动导出主表逻辑数据。
 - 导入目标表后 `COUNT`、聚合和双向 `MINUS` 一致。
 - 报告中不能出现行解码错误。
+- 对含 `huge-raux-proxy-mapping` 的报告，不能只凭导出成功判定通过；必须导入比对成功，或在 `--strict` 下明确作为未完整验证处理。
 
 ### 4.6 TRUNCATE 恢复表
 
@@ -579,5 +577,6 @@ PYTHONPATH=src python3 tests/e2e/run_dm8_e2e.py --run-id <run_id>
 - ASM 磁盘组。
 - 加密表。
 - 所有复杂索引类型重建。
-- 压缩 `HUGE TABLE` 存储入口解析，包括当前暴露的 `group=4,file=65535` 场景。
+- `QUERY HIGH` 的完整列压缩区恢复；当前只验证到 `$AUX.CPR_FLAG='Y'` 场景会触发严格失败。
+- 列级压缩、带分区或 LOB 的 HUGE 压缩表。
 - 所有未知压缩形态。

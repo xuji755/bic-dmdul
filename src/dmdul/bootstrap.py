@@ -343,6 +343,7 @@ def _dictionary_rows_for_tables(
     table_rows: list[dict[str, Any]] = []
     column_rows: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
+    failed_tables: list[tuple[str, str]] = []
     system_file = _find_system_file(database_dir, page_size=page_size)
     sysobject_rows: tuple[SysObjectRowCandidate, ...] | None = None
     if system_file is None:
@@ -368,14 +369,7 @@ def _dictionary_rows_for_tables(
                 sysobject_rows=sysobject_rows,
             )
         except OfflineResolveError as exc:
-            diagnostics.append(
-                {
-                    "level": "error",
-                    "code": "bootstrap-table-dictionary-resolve-failed",
-                    "table": table_name,
-                    "message": str(exc),
-                }
-            )
+            failed_tables.append((table_name, str(exc)))
             continue
         owner_name = resolution.table.owner
         user_by_owner.setdefault(
@@ -390,7 +384,111 @@ def _dictionary_rows_for_tables(
         )
         table_rows.append(_table_dict_row(resolution))
         column_rows.extend(_column_dict_rows(resolution))
+    if failed_tables and system_file is not None:
+        _emit_progress(
+            progress,
+            f"requested table resolver failed for {len(failed_tables)} table(s); fallback SYSTEM dictionary scan",
+        )
+        scan_user_rows, scan_table_rows, scan_column_rows, scan_diagnostics = _dictionary_rows_from_system_scan(
+            database_dir=database_dir,
+            owner=owner,
+            page_size=page_size,
+            scan_pages=scan_pages,
+            progress=progress,
+        )
+        diagnostics.extend(scan_diagnostics)
+        for table_name, error in failed_tables:
+            selected_users, selected_tables, selected_columns = _filter_system_scan_rows_for_requested_table(
+                user_rows=scan_user_rows,
+                table_rows=scan_table_rows,
+                column_rows=scan_column_rows,
+                table_name=table_name,
+                owner=owner,
+            )
+            if not selected_tables:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "bootstrap-table-dictionary-resolve-failed",
+                        "table": table_name,
+                        "message": error,
+                    }
+                )
+                continue
+            for user_row in selected_users:
+                owner_name = str(user_row.get("owner") or "")
+                if owner_name:
+                    user_by_owner.setdefault(owner_name, user_row)
+            _append_unique_dict_rows(table_rows, selected_tables, key_fields=("owner", "name", "object_id"))
+            _append_unique_dict_rows(
+                column_rows,
+                selected_columns,
+                key_fields=("qualified_table_name", "object_id", "column_id", "name"),
+            )
+            diagnostics.append(
+                {
+                    "level": "warning",
+                    "code": "bootstrap-table-dictionary-resolve-fallback-system-scan",
+                    "table": table_name,
+                    "message": (
+                        "requested table resolver failed; dictionaries were recovered from "
+                        "SYSTEM scan, including auxiliary table rows when present"
+                    ),
+                    "original_error": error,
+                }
+            )
     return list(user_by_owner.values()), table_rows, column_rows, diagnostics
+
+
+def _filter_system_scan_rows_for_requested_table(
+    *,
+    user_rows: list[dict[str, Any]],
+    table_rows: list[dict[str, Any]],
+    column_rows: list[dict[str, Any]],
+    table_name: str,
+    owner: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    requested_owner, requested_name = _split_requested_table(table_name, owner=owner)
+    selected_tables = [
+        row
+        for row in table_rows
+        if str(row.get("owner") or "").upper() == requested_owner
+        and (
+            str(row.get("name") or "").upper() == requested_name
+            or str(row.get("name") or "").upper().startswith(f"{requested_name}$")
+        )
+    ]
+    selected_object_ids = {str(row.get("object_id") or "") for row in selected_tables}
+    selected_owners = {str(row.get("owner") or "") for row in selected_tables}
+    selected_columns = [
+        row
+        for row in column_rows
+        if str(row.get("object_id") or "") in selected_object_ids
+    ]
+    selected_users = [
+        row
+        for row in user_rows
+        if str(row.get("owner") or "") in selected_owners
+    ]
+    return selected_users, selected_tables, selected_columns
+
+
+def _append_unique_dict_rows(
+    target: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    key_fields: tuple[str, ...],
+) -> None:
+    seen = {
+        tuple(str(row.get(field) or "") for field in key_fields)
+        for row in target
+    }
+    for row in rows:
+        key = tuple(str(row.get(field) or "") for field in key_fields)
+        if key in seen:
+            continue
+        seen.add(key)
+        target.append(row)
 
 
 def _dictionary_rows_from_existing_dicts(

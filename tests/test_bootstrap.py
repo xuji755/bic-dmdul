@@ -9,6 +9,7 @@ from dmdul.bootstrap import (
     DICT_FIELDNAMES,
     DM_BUILTIN_SCHEMA_NAMES_BY_ID,
     _dictionary_rows_from_existing_dicts,
+    _filter_system_scan_rows_for_requested_table,
     _leaf_partition_objects_for_table,
     _owner_for_schema_id,
     _system_dictionary_storage_entry,
@@ -143,6 +144,46 @@ class BootstrapTest(unittest.TestCase):
         )
 
         self.assertEqual([(item.object_id, item.name) for item in leaves], [(104, "P3")])
+
+    def test_filter_system_scan_rows_keeps_huge_auxiliary_tables(self) -> None:
+        user_rows = [{"owner": "SYSDBA", "schema_id": "150994945"}]
+        table_rows = [
+            {"owner": "SYSDBA", "name": "DMDUL_HUGE_COMP_T", "object_id": "34171"},
+            {"owner": "SYSDBA", "name": "DMDUL_HUGE_COMP_T$RAUX", "object_id": "34173"},
+            {"owner": "SYSDBA", "name": "DMDUL_HUGE_COMP_T$AUX", "object_id": "34172"},
+            {"owner": "SYSDBA", "name": "DMDUL_HUGE_COMP_TX", "object_id": "34180"},
+            {"owner": "OTHER", "name": "DMDUL_HUGE_COMP_T$RAUX", "object_id": "44173"},
+        ]
+        column_rows = [
+            {"owner": "SYSDBA", "table_name": "DMDUL_HUGE_COMP_T", "object_id": "34171", "name": "ID"},
+            {"owner": "SYSDBA", "table_name": "DMDUL_HUGE_COMP_T$RAUX", "object_id": "34173", "name": "ID"},
+            {"owner": "OTHER", "table_name": "DMDUL_HUGE_COMP_T$RAUX", "object_id": "44173", "name": "ID"},
+        ]
+
+        users, tables, columns = _filter_system_scan_rows_for_requested_table(
+            user_rows=user_rows,
+            table_rows=table_rows,
+            column_rows=column_rows,
+            table_name="DMDUL_HUGE_COMP_T",
+            owner="SYSDBA",
+        )
+
+        self.assertEqual(users, user_rows)
+        self.assertEqual(
+            [(row["owner"], row["name"], row["object_id"]) for row in tables],
+            [
+                ("SYSDBA", "DMDUL_HUGE_COMP_T", "34171"),
+                ("SYSDBA", "DMDUL_HUGE_COMP_T$RAUX", "34173"),
+                ("SYSDBA", "DMDUL_HUGE_COMP_T$AUX", "34172"),
+            ],
+        )
+        self.assertEqual(
+            [(row["table_name"], row["object_id"], row["name"]) for row in columns],
+            [
+                ("DMDUL_HUGE_COMP_T", "34171", "ID"),
+                ("DMDUL_HUGE_COMP_T$RAUX", "34173", "ID"),
+            ],
+        )
 
 
 def _write_dict(path: Path, fieldnames: tuple[str, ...], rows: list[dict[str, str]]) -> None:

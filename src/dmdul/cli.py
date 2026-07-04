@@ -753,6 +753,7 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
         "tables_total": len(tables),
         "tables_ok": sum(1 for item in reports if item.get("ok")),
         "tables_failed": sum(1 for item in reports if not item.get("ok")),
+        "tables_strict_failed": sum(1 for item in reports if not item.get("strict_ok", item.get("ok"))),
         "reports": reports,
     }
     if args.report_output:
@@ -761,6 +762,8 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
         print(json.dumps(manifest, indent=2))
     else:
         _print_dump_data_summary(manifest)
+    if args.strict:
+        return 0 if manifest["tables_strict_failed"] == 0 else 1
     return 0 if manifest["tables_failed"] == 0 else 1
 
 
@@ -996,6 +999,8 @@ def _print_dump_data_summary(manifest: dict[str, object]) -> None:
     print(f"  tables_total={manifest['tables_total']}")
     print(f"  tables_ok={manifest['tables_ok']}")
     print(f"  tables_failed={manifest['tables_failed']}")
+    if "tables_strict_failed" in manifest:
+        print(f"  tables_strict_failed={manifest['tables_strict_failed']}")
     for report in reports:
         if not isinstance(report, dict):
             continue
@@ -2998,6 +3003,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="output DUL text or binary row archive with embedded row bytes, default: dul",
     )
     dump_data.add_argument("--report-output")
+    dump_data.add_argument("--strict", action="store_true")
     dump_data.add_argument("--strict-page-plan", action="store_true")
     dump_data.add_argument(
         "--scan-storage-dict",

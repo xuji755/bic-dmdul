@@ -201,6 +201,8 @@ class MetadataTest(unittest.TestCase):
         self.assertEqual(table.storage.group_id, 4)
         self.assertEqual(table.storage.file_no, 0)
         self.assertEqual(table.storage.root_page, 949488)
+        self.assertEqual(table.diagnostics[0]["code"], "huge-raux-proxy-mapping")
+        self.assertEqual(table.diagnostics[0]["raux_table"], "SYSDBA.DMDUL_HUGE_COMP_T$RAUX")
 
     def test_builds_metadata_from_segment_manifest(self) -> None:
         metadata = CalibratedMetadata.from_segment_manifest(

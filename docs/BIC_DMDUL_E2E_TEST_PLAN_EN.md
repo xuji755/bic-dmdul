@@ -23,7 +23,7 @@ The test plan verifies the full recovery chain:
 - Large multi-extent table.
 - CLOB/BLOB table with inline, out-of-line, updated, and NULL LOBs.
 - Range, list, and range-hash partitioned tables.
-- Compressed `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` as a known limitation scenario until HUGE storage-entry mapping is implemented.
+- Compressed `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` through the internal `$RAUX` row-storage mapping.
 - TRUNCATE recovery.
 - DROP/orphan storage recovery.
 - Stored procedure DDL extraction and rebuild.
@@ -34,8 +34,10 @@ The test plan verifies the full recovery chain:
 
 A scenario is not considered passed merely because export completed. It passes only when the exported data is imported into a target user and compared back to the source or the saved pre-incident snapshot.
 
-## Current Known Limitation
+## Compressed HUGE Result
 
-The July 4, 2026 full test run did not pass the compressed HUGE table scenario. `SYSDBA.DMDUL_HUGE_COMP_T` was readable online with 5000 rows, but offline bootstrap resolved its storage as `group=4,file=65535`; the current `file.dict` mapping cannot resolve that HUGE storage entry, so no exportable table dictionary was produced. This remains a known issue and must not be reported as supported until the HUGE storage mapping is implemented and retested through export, import, and bidirectional comparison.
+The July 4, 2026 follow-up run passed one compressed HUGE table scenario for `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'`. `SYSDBA.DMDUL_HUGE_COMP_T` was readable online with 5000 rows. Its main storage child has `ROOTFILE=-1` and `ROOTPAGE=-1`, so targeted bootstrap falls back to a SYSTEM scan, preserves the auxiliary table rows, and maps the main table columns to `$RAUX` storage `33596002` at `group=4,root_file=0,root_page=949488`. Export wrote 5000 rows, import rebuilt a target table, and bidirectional `MINUS` returned 0/0.
+
+A separate `QUERY HIGH` test (`SYSDBA.DMDUL_HUGE_HIGH_T`, 20000 rows, `STORAGE(SECTION(1024)) COMPRESS LEVEL 9 FOR 'QUERY HIGH'`) proved that HUGE is a column-store structure, not just a row-store alias. `$AUX` contained 100 column-section rows and 95 of them had `CPR_FLAG=Y`; `$RAUX` contained only 544 tail rows. The current tool therefore marks `$RAUX` proxy mapping with `huge-raux-proxy-mapping`, and `dump-data --strict` returns `strict_ok=false` / `tables_strict_failed=1` until compressed column-section decoding is implemented.
 
 For details, use [BIC_DMDUL_E2E_TEST_PLAN_CN.md](BIC_DMDUL_E2E_TEST_PLAN_CN.md).

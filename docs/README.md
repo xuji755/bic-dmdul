@@ -23,7 +23,8 @@ Website / 官方网站: [www.dbaiops.com](https://www.dbaiops.com)
 | 6 | [页结构笔记](DM8_PAGE_STRUCTURE_NOTES.md) | [Page structure notes](DM8_PAGE_STRUCTURE_NOTES.md) |
 | 7 | [类型存储笔记](DM8_TYPE_STORAGE_NOTES.md) | [Type storage notes](DM8_TYPE_STORAGE_NOTES.md) |
 | 8 | [证据采集流程](EVIDENCE_CAPTURE_WORKFLOW.md) | [Evidence capture workflow](EVIDENCE_CAPTURE_WORKFLOW.md) |
-| 9 | [探索任务清单](EXPLORATION_TASKS.md) | [Exploration and implementation tasks](EXPLORATION_TASKS.md) |
+| 9 | [AI Coding 二次开发指南](AI_CODING_DEVELOPMENT_GUIDE.md) | [AI coding development guide](AI_CODING_DEVELOPMENT_GUIDE.md) |
+| 10 | [探索任务清单](EXPLORATION_TASKS.md) | [Exploration and implementation tasks](EXPLORATION_TASKS.md) |
 
 ## Complete Document Map / 全量文档地图
 
@@ -32,6 +33,7 @@ Website / 官方网站: [www.dbaiops.com](https://www.dbaiops.com)
 | [USER_MANUAL_CN.md](USER_MANUAL_CN.md) | Manual | Chinese | 命令行使用手册，覆盖 bootstrap、导出、导入、LOB、分区、TRUNCATE/DROP 恢复、过程和索引 DDL。 | Main operator manual. Use [README_EN.md](README_EN.md#operator-guide) for English command navigation. |
 | [BIC_DMDUL_E2E_TEST_PLAN_CN.md](BIC_DMDUL_E2E_TEST_PLAN_CN.md) | Test plan | Chinese | 完整链路测试方案，覆盖导出、导入、数据比对、索引和存储过程重建。 | Full end-to-end test plan. See [BIC_DMDUL_E2E_TEST_PLAN_EN.md](BIC_DMDUL_E2E_TEST_PLAN_EN.md) for English summary. |
 | [BIC_DMDUL_E2E_TEST_PLAN_EN.md](BIC_DMDUL_E2E_TEST_PLAN_EN.md) | Test plan index | English | 完整链路测试方案英文索引。 | English summary and pointer for the full E2E test plan. |
+| [AI_CODING_DEVELOPMENT_GUIDE.md](AI_CODING_DEVELOPMENT_GUIDE.md) | Development guide | Bilingual | 使用 Codex、Claude Code、Hermes、Trae、Qoder 等 AI Coding 工具二次开发本项目的操作指南。 | Guide for continuing development with AI coding tools such as Codex, Claude Code, Hermes, Trae, and Qoder. |
 | [DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md](DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md) | Storage summary | Chinese | 最新 DM8 文件、页、行、LOB、字典、恢复模式总结。 | Latest storage-format summary. See [README_EN.md](README_EN.md#storage-architecture-and-format) for English overview. |
 | [DM8_BOOTSTRAP_STANDARD_TABLE_DOWNLOAD.md](DM8_BOOTSTRAP_STANDARD_TABLE_DOWNLOAD.md) | Design note | Chinese | bootstrap 字典下载和标准表下载路径设计。 | Bootstrap dictionary download and standard table extraction design. |
 | [DM8_STORAGE_ARCHITECTURE_NOTES.md](DM8_STORAGE_ARCHITECTURE_NOTES.md) | Deep research note | English | 存储架构深度笔记，记录大量原始证据和假设。 | Deep storage architecture research note with evidence and hypotheses. |
