@@ -272,7 +272,7 @@ def _verify_evidence_json_ref(
     evidence_type, required = _classify_evidence_payload(payload)
     if evidence_type is None:
         errors.append(
-            f"evidence_json[{index}] is not a recognized dmdul evidence file"
+            f"evidence_json[{index}] is not a recognized bic-dmdul evidence file"
         )
         return
     for key in required:

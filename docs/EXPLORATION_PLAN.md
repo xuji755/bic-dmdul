@@ -1,6 +1,6 @@
 # DM8 Storage Exploration Plan
 
-This plan tracks the database-level investigation needed for `dmdul`. The goal
+This plan tracks the database-level investigation needed for `bic-dmdul`. The goal
 is not just to find row bytes in a file; it is to reconstruct enough DM8 storage
 and transaction semantics to export a table correctly when the instance cannot
 start.

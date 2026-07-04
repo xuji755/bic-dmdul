@@ -19,6 +19,19 @@ def _read_dict_csv(path: Path) -> list[dict[str, str]]:
 
 
 class CliTest(unittest.TestCase):
+    def test_main_prints_copyright_banner_to_stderr_without_polluting_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["discover-files", tmp_dir, "--json"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(stdout.getvalue()), [])
+        self.assertIn("bic-dmdul 0.1.0", stderr.getvalue())
+        self.assertIn("Copyright (C) 2026 佰晟智算（深圳）技术有限公司", stderr.getvalue())
+        self.assertIn("License: GPL-3.0-or-later", stderr.getvalue())
+
     def test_summarize_control_file_writes_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -588,11 +601,13 @@ class CliTest(unittest.TestCase):
             )
 
             stdout = io.StringIO()
-            with redirect_stdout(stdout):
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
                 exit_code = main(["--init-file", str(init_file), "bootstrap", "--json"])
             manifest = json.loads(stdout.getvalue())
 
         self.assertEqual(exit_code, 0)
+        self.assertIn("Copyright (C) 2026 佰晟智算（深圳）技术有限公司", stderr.getvalue())
         self.assertEqual(manifest["database_dir"], str(root))
         self.assertEqual(manifest["rows"]["tab.dict"], 2)
         self.assertEqual(manifest["rows"]["col.dict"], 1)

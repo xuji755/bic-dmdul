@@ -106,7 +106,7 @@ class RowArchiveReader:
         self.file = file
         magic = file.read(len(MAGIC))
         if magic != MAGIC:
-            raise ValueError("not a dmdul row archive")
+            raise ValueError("not a bic-dmdul row archive")
         owner = _read_string(file)
         name = _read_string(file)
         self.create_table_sql = _read_string(file)
@@ -764,7 +764,7 @@ def _resolve_input_format(input_path: Path, input_format: str) -> str:
 def _read_parts_manifest(input_path: Path) -> dict[str, object]:
     lines = input_path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0].strip() != "DMDUL-PARTS 1":
-        raise ValueError("not a dmdul parts manifest")
+        raise ValueError("not a bic-dmdul parts manifest")
     payload: dict[str, object] = {
         "format": "dul",
         "delimiter": "|",

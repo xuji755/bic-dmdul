@@ -1,14 +1,18 @@
 [project]
-name = "dmdul"
+name = "bic-dmdul"
 version = "0.1.0"
-description = "Offline DM8 data extraction research tool"
+description = "BIC DM8 offline data extraction tool"
 requires-python = ">=3.8"
 dependencies = []
+license = { text = "GPL-3.0-or-later" }
+authors = [
+    { name = "佰晟智算（深圳）技术有限公司" },
+]
 
 [project.scripts]
+bic-dmdul = "dmdul.cli:main"
 dmdul = "dmdul.cli:main"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
-

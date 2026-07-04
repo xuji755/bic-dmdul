@@ -1,7 +1,7 @@
 # DM8 Storage Architecture Notes
 
 This document records verified observations and working hypotheses for the
-offline `dmdul` extractor.
+offline `bic-dmdul` extractor.
 
 ## Scope Boundary
 
@@ -747,7 +747,7 @@ The tool now has a heuristic `find-sysobject` command that scans `SYSTEM.DBF`
 for an object name and scores nearby contexts:
 
 ```sh
-dmdul find-sysobject SYSTEM.DBF DMDUL_ONE2
+bic-dmdul find-sysobject SYSTEM.DBF DMDUL_ONE2
 ```
 
 Current scoring favors contexts containing:
@@ -976,7 +976,7 @@ The `find-sysobject-indexes` scanner now recovers this bridge directly from
 prefixed `TABOBJ` plus `INDEX<digits>` strings:
 
 ```sh
-dmdul find-sysobject-indexes SYSTEM.DBF 33630
+bic-dmdul find-sysobject-indexes SYSTEM.DBF 33630
 ```
 
 Remote validation showed the highest-scoring candidate for each controlled
@@ -1028,7 +1028,7 @@ The new `find-sysindex` scanner uses this layout to recover the storage root
 directly from `SYSTEM.DBF`:
 
 ```sh
-dmdul find-sysindex SYSTEM.DBF 33595350
+bic-dmdul find-sysindex SYSTEM.DBF 33595350
 ```
 
 This completed the first offline recovery path for `SYSINDEXES.ID ->
@@ -1415,7 +1415,7 @@ ids/root pages. The downloader must therefore keep these concepts separate:
 - index storage object: a separate `SYSINDEXES` object with its own storage id,
   root page, and entries pointing to keys/rows.
 
-For table data recovery, dmdul should first parse the table storage object's
+For table data recovery, bic-dmdul should first parse the table storage object's
 BTREE page plan. Index segments can be used later as auxiliary evidence or for
 index export, but should not be conflated with the table storage id unless
 `SYSINDEXES` proves that relationship.
@@ -1480,7 +1480,7 @@ leaf part/subpart:  SCHOBJ/UTAB, PID=<parent partition id>
 data storage:       TABOBJ/INDEX, PID=<leaf object id>
 ```
 
-For table-data extraction, dmdul should ignore intermediate storage objects and
+For table-data extraction, bic-dmdul should ignore intermediate storage objects and
 use only leaf partition/subpartition objects, defined as partition descendants
 with no further `SCHOBJ/UTAB` children. Remote strict extraction validated:
 

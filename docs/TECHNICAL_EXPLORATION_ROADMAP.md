@@ -1,13 +1,13 @@
-# dmdul Technical Exploration Roadmap
+# bic-dmdul Technical Exploration Roadmap
 
-This roadmap defines the technical work needed to make `dmdul` a correct DM8
+This roadmap defines the technical work needed to make `bic-dmdul` a correct DM8
 offline table extractor. It intentionally treats DM8 as a database engine with
 storage and transaction semantics, not as a collection of files containing row
 strings.
 
 ## Target Guarantee
 
-For a supported ordinary row-store table, `dmdul extract-csv` must produce a CSV
+For a supported ordinary row-store table, `bic-dmdul extract-csv` must produce a CSV
 containing every logically visible row exactly once, with correct column values
 and headers. It must skip deleted, rolled-back, and uncommitted row versions
 when that state can be determined. If a required structure is unknown, the tool

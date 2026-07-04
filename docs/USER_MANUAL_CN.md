@@ -1,6 +1,8 @@
-# dmdul 中文使用手册
+# bic-dmdul 中文使用手册
 
-本文档说明 `dmdul` 当前阶段的完整使用方法。`dmdul` 是一个面向达梦 DM8 数据文件的离线数据导出工具，目标是在数据库实例不能正常启动、但数据文件仍可读取的情况下，从数据文件中恢复系统字典并导出用户表数据。
+本文档说明 `bic-dmdul` 当前阶段的完整使用方法。`bic-dmdul` 是佰晟智算（深圳）技术有限公司开发的、面向达梦 DM8 数据文件的离线数据导出工具，目标是在数据库实例不能正常启动、但数据文件仍可读取的情况下，从数据文件中恢复系统字典并导出用户表数据。
+
+版权信息：`Copyright (C) 2026 佰晟智算（深圳）技术有限公司`。开源协议：`GPL-3.0-or-later`。
 
 当前实现重点支持：
 
@@ -20,7 +22,7 @@
 当前暂不作为主流程支持：
 
 - 达梦 ASM 磁盘组读取；
-- 缺失 `SYSTEM.DBF` 时的全文件扫描重组；
+- 缺失 `SYSTEM.DBF` 时的真实表名、属主、列定义自动还原；当前只能显式使用 storage scan 生成 raw 恢复入口；
 - 直接连接目标 DM 库并执行并发入库；
 - 复杂索引类型的完整还原，例如虚拟索引、函数索引、位图索引。
 
@@ -80,8 +82,16 @@ export TMPDIR=./tmp
 使用以下形式运行：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul <command> ...
+TMPDIR=./tmp ./bin/bic-dmdul <command> ...
 ```
+
+每个子命令执行时都会向 `stderr` 输出版权横幅，例如：
+
+```text
+bic-dmdul 0.1.0 | Copyright (C) 2026 佰晟智算（深圳）技术有限公司 | License: GPL-3.0-or-later
+```
+
+版权横幅写入 `stderr`，不会破坏 `--json` 模式下 stdout 的 JSON 内容。
 
 ### 2.2 数据文件准备
 
@@ -112,7 +122,7 @@ TEMP.DBF
 
 ### 3.1 init.dul
 
-`init.dul` 是 dmdul 的默认参数文件。命令行参数可以覆盖其中部分配置。
+`init.dul` 是 `bic-dmdul` 的默认参数文件。命令行参数可以覆盖其中部分配置。
 
 当前支持的主要参数：
 
@@ -239,7 +249,7 @@ prepare -> bootstrap -> dump-data
 这是推荐方式，应放在 bootstrap 之前执行。适用于大多数直接在故障数据库服务器或数据库文件拷贝目录上提取的场景。
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   prepare \
   --control-file /recovery/dmcopy/dm.ctl \
   --dirlist /recovery/dmcopy \
@@ -257,7 +267,7 @@ TMPDIR=./tmp ./bin/dmdul \
 也可以单独生成文件清单，便于检查：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   write-control-ctl \
   --control-file /recovery/dmcopy/dm.ctl \
   --dirlist /recovery/dmcopy \
@@ -293,7 +303,7 @@ TMPDIR=./tmp ./bin/dmdul \
 如果不显式指定 `--control-file`，也可以直接指定数据库目录。工具会扫描目录中的控制文件和 DBF，并生成 `filelist.dul`：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   prepare \
   --database-dir /recovery/dmcopy \
   --init-output /recovery/work/init.dul \
@@ -310,7 +320,7 @@ TMPDIR=./tmp ./bin/dmdul \
 如果没有控制文件，当前工具会根据目录中的数据文件页头进行识别：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   prepare \
   --dirlist /recovery/dmcopy,/recovery/more_dbs \
   --init-output /recovery/work/init.dul \
@@ -342,7 +352,7 @@ filelist-duplicate-group-file
 命令：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   bootstrap \
   -b \
@@ -383,7 +393,7 @@ TMPDIR=./tmp ./bin/dmdul \
 也可以直接指定数据库目录和输出目录：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   bootstrap \
   /recovery/dmcopy \
   --output-dir /recovery/work/dict \
@@ -413,7 +423,7 @@ TMPDIR=./tmp ./bin/dmdul \
 当 `SYSTEM.DBF` 丢失，或 `SYSOBJECTS/SYSINDEXES/SYSCOLUMNS` 无法完整读取时，不能再生成真实的 owner/table/column 字典。此时可以显式启用扫描模式：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   bootstrap \
   /recovery/dmcopy \
   --output-dir /recovery/work/scan_dict \
@@ -441,7 +451,7 @@ grep '33596007' /recovery/work/scan_dict/tab.dict
 基于扫描字典导出某个 storage 的 raw 行：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   dump-data \
   --dict-dir /recovery/work/scan_dict \
   --output-dir /recovery/work/scan_out \
@@ -507,7 +517,7 @@ DMDUL_TS01.DBF,6,0,DMDUL_TS
 命令：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BMSQL_ORDERS \
@@ -517,14 +527,14 @@ TMPDIR=./tmp ./bin/dmdul \
 `--table` 不区分大小写，下面两种写法等价：
 
 ```sh
-./bin/dmdul --init-file /recovery/work/init.dul dump-data --table BMSQL.BMSQL_ORDERS
-./bin/dmdul --init-file /recovery/work/init.dul dump-data --table bmsql.bmsql_orders
+./bin/bic-dmdul --init-file /recovery/work/init.dul dump-data --table BMSQL.BMSQL_ORDERS
+./bin/bic-dmdul --init-file /recovery/work/init.dul dump-data --table bmsql.bmsql_orders
 ```
 
 如果不使用 init.dul：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   dump-data \
   --dict-dir /recovery/work/dict \
   --output-dir /recovery/work/dulout \
@@ -563,7 +573,7 @@ CREATE TABLE BMSQL.BMSQL_ORDERS (
 对于大表、包含换行/分隔符的字符列、二进制列或大 LOB 的表，推荐使用 row 归档格式：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   dump-data \
   --dict-dir /recovery/work/dict \
   --output-dir /recovery/work/dulout \
@@ -591,7 +601,7 @@ row 归档可以复制到另一台服务器使用；导入端不需要原始 DBF
 从 `.row` 生成导入 SQL：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql
@@ -600,7 +610,7 @@ TMPDIR=./tmp ./bin/dmdul \
 默认会使用 `.row` 文件内的 `CREATE TABLE` 脚本，并生成 `INSERT` 和 `COMMIT`。如果目标库中表已经存在：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
@@ -610,7 +620,7 @@ TMPDIR=./tmp ./bin/dmdul \
 如果需要导入到新表名：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
@@ -620,7 +630,7 @@ TMPDIR=./tmp ./bin/dmdul \
 `import-data` 同时支持 DUL 文本格式和 row 归档格式，默认 `--input-format auto` 会自动识别。已有 DUL 文本导出也可以生成导入 SQL：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.dul \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
@@ -742,7 +752,7 @@ OWNER.BIG_PART_T.row.parts/
 `--table` 可以重复：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BMSQL_ORDERS \
@@ -756,7 +766,7 @@ TMPDIR=./tmp ./bin/dmdul \
 命令：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --user BMSQL \
@@ -768,7 +778,7 @@ TMPDIR=./tmp ./bin/dmdul \
 对于分区表，可以只导出一个 leaf 分区或几个 leaf 分区：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BIG_PART_T \
@@ -779,7 +789,7 @@ TMPDIR=./tmp ./bin/dmdul \
 多个分区可以重复写 `--partition`，也可以使用逗号列表：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BIG_PART_T \
@@ -803,7 +813,7 @@ TMPDIR=./tmp ./bin/dmdul \
 在旧数据页尚未被覆盖时，可以启用显式恢复模式：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table SYSDBA.DMDUL_TRUNC_REC_T \
@@ -822,7 +832,7 @@ TMPDIR=./tmp ./bin/dmdul \
 如果需要人工指定 storage id，也可以使用：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table SYSDBA.DMDUL_TRUNC_REC_T \
@@ -844,7 +854,7 @@ TMPDIR=./tmp ./bin/dmdul \
 如果表已经被 `DROP`，当前在线字典和 bootstrap live 字典可能都找不到完整表入口。此时可以先扫描当前字典没有归属的 storage id：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   scan-orphan-storages \
   --dict-dir /recovery/work/dict \
   --min-pages 4 \
@@ -855,7 +865,7 @@ TMPDIR=./tmp ./bin/dmdul \
 默认不指定过滤条件时，会扫描 `file.dict` 中所有数据文件。如果大致知道表在哪个表空间，可以限制扫描范围：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   scan-orphan-storages \
   --dict-dir /recovery/work/dict \
   --tablespace DMDUL_TS \
@@ -867,7 +877,7 @@ TMPDIR=./tmp ./bin/dmdul \
 也可以直接使用 group/tablespace id：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   scan-orphan-storages \
   --dict-dir /recovery/work/dict \
   --group-id 6 \
@@ -906,7 +916,7 @@ TMPDIR=./tmp ./bin/dmdul \
 确认候选 storage id 后，如果仍有旧字典、raw 字典恢复结果，或用户能提供列定义，可以用手工 storage id 导出：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   dump-data \
   --dict-dir /recovery/work/dict_or_recovered \
   --output-dir /recovery/work/drop_recover \
@@ -932,7 +942,7 @@ TMPDIR=./tmp ./bin/dmdul \
 如果表已经被 DROP，但用户还能提供字段列表，可以让工具对 orphan storage 候选逐个试解码。工具会选择样本行解码成功最多的 storage id，并按该字段列表直接导出：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   recover-orphan-table \
   --dict-dir /recovery/work/dict_after_drop \
   --output-dir /recovery/work/drop_recover \
@@ -950,7 +960,7 @@ TMPDIR=./tmp ./bin/dmdul \
 也可以直接指定已经确认的 storage id：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   recover-orphan-table \
   --dict-dir /recovery/work/dict_after_drop \
   --output-dir /recovery/work/drop_recover \
@@ -977,7 +987,7 @@ TMPDIR=./tmp ./bin/dmdul \
 如果找不到字段定义，也无法人工提供字段列表，工具不能保证自动恢复语义列边界。此时工具只导出 raw 格式：完整物理行 bytes 作为一列保存，同时在 JSON 报告里给出启发式字段候选，供后续人工判断。
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   recover-orphan-table \
   --dict-dir /recovery/work/dict_after_drop \
   --output-dir /recovery/work/drop_recover \
@@ -1044,12 +1054,12 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
   - `DMDUL_HUGE_COMP_T$DAUX`
   - `DMDUL_HUGE_COMP_T$UAUX`
 
-当前验证表明，主表的逻辑行数据存放在 `主表名$RAUX` 中，`$RAUX` 的列结构与主表一致。`bootstrap` 下载字典时会看到主表和这些辅助表；`dmdul` 在装配离线元数据时，如果发现主 HUGE 表没有普通 storage、但存在同 owner 的 `$RAUX` storage，会自动把主表列定义与 `$RAUX` storage 组合成可导出的主表元数据。
+当前验证表明，主表的逻辑行数据存放在 `主表名$RAUX` 中，`$RAUX` 的列结构与主表一致。`bootstrap` 下载字典时会看到主表和这些辅助表；`bic-dmdul` 在装配离线元数据时，如果发现主 HUGE 表没有普通 storage、但存在同 owner 的 `$RAUX` storage，会自动把主表列定义与 `$RAUX` storage 组合成可导出的主表元数据。
 
 因此用户仍然使用主表名导出，不需要手工指定 `$RAUX`：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table SYSDBA.DMDUL_HUGE_COMP_T \
@@ -1074,7 +1084,7 @@ TMPDIR=./tmp ./bin/dmdul \
 当用户下表很多时，可以启用多表并发：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --user BMSQL \
@@ -1099,7 +1109,7 @@ TMPDIR=./tmp ./bin/dmdul \
 对于大型分区表，可以启用表内 split-part 并发：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BIG_PART_T \
@@ -1140,7 +1150,7 @@ BMSQL.BIG_PART_T.row.parts/
 `import-data` 可以直接读取主 manifest，并自动找到 part 子目录：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BIG_PART_T.row \
   --output-sql /recovery/work/dulout/BMSQL.BIG_PART_T.import.sql
@@ -1153,7 +1163,7 @@ TMPDIR=./tmp ./bin/dmdul \
 可以把 JSON 报告写入文件：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --user BMSQL \
@@ -1240,7 +1250,7 @@ table_failed=TEST2.BMSQL_ITEM
 如果希望 page plan 不完整时直接失败：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BMSQL_ORDERS \
@@ -1252,12 +1262,12 @@ TMPDIR=./tmp ./bin/dmdul \
 
 ### 7.10 导入和重装载 SQL
 
-`import-data` 的作用是把 dmdul 导出的文件转换成可在目标 DM 数据库执行的 SQL。当前它不直接连接数据库执行 SQL，而是生成 `.sql` 文件，便于审计、分批执行或后续接入并发执行器。
+`import-data` 的作用是把 bic-dmdul 导出的文件转换成可在目标 DM 数据库执行的 SQL。当前它不直接连接数据库执行 SQL，而是生成 `.sql` 文件，便于审计、分批执行或后续接入并发执行器。
 
 基本命令：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
@@ -1300,7 +1310,7 @@ COMMIT;
 如果目标表已提前建好：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.insert.sql \
@@ -1310,7 +1320,7 @@ TMPDIR=./tmp ./bin/dmdul \
 如果要导入到新表名：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS_REC.import.sql \
@@ -1386,19 +1396,19 @@ LOB 导入规则：
 
 ```sh
 # 单表 row 归档
-dmdul dump-data --dict-dir dict --output-dir out \
+bic-dmdul dump-data --dict-dir dict --output-dir out \
   --table BMSQL.T1 --output-format row
 
 # 用户全量，多表并发
-dmdul dump-data --dict-dir dict --output-dir out \
+bic-dmdul dump-data --dict-dir dict --output-dir out \
   --user BMSQL --parallel 8
 
 # 大分区表，表内并发，每个 worker 写 part
-dmdul dump-data --dict-dir dict --output-dir out \
+bic-dmdul dump-data --dict-dir dict --output-dir out \
   --table BMSQL.BIG_PART_T --partition-parallel 8 --output-format row
 
 # 只导出几个分区，并对这些分区 split-part
-dmdul dump-data --dict-dir dict --output-dir out \
+bic-dmdul dump-data --dict-dir dict --output-dir out \
   --table BMSQL.BIG_PART_T --partition P_LOW,P_HIGH \
   --partition-parallel 2 --output-format row
 ```
@@ -1408,7 +1418,7 @@ dmdul dump-data --dict-dir dict --output-dir out \
 `bootstrap` 的目标是尽快完成表数据恢复所需的核心字典下载，因此不会默认下载 `SYS.SYSTEXTS` 这类只有导出过程源码时才需要的大字段字典表。需要恢复存储过程脚本时，使用 `dump-procedures` 单独执行。该命令会从 `file.dict` 找到 `SYSTEM.DBF`，离线扫描 `SYS.SYSOBJECTS` 和 `SYS.SYSTEXTS`，按 owner 生成脚本：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   dump-procedures \
   --dict-dir /recovery/work/dict \
   --owner SYSDBA \
@@ -1421,7 +1431,7 @@ TMPDIR=./tmp ./bin/dmdul \
 恢复表数据后，如需补建普通索引，使用 `dump-indexes`：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   dump-indexes \
   --dict-dir /recovery/work/dict \
   --owner SYSDBA \
@@ -1510,7 +1520,7 @@ rows_written = 80
 ### 11.1 查看文件信息
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   file-info /recovery/dmcopy/SYSTEM.DBF
 ```
 
@@ -1519,7 +1529,7 @@ TMPDIR=./tmp ./bin/dmdul \
 ### 11.2 dump 单个 page
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   dump-page /recovery/dmcopy/DMDUL_TS01.DBF 80 --bytes 256
 ```
 
@@ -1528,7 +1538,7 @@ TMPDIR=./tmp ./bin/dmdul \
 ### 11.3 inspect page header
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   inspect-page /recovery/dmcopy/DMDUL_TS01.DBF 80 --rows --dump 128
 ```
 
@@ -1537,7 +1547,7 @@ TMPDIR=./tmp ./bin/dmdul \
 ### 11.4 查找字符串 marker
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   find /recovery/dmcopy/SYSTEM.DBF DMDUL_MANY
 ```
 
@@ -1546,7 +1556,7 @@ TMPDIR=./tmp ./bin/dmdul \
 ### 11.5 catalog pages
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   catalog-pages /recovery/dmcopy/DMDUL_TS01.DBF \
   --start-page 0 \
   --max-pages 512 \
@@ -1558,7 +1568,7 @@ TMPDIR=./tmp ./bin/dmdul \
 ### 11.6 analyze-block
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   analyze-block /recovery/dmcopy/DMDUL_TS01.DBF 224 \
   --column ID:INT:4 \
   --column N38:NUMBER:22 \
@@ -1572,7 +1582,7 @@ TMPDIR=./tmp ./bin/dmdul \
 也可以从 `col.dict` 读取列定义：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   analyze-block /recovery/dmcopy/DMDUL_TS01.DBF 224 \
   --columns-jsonl /recovery/work/dict/col.dict
 ```
@@ -1580,7 +1590,7 @@ TMPDIR=./tmp ./bin/dmdul \
 ### 11.7 dump unknown structures
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   dump-unknown-structures /recovery/dmcopy/DMDUL_TS01.DBF \
   --pages 80,81,96-98 \
   --output /recovery/work/unknown_pages.json
@@ -1591,13 +1601,13 @@ TMPDIR=./tmp ./bin/dmdul \
 ### 11.8 summarize / preflight
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   summarize-database /recovery/dmcopy \
   --output /recovery/work/summary.json
 ```
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   preflight-database /recovery/dmcopy \
   --output /recovery/work/preflight.json
 ```
@@ -1613,7 +1623,7 @@ TMPDIR=./tmp ./bin/dmdul \
 示例：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   extract-dicts \
   --dict-dir /recovery/work/dict \
   --output-dir /recovery/work/dulout \
@@ -1629,7 +1639,7 @@ TMPDIR=./tmp ./bin/dmdul \
 示例：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul \
+TMPDIR=./tmp ./bin/bic-dmdul \
   extract-csv \
   --metadata-json /recovery/work/table_metadata.json \
   --table BMSQL.BMSQL_ORDERS \
@@ -1653,7 +1663,7 @@ export TMPDIR=./tmp
 ### 13.2 生成 init.dul 和 filelist.dul
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   prepare \
   --control-file /recovery/dmcopy/dm.ctl \
   --dirlist /recovery/dmcopy \
@@ -1684,7 +1694,7 @@ cat /recovery/work/filelist.dul
 ### 13.4 下载字典
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   bootstrap \
   -b \
@@ -1703,7 +1713,7 @@ head -5 /recovery/work/dict/col.dict
 ### 13.5 先导出一张表试跑
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BMSQL_ORDERS \
@@ -1728,7 +1738,7 @@ cat /recovery/work/dulout/orders_report.json
 ### 13.6 导出用户所有表
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --user BMSQL \
@@ -1742,7 +1752,7 @@ cat /recovery/work/dulout/orders_report.json
 对于包含大字段、二进制字段、LOB、换行或分隔符的表，建议直接导出 row 归档：
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BIG_TABLE \
@@ -1764,7 +1774,7 @@ cat /recovery/work/dulout/orders_report.json
 对于 leaf 分区很多或单表数据很大的分区表：
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BIG_PART_T \
@@ -1786,7 +1796,7 @@ cat /recovery/work/dulout/orders_report.json
 只导出指定分区：
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   --init-file /recovery/work/init.dul \
   dump-data \
   --table BMSQL.BIG_PART_T \
@@ -1801,7 +1811,7 @@ cat /recovery/work/dulout/orders_report.json
 普通 row 归档：
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BIG_TABLE.row \
   --output-sql /recovery/work/dulout/BMSQL.BIG_TABLE.import.sql \
@@ -1811,7 +1821,7 @@ cat /recovery/work/dulout/orders_report.json
 parts manifest：
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BIG_PART_T.row \
   --output-sql /recovery/work/dulout/BMSQL.BIG_PART_T.import.sql \
@@ -1821,7 +1831,7 @@ parts manifest：
 DUL 文本：
 
 ```sh
-./bin/dmdul \
+./bin/bic-dmdul \
   import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.dul \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
@@ -1889,7 +1899,7 @@ TEST2.DMDUL_MANY.dul
 
 ### 15.3 压缩表
 
-当前已验证支持一种达梦压缩表形态：`HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'`。这种表的主对象没有普通 BTREE storage，逻辑行位于内部 `主表名$RAUX` 表中。`dmdul` 会在离线字典装配阶段自动把主表映射到 `$RAUX` storage，用户仍按主表名导出。
+当前已验证支持一种达梦压缩表形态：`HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'`。这种表的主对象没有普通 BTREE storage，逻辑行位于内部 `主表名$RAUX` 表中。`bic-dmdul` 会在离线字典装配阶段自动把主表映射到 `$RAUX` storage，用户仍按主表名导出。
 
 尚未覆盖的压缩相关场景：
 
@@ -1962,7 +1972,7 @@ grep -i 'BMSQL_ORDERS' /recovery/work/dict/col.dict
 可以用：
 
 ```sh
-./bin/dmdul inspect-page /path/to/file.dbf <root_page> --dump 128
+./bin/bic-dmdul inspect-page /path/to/file.dbf <root_page> --dump 128
 ```
 
 ### 16.3 发生 row-decode-error
@@ -1970,7 +1980,7 @@ grep -i 'BMSQL_ORDERS' /recovery/work/dict/col.dict
 使用 report 中的 `page` 和 `offset` 定位：
 
 ```sh
-./bin/dmdul analyze-block /path/to/file.dbf <page_no> \
+./bin/bic-dmdul analyze-block /path/to/file.dbf <page_no> \
   --columns-jsonl /recovery/work/dict/col.dict \
   --max-rows 10
 ```
@@ -1986,7 +1996,7 @@ grep -i 'BMSQL_ORDERS' /recovery/work/dict/col.dict
 部署后建议先执行入口检查：
 
 ```sh
-TMPDIR=./tmp ./bin/dmdul --help
+TMPDIR=./tmp ./bin/bic-dmdul --help
 ```
 
 当前阶段已验证：
@@ -1999,7 +2009,7 @@ TMPDIR=./tmp ./bin/dmdul --help
 
 ```sh
 # 1. prepare
-./bin/dmdul prepare \
+./bin/bic-dmdul prepare \
   --control-file /recovery/dmcopy/dm.ctl \
   --dirlist /recovery/dmcopy \
   --init-output /recovery/work/init.dul \
@@ -2011,49 +2021,49 @@ TMPDIR=./tmp ./bin/dmdul --help
   --json
 
 # 2. bootstrap
-./bin/dmdul --init-file /recovery/work/init.dul \
+./bin/bic-dmdul --init-file /recovery/work/init.dul \
   bootstrap -b --json
 
 # 3. dump one table
-./bin/dmdul --init-file /recovery/work/init.dul \
+./bin/bic-dmdul --init-file /recovery/work/init.dul \
   dump-data --table BMSQL.BMSQL_ORDERS --json
 
 # 4. dump one table as row archive
-./bin/dmdul --init-file /recovery/work/init.dul \
+./bin/bic-dmdul --init-file /recovery/work/init.dul \
   dump-data --table BMSQL.BMSQL_ORDERS \
   --output-format row --json
 
 # 5. dump selected partitions
-./bin/dmdul --init-file /recovery/work/init.dul \
+./bin/bic-dmdul --init-file /recovery/work/init.dul \
   dump-data --table BMSQL.BIG_PART_T \
   --partition P_LOW,P_HIGH --output-format row --json
 
 # 6. dump a large partitioned table with split parts
-./bin/dmdul --init-file /recovery/work/init.dul \
+./bin/bic-dmdul --init-file /recovery/work/init.dul \
   dump-data --table BMSQL.BIG_PART_T \
   --partition-parallel 8 --output-format row --json
 
 # 7. dump one user with workers
-./bin/dmdul --init-file /recovery/work/init.dul \
+./bin/bic-dmdul --init-file /recovery/work/init.dul \
   dump-data --user BMSQL --parallel 8 \
   --report-output /recovery/work/dulout/bmsql_report.json \
   --json
 
 # 8. generate reload SQL
-./bin/dmdul import-data \
+./bin/bic-dmdul import-data \
   --input /recovery/work/dulout/BMSQL.BMSQL_ORDERS.row \
   --output-sql /recovery/work/dulout/BMSQL.BMSQL_ORDERS.import.sql \
   --json
 
 # 9. dump procedures for one owner
-./bin/dmdul dump-procedures \
+./bin/bic-dmdul dump-procedures \
   --dict-dir /recovery/work/dict \
   --owner SYSDBA \
   --output /recovery/work/ddl/SYSDBA.procedures.sql \
   --json
 
 # 10. dump normal indexes for one owner
-./bin/dmdul dump-indexes \
+./bin/bic-dmdul dump-indexes \
   --dict-dir /recovery/work/dict \
   --owner SYSDBA \
   --output /recovery/work/ddl/SYSDBA.indexes.sql \

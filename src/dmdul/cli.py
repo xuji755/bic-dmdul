@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
+from . import __copyright__, __license__, __product__, __version__
 from .block import (
     analyze_data_file_block,
     dump_unknown_data_file_structures,
@@ -431,7 +432,7 @@ def _cmd_write_control_ctl(args: argparse.Namespace) -> int:
     else:
         if args.database_dir is None:
             print(
-                "dmdul: write-control-ctl requires database_dir or --control-file",
+                "bic-dmdul: write-control-ctl requires database_dir or --control-file",
                 file=sys.stderr,
             )
             return 2
@@ -477,7 +478,7 @@ def _cmd_bootstrap_dicts(args: argparse.Namespace) -> int:
         args.download_dictionaries = True
     if args.database_dir is None or args.output_dir is None:
         print(
-            "dmdul: bootstrap requires database_dir and --output-dir, either on the command line or in init.dul",
+            "bic-dmdul: bootstrap requires database_dir and --output-dir, either on the command line or in init.dul",
             file=sys.stderr,
         )
         return 2
@@ -649,7 +650,7 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
     partition_names = _partition_names(args.partition)
     if partition_names and len(tables) != 1:
         print(
-            "dmdul: --partition requires exactly one matched table",
+            "bic-dmdul: --partition requires exactly one matched table",
             file=sys.stderr,
         )
         return 2
@@ -663,26 +664,26 @@ def _cmd_dump_data(args: argparse.Namespace) -> int:
         )
         if not recovery_storage_ids:
             print(
-                "dmdul: --truncate could not determine storage_index_id/storage_index_ids from tab.dict; use --orphan-scan-storage-id explicitly",
+                "bic-dmdul: --truncate could not determine storage_index_id/storage_index_ids from tab.dict; use --orphan-scan-storage-id explicitly",
                 file=sys.stderr,
             )
             return 2
     if recovery_storage_ids or args.truncate:
         if len(tables) != 1:
             print(
-                "dmdul: truncate/orphan recovery requires exactly one matched table",
+                "bic-dmdul: truncate/orphan recovery requires exactly one matched table",
                 file=sys.stderr,
             )
             return 2
         if partition_names:
             print(
-                "dmdul: --orphan-scan-storage-id cannot be combined with --partition",
+                "bic-dmdul: --orphan-scan-storage-id cannot be combined with --partition",
                 file=sys.stderr,
             )
             return 2
         if max(1, args.partition_parallel) > 1:
             print(
-                "dmdul: --orphan-scan-storage-id cannot be combined with --partition-parallel",
+                "bic-dmdul: --orphan-scan-storage-id cannot be combined with --partition-parallel",
                 file=sys.stderr,
             )
             return 2
@@ -772,10 +773,10 @@ def _cmd_dump_scan_storage_dict(
     workers: int,
 ) -> int:
     if args.output_format != "dul":
-        print("dmdul: --scan-storage-dict currently supports only --output-format dul raw_row output", file=sys.stderr)
+        print("bic-dmdul: --scan-storage-dict currently supports only --output-format dul raw_row output", file=sys.stderr)
         return 2
     if args.partition or args.partition_parallel != 1 or args.truncate or args.orphan_scan_storage_id is not None:
-        print("dmdul: --scan-storage-dict cannot be combined with partition/truncate/orphan options", file=sys.stderr)
+        print("bic-dmdul: --scan-storage-dict cannot be combined with partition/truncate/orphan options", file=sys.stderr)
         return 2
     requested = {_normalize_identifier(value) for value in (args.table or ())}
     requested_names = {value.split(".", 1)[-1] for value in requested}
@@ -1093,7 +1094,7 @@ def _cmd_scan_orphan_storages(args: argparse.Namespace) -> int:
     tablespaces = _tablespace_filters(args.tablespace)
     if tablespaces and not _file_dict_has_tablespace_mapping(dict_dir / "file.dict"):
         print(
-            "dmdul: --tablespace requires tablespace_name/tablespace/group_name in file.dict; "
+            "bic-dmdul: --tablespace requires tablespace_name/tablespace/group_name in file.dict; "
             "use --group-id or refresh dictionaries with tablespace metadata",
             file=sys.stderr,
         )
@@ -1140,7 +1141,7 @@ def _cmd_recover_orphan_table(args: argparse.Namespace) -> int:
     tablespaces = _tablespace_filters(args.tablespace)
     if tablespaces and not _file_dict_has_tablespace_mapping(dict_dir / "file.dict"):
         print(
-            "dmdul: --tablespace requires tablespace_name/tablespace/group_name in file.dict; "
+            "bic-dmdul: --tablespace requires tablespace_name/tablespace/group_name in file.dict; "
             "use --group-id or refresh dictionaries with tablespace metadata",
             file=sys.stderr,
         )
@@ -1159,7 +1160,7 @@ def _cmd_recover_orphan_table(args: argparse.Namespace) -> int:
             item for item in candidates if int(item["storage_id"]) == args.storage_id
         ]
     if not candidates:
-        print("dmdul: no orphan storage candidates matched recovery criteria", file=sys.stderr)
+        print("bic-dmdul: no orphan storage candidates matched recovery criteria", file=sys.stderr)
         return 1
 
     if columns:
@@ -1190,7 +1191,7 @@ def _cmd_recover_orphan_table(args: argparse.Namespace) -> int:
             if args.json:
                 print(json.dumps(payload, indent=2, ensure_ascii=False))
             else:
-                print("dmdul: no candidate rows decoded with the supplied columns", file=sys.stderr)
+                print("bic-dmdul: no candidate rows decoded with the supplied columns", file=sys.stderr)
             return 1
         table_name = args.table_name or f"tab_{best['storage_id']}"
         metadata = _metadata_for_orphan_candidate(
@@ -1310,7 +1311,7 @@ def _cmd_dump_procedures(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     emitted = 0
     with output.open("w", encoding="utf-8", newline="\n") as file:
-        file.write(f"-- dmdul procedure DDL export owner={owner}\n")
+        file.write(f"-- bic-dmdul procedure DDL export owner={owner}\n")
         for proc in sorted(procedures, key=lambda item: item.name):
             if proc.object_id is None:
                 continue
@@ -1400,7 +1401,7 @@ def _cmd_dump_indexes(args: argparse.Namespace) -> int:
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8", newline="\n") as file:
-        file.write(f"-- dmdul index DDL export owner={owner}\n")
+        file.write(f"-- bic-dmdul index DDL export owner={owner}\n")
         for statement in statements:
             file.write(statement)
             file.write("\n")
@@ -2232,7 +2233,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
         and args.database_dir is None
     ):
         print(
-            "dmdul: extract-csv requires --metadata-json, --segment-json, or --database-dir",
+            "bic-dmdul: extract-csv requires --metadata-json, --segment-json, or --database-dir",
             file=sys.stderr,
         )
         return 2
@@ -2259,7 +2260,7 @@ def _cmd_extract_csv(args: argparse.Namespace) -> int:
             _write_preflight_output(args.preflight_output, summary, preflight)
             if not preflight["ok"]:
                 print(
-                    "dmdul: extract-csv preflight failed; "
+                    "bic-dmdul: extract-csv preflight failed; "
                     "run preflight-database for the full report",
                     file=sys.stderr,
                 )
@@ -2656,7 +2657,20 @@ def _cmd_find_sysobject_indexes(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="dmdul")
+    parser = argparse.ArgumentParser(
+        prog=__product__,
+        description=(
+            "BIC DM8 offline data extraction tool.\n"
+            f"{__copyright__}.\n"
+            f"License: {__license__}."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"{__product__} {__version__}\n{__copyright__}\nLicense: {__license__}",
+    )
     parser.add_argument(
         "--page-size",
         type=int,
@@ -3204,7 +3218,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_import_data_parser(
         "import-data",
-        "generate SQL from DUL text or binary dmdul row archive",
+        "generate SQL from DUL text or binary bic-dmdul row archive",
     )
     add_import_data_parser(
         "import-row",
@@ -3286,18 +3300,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_copyright_banner() -> None:
+    print(
+        f"{__product__} {__version__} | {__copyright__} | License: {__license__}",
+        file=sys.stderr,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(raw_argv)
     _apply_init_config(args, raw_argv)
+    _print_copyright_banner()
     try:
         return args.func(args)
     except OfflineResolveError as exc:
-        print(f"dmdul: {exc}", file=sys.stderr)
+        print(f"bic-dmdul: {exc}", file=sys.stderr)
         return 2
     except OSError as exc:
-        print(f"dmdul: {exc}", file=sys.stderr)
+        print(f"bic-dmdul: {exc}", file=sys.stderr)
         return 2
 
 

@@ -463,7 +463,7 @@ to explain the underlying database structure.
 - [x] Add CLI command:
 
 ```sh
-dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
+bic-dmdul extract-csv --database-dir ... --table OWNER.TABLE --output table.csv
 ```
 
 - [x] Implement CSV writer with headers and proper escaping for the calibrated

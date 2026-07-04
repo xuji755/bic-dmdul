@@ -1,15 +1,15 @@
-# dmdul Project Goal
+# bic-dmdul Project Goal
 
 ## User-Facing Goal
 
 When a DM8 database instance cannot start, but the database data files are
-intact, `dmdul` should extract all rows from a specified user table and write a
+intact, `bic-dmdul` should extract all rows from a specified user table and write a
 CSV file.
 
 The target workflow is:
 
 ```sh
-dmdul extract-csv \
+bic-dmdul extract-csv \
   --database-dir /dmdata/data/DAMENG \
   --table SYSDBA.T1 \
   --output T1.csv
@@ -17,7 +17,7 @@ dmdul extract-csv \
 
 ## Correctness Goal
 
-`dmdul` is a database-level offline reader, not a byte-pattern file dumper. A
+`bic-dmdul` is a database-level offline reader, not a byte-pattern file dumper. A
 successful extraction must:
 
 - identify the database, tablespaces, files, segments, pages, dictionary rows,
@@ -47,7 +47,7 @@ The project has two correctness milestones:
    point.
 
 Redo log replay is outside the first milestone. If data files require redo to
-reach a consistent committed state, `dmdul` should detect the condition and
+reach a consistent committed state, `bic-dmdul` should detect the condition and
 report it rather than fabricating rows.
 
 ## Non-Negotiable Constraint

@@ -1,6 +1,6 @@
 # DM8 Test Environment
 
-This file records the initial test environment for the `dmdul` project.
+This file records the initial test environment for the `bic-dmdul` project.
 
 ## Host
 
@@ -41,7 +41,7 @@ disql 'SYSDBA/nhYW1]iBg]I!'
 
 ## Project Objective
 
-Build a `dmdul` tool similar in purpose to Oracle DUL:
+Build a `bic-dmdul` tool similar in purpose to Oracle DUL:
 
 - Operate when the DM database cannot start.
 - Discover and parse DM tablespace files or ASM disk groups.

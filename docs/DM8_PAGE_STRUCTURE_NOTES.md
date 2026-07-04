@@ -1,7 +1,7 @@
 # DM8 Page Structure Notes
 
 This note records the current byte-level understanding of DM8 data pages for
-`dmdul`. It is evidence-driven and intentionally separates proven fields from
+`bic-dmdul`. It is evidence-driven and intentionally separates proven fields from
 working candidates.
 
 ## Scope

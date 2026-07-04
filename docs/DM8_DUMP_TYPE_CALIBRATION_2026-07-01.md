@@ -93,7 +93,7 @@ shape when recovering data. Current ordinary row evidence stores `DATE` in a
 3-byte payload and the tested values decode as year/month/day. However,
 `dump(DATE)` reports Typ=14 with a 13-byte logical representation that includes
 additional field positions. If future page-row or dictionary evidence shows a
-wider `DATE` payload, dmdul must preserve and decode those bytes rather than
+wider `DATE` payload, bic-dmdul must preserve and decode those bytes rather than
 discarding them because the visible SQL type name is `DATE`.
 
 ## Offline Row Layout Finding
@@ -253,7 +253,7 @@ OK
 The extractor must preserve what is present in the data file. A decoded value is
 acceptable only when the mapping from bytes to value is understood and does not
 drop information. If a payload contains extra fields, unknown control bytes, LOB
-locators, timezone bytes, or any undecoded suffix, dmdul must export those bytes
+locators, timezone bytes, or any undecoded suffix, bic-dmdul must export those bytes
 verbatim, normally as raw hex, rather than trimming, escaping, summarizing, or
 normalizing them away.
 
@@ -354,7 +354,7 @@ Focused remote fixtures validated the remaining type families:
 
 Observed storage additions:
 
-- `BYTE` is fixed width 1 byte in ordinary rows. dmdul emits it as two hex
+- `BYTE` is fixed width 1 byte in ordinary rows. bic-dmdul emits it as two hex
   digits, preserving the byte value instead of converting it to a numeric
   display.
 - `INTERVAL DAY TO SECOND` is fixed width 24 bytes in the tested row. The first
@@ -366,7 +366,7 @@ Observed storage additions:
   `AAAAAAAAAAAAAAAAAB`.
 - Short `TEXT`, `CLOB`, and `BLOB` values may carry a 13-byte inline LOB prefix:
   one flag byte, eight locator/control bytes, and a 4-byte inline payload
-  length. When this length equals the remaining payload length, dmdul emits only
+  length. When this length equals the remaining payload length, bic-dmdul emits only
   the inline value.
 - The lab database stores non-ASCII character bytes in the GB18030 family. The
   decoder treats ASCII directly, then tries GB18030 before UTF-8 for non-ASCII
@@ -504,7 +504,7 @@ The observed LOB data pages use page kind `0x20`. The LOB id is stored at page
 offset `0x24`, payload length at `0x2c`, and payload bytes start at `0x38`.
 The regular page `next_page` pointer links the data pages. The implementation
 accepts this narrow shape only: group id, file hint, page number, page kind,
-LOB id, and payload bounds must all match. If any check fails, dmdul still
+LOB id, and payload bounds must all match. If any check fails, bic-dmdul still
 writes the raw locator as `<column>.locator.hex`, emits
 `status="unresolved-locator"` in the manifest, and adds the strict error
 diagnostic `lob-locator-not-followed`.
@@ -581,7 +581,7 @@ current table row page: 1776
 ```
 
 This confirms the extraction rule: do not scan and export arbitrary LOB pages.
-For current committed table data, dmdul must decode the active row first, then
+For current committed table data, bic-dmdul must decode the active row first, then
 follow only the locator stored in that active row. Old LOB page chains can
 remain in the data file and must not be treated as current table values.
 
