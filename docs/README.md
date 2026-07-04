@@ -28,6 +28,8 @@ This page is the documentation hub for `bic-dmdul`. It keeps the original resear
 | Document | Type | Primary Language | 中文阅读说明 | English Reading Guide |
 | --- | --- | --- | --- | --- |
 | [USER_MANUAL_CN.md](USER_MANUAL_CN.md) | Manual | Chinese | 命令行使用手册，覆盖 bootstrap、导出、导入、LOB、分区、TRUNCATE/DROP 恢复、过程和索引 DDL。 | Main operator manual. Use [README_EN.md](README_EN.md#operator-guide) for English command navigation. |
+| [BIC_DMDUL_E2E_TEST_PLAN_CN.md](BIC_DMDUL_E2E_TEST_PLAN_CN.md) | Test plan | Chinese | 完整链路测试方案，覆盖导出、导入、数据比对、索引和存储过程重建。 | Full end-to-end test plan. See [BIC_DMDUL_E2E_TEST_PLAN_EN.md](BIC_DMDUL_E2E_TEST_PLAN_EN.md) for English summary. |
+| [BIC_DMDUL_E2E_TEST_PLAN_EN.md](BIC_DMDUL_E2E_TEST_PLAN_EN.md) | Test plan index | English | 完整链路测试方案英文索引。 | English summary and pointer for the full E2E test plan. |
 | [DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md](DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md) | Storage summary | Chinese | 最新 DM8 文件、页、行、LOB、字典、恢复模式总结。 | Latest storage-format summary. See [README_EN.md](README_EN.md#storage-architecture-and-format) for English overview. |
 | [DM8_BOOTSTRAP_STANDARD_TABLE_DOWNLOAD.md](DM8_BOOTSTRAP_STANDARD_TABLE_DOWNLOAD.md) | Design note | Chinese | bootstrap 字典下载和标准表下载路径设计。 | Bootstrap dictionary download and standard table extraction design. |
 | [DM8_STORAGE_ARCHITECTURE_NOTES.md](DM8_STORAGE_ARCHITECTURE_NOTES.md) | Deep research note | English | 存储架构深度笔记，记录大量原始证据和假设。 | Deep storage architecture research note with evidence and hypotheses. |

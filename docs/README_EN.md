@@ -16,6 +16,7 @@ This page organizes the full `bic-dmdul` documentation set for English readers. 
 | Document | English Reading Guide |
 | --- | --- |
 | [USER_MANUAL_CN.md](USER_MANUAL_CN.md) | Main operator manual. It covers `prepare`, `bootstrap`, `dump-data`, `import-data`, partition export, LOB attachments, TRUNCATE/DROP recovery, procedure DDL, and index DDL. Command examples are directly usable even if the prose is Chinese. |
+| [BIC_DMDUL_E2E_TEST_PLAN_EN.md](BIC_DMDUL_E2E_TEST_PLAN_EN.md) | English summary of the full E2E test plan. The detailed executable design is in [BIC_DMDUL_E2E_TEST_PLAN_CN.md](BIC_DMDUL_E2E_TEST_PLAN_CN.md). |
 | [TEST_ENVIRONMENT.md](TEST_ENVIRONMENT.md) | Test host, DM8 instance, data-file locations, and exploration environment. |
 
 ## Storage Architecture And Format

@@ -15,6 +15,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [USER_MANUAL_CN.md](USER_MANUAL_CN.md) | `bic-dmdul` 中文使用手册，覆盖 `prepare`、`bootstrap`、`dump-data`、`import-data`、分区导出、LOB 附件、TRUNCATE/DROP 恢复、过程和索引 DDL。 |
+| [BIC_DMDUL_E2E_TEST_PLAN_CN.md](BIC_DMDUL_E2E_TEST_PLAN_CN.md) | 完整链路测试方案，要求导出、导入、目标用户重建和源目标比对，覆盖索引和存储过程。 |
 | [TEST_ENVIRONMENT.md](TEST_ENVIRONMENT.md) | 测试环境、DM8 实例、数据文件位置和研究背景。 |
 
 ## DM8 存储结构

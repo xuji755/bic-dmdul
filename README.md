@@ -47,6 +47,7 @@ The documentation set is organized by audience:
 | Need | 中文入口 | English Entry |
 | --- | --- | --- |
 | Install, bootstrap, dump, import, recovery commands | [中文使用手册](docs/USER_MANUAL_CN.md) | [English command guide in docs index](docs/README_EN.md#operator-guide) |
+| Full export/import/compare validation | [完整链路测试方案](docs/BIC_DMDUL_E2E_TEST_PLAN_CN.md) | [E2E test plan summary](docs/BIC_DMDUL_E2E_TEST_PLAN_EN.md) |
 | Current DM8 storage conclusions | [DM8 存储格式阶段性总结](docs/DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md) | [Storage documents map](docs/README_EN.md#storage-architecture-and-format) |
 | Research tasks and roadmap | [中文索引：研究与路线图](docs/README_CN.md#研究路线图与任务) | [English index: roadmap and tasks](docs/README_EN.md#roadmap-and-tasks) |
 | Evidence capture and validation | [中文索引：证据与校准](docs/README_CN.md#证据校准与测试环境) | [English index: evidence and calibration](docs/README_EN.md#evidence-calibration-and-test-environment) |
