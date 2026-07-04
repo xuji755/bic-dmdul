@@ -19,8 +19,8 @@ END_TAG = b"E"
 NONE_I32 = -1
 SQL_STRING_LITERAL_CHUNK_CHARS = 1000
 SQL_BLOCK_TEXT_THRESHOLD_CHARS = 2000
-SQL_BLOCK_TEXT_CHUNK_CHARS = 500
-SQL_BLOCK_BLOB_HEX_CHUNK_CHARS = 1000
+SQL_BLOCK_TEXT_CHUNK_CHARS = 200
+SQL_BLOCK_BLOB_HEX_CHUNK_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -749,16 +749,21 @@ def _detect_delimiter(header_line: str) -> str:
 
 def _resolve_input_format(input_path: Path, input_format: str) -> str:
     if input_format != "auto":
+        if input_format in {"row", "dul"} and _is_parts_manifest(input_path):
+            return "parts"
         return input_format
     with input_path.open("rb") as file:
         prefix = file.read(len(MAGIC))
     if prefix == MAGIC:
         return "row"
-    with input_path.open("r", encoding="utf-8", errors="ignore") as file:
-        first_line = file.readline().strip()
-    if first_line == "DMDUL-PARTS 1":
+    if _is_parts_manifest(input_path):
         return "parts"
     return "dul"
+
+
+def _is_parts_manifest(input_path: Path) -> bool:
+    with input_path.open("r", encoding="utf-8", errors="ignore") as file:
+        return file.readline().strip() == "DMDUL-PARTS 1"
 
 
 def _read_parts_manifest(input_path: Path) -> dict[str, object]:

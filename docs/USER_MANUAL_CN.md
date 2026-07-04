@@ -2,7 +2,7 @@
 
 本文档说明 `bic-dmdul` 当前阶段的完整使用方法。`bic-dmdul` 是佰晟智算（深圳）技术有限公司开发的、面向达梦 DM8 数据文件的离线数据导出工具，目标是在数据库实例不能正常启动、但数据文件仍可读取的情况下，从数据文件中恢复系统字典并导出用户表数据。
 
-版权信息：`Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.`。开源协议：`GPL-3.0-or-later`。
+版权信息：`Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.`。官方网站：[www.dbaiops.com](https://www.dbaiops.com)。开源协议：`GPL-3.0-or-later`。
 
 免责说明：`bic-dmdul` 是达梦数据库灾难拯救工具。由于故障场景可能包含介质损坏、文件缺失、字典损坏、页面覆盖、事务状态不一致等复杂情况，本工具不承诺任何情况下都能无损、完整或正确恢复数据。完整免责说明见 [../NOTICE.md](../NOTICE.md)。
 
@@ -20,7 +20,6 @@
 - 支持 DUL 文本、二进制 row 归档、parts manifest 三种导出结构；
 - 支持从 DUL/row/parts 生成重装载 SQL；
 - 支持已验证的短内联 LOB 和 out-of-line LOB 页链读取；
-- 支持已验证的压缩 `HUGE TABLE` 主表导出，工具会自动映射到内部 `$RAUX` 行存储。
 - 支持按需导出指定用户的存储过程 DDL 和普通索引 DDL。
 
 当前暂不作为主流程支持：
@@ -29,6 +28,7 @@
 - 缺失 `SYSTEM.DBF` 时的真实表名、属主、列定义自动还原；当前只能显式使用 storage scan 生成 raw 恢复入口；
 - 直接连接目标 DM 库并执行并发入库；
 - 复杂索引类型的完整还原，例如虚拟索引、函数索引、位图索引。
+- 压缩 `HUGE TABLE` 主链路导出。2026-07-04 全面测试中，`SYSDBA.DMDUL_HUGE_COMP_T` 在线可读且有 5000 行，但离线 bootstrap 解析到 `group=4,file=65535`，当前 `file.dict` 无法映射该 HUGE 存储入口，因此未生成可导出的表字典。这是当前遗留问题，不能宣称已支持。
 
 ## 1. 基本原则
 
@@ -92,7 +92,7 @@ TMPDIR=./tmp ./bin/bic-dmdul <command> ...
 每个子命令执行时都会向 `stderr` 输出版权横幅，例如：
 
 ```text
-bic-dmdul 0.1.0 | Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd. | License: GPL-3.0-or-later
+bic-dmdul 0.1.0 | Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd. | Website: https://www.dbaiops.com | License: GPL-3.0-or-later
 ```
 
 版权横幅写入 `stderr`，不会破坏 `--json` 模式下 stdout 的 JSON 内容。
@@ -1034,9 +1034,9 @@ raw_row
 - raw 行保留完整物理 bytes，即使字段候选猜错，也不会破坏可恢复数据；
 - 后续可根据 `inferred_columns` 生成二次解析脚本或人工补充 `--column` 后重新执行字段列表适配导出。
 
-### 7.6 导出压缩 HUGE 表
+### 7.6 压缩 HUGE 表当前遗留问题
 
-达梦压缩 `HUGE TABLE` 不是普通 BTREE 表段。已验证的建表语法示例：
+达梦压缩 `HUGE TABLE` 不是普通 BTREE 表段。当前测试库中的典型建表语法示例：
 
 ```sql
 CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
@@ -1048,7 +1048,7 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
 ) COMPRESS LEVEL 1 FOR 'QUERY LOW';
 ```
 
-在线字典中该表表现为：
+在线字典中该类表可能表现为：
 
 - `DBA_TABLES.COMPRESSION = ENABLED`；
 - 主表在 `DBA_SEGMENTS` 中可能显示 `HEADER_FILE=-1`、`HEADER_BLOCK=-1`、`BYTES=0`；
@@ -1058,9 +1058,17 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
   - `DMDUL_HUGE_COMP_T$DAUX`
   - `DMDUL_HUGE_COMP_T$UAUX`
 
-当前验证表明，主表的逻辑行数据存放在 `主表名$RAUX` 中，`$RAUX` 的列结构与主表一致。`bootstrap` 下载字典时会看到主表和这些辅助表；`bic-dmdul` 在装配离线元数据时，如果发现主 HUGE 表没有普通 storage、但存在同 owner 的 `$RAUX` storage，会自动把主表列定义与 `$RAUX` storage 组合成可导出的主表元数据。
+早期探索曾假设主表逻辑行可通过 `主表名$RAUX` 辅助表映射导出。但 2026-07-04 全面测试重新验证后，当前代码不能把该路径作为已支持能力：
 
-因此用户仍然使用主表名导出，不需要手工指定 `$RAUX`：
+- 源表 `SYSDBA.DMDUL_HUGE_COMP_T` 在线可读，行数为 5000；
+- `bootstrap` 能看到对象线索，但解析到 `group=4,file=65535`；
+- 当前控制文件/数据文件清单中没有可直接对应的 file id；
+- `tab.dict`、`col.dict` 未生成该表的可导出元数据；
+- `dump-data` 找不到该表，因此没有生成 `.row` 导出文件。
+
+因此当前版本不要把压缩 `HUGE TABLE` 当作已支持主流程。遇到这类表时，应保留 `bootstrap` JSON、`file.dict`、相关在线字典查询和页面证据，作为后续 HUGE 存储入口解析的研发输入。
+
+当前如果仍执行：
 
 ```sh
 TMPDIR=./tmp ./bin/bic-dmdul \
@@ -1071,17 +1079,19 @@ TMPDIR=./tmp ./bin/bic-dmdul \
   --json
 ```
 
-已验证用例：
+预期结果不是成功导出，而是可能出现表字典缺失或 storage/file 映射失败诊断。不要把空导出当作恢复成功。
 
-| 表 | 类型 | 行数 | 导出结果 | 导入比对 |
+当前遗留问题记录：
+
+| 表 | 类型 | 在线行数 | 当前离线结果 | 状态 |
 | --- | --- | ---: | --- | --- |
-| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `rows_written=5000`, `decode_error=0` | 导入 `DMTEST.DMDUL_HUGE_COMP_T_RT` 后双向 `MINUS=0` |
+| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `bootstrap` 解析到 `group=4,file=65535`，未生成可导出表字典 | 遗留问题，暂不支持 |
 
 注意：
 
 - 普通 `CREATE TABLE ... COMPRESS` 在当前测试库中并未让 `DBA_TABLES.COMPRESSION` 变为 `ENABLED`，不能作为压缩表测试依据。
 - `COMPRESS_MODE=1` 是建表缺省压缩参数，但当前测试中普通表仍显示 `COMPRESSION=DISABLED`。
-- 当前支持结论只覆盖已验证的压缩 `HUGE TABLE` + `$RAUX` 行存储形态。其他压缩等级、列级压缩、`QUERY HIGH`、带分区/LOB 的 HUGE 压缩表还需要独立测试。
+- 压缩 `HUGE TABLE`、其他压缩等级、列级压缩、`QUERY HIGH`、带分区/LOB 的 HUGE 压缩表都需要独立研发和测试。
 
 ### 7.7 并发导出
 
@@ -1903,10 +1913,12 @@ TEST2.DMDUL_MANY.dul
 
 ### 15.3 压缩表
 
-当前已验证支持一种达梦压缩表形态：`HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'`。这种表的主对象没有普通 BTREE storage，逻辑行位于内部 `主表名$RAUX` 表中。`bic-dmdul` 会在离线字典装配阶段自动把主表映射到 `$RAUX` storage，用户仍按主表名导出。
+当前普通 BTREE 表链路已经完成导出、导入、比对测试，但压缩表不能泛化为已支持。尤其是达梦 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 在 2026-07-04 全面测试中暴露出 `group=4,file=65535` 的 HUGE 存储入口映射问题，当前不能按主表名完成离线导出。
 
-尚未覆盖的压缩相关场景：
+当前压缩相关遗留范围：
 
+- HUGE 存储入口 `file=65535` 的控制文件/空间映射；
+- `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 主表导出；
 - `QUERY HIGH`；
 - 列级压缩或 `EXCEPT` 列排除；
 - 压缩 HUGE 分区表；

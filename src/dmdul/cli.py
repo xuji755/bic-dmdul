@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
-from . import __copyright__, __license__, __product__, __version__
+from . import __copyright__, __license__, __product__, __version__, __website__
 from .block import (
     analyze_data_file_block,
     dump_unknown_data_file_structures,
@@ -2662,6 +2662,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "BIC DM8 offline data extraction tool.\n"
             f"{__copyright__}\n"
+            f"Website: {__website__}\n"
             f"License: {__license__}."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2669,7 +2670,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"{__product__} {__version__}\n{__copyright__}\nLicense: {__license__}",
+        version=f"{__product__} {__version__}\n{__copyright__}\nWebsite: {__website__}\nLicense: {__license__}",
     )
     parser.add_argument(
         "--page-size",
@@ -3302,7 +3303,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _print_copyright_banner() -> None:
     print(
-        f"{__product__} {__version__} | {__copyright__} | License: {__license__}",
+        f"{__product__} {__version__} | {__copyright__} | Website: {__website__} | License: {__license__}",
         file=sys.stderr,
     )
 

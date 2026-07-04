@@ -190,7 +190,7 @@
 - 多分区 LIST 导入后仅包含指定分区集合。
 - parts manifest 中列出的 part 文件完整存在，导入工具可自动找到并导入。
 
-### 4.5 压缩 HUGE 表
+### 4.5 压缩 HUGE 表遗留验证
 
 表名：`DMDUL_E2E_HUGE_COMP`
 
@@ -207,6 +207,18 @@ CREATE HUGE TABLE DMDUL_E2E_HUGE_COMP (
 数据规模：
 
 - 至少 10,000 行。
+
+当前状态：
+
+- 2026-07-04 全面测试使用既有 `SYSDBA.DMDUL_HUGE_COMP_T` 验证，在线行数为 5000；
+- `bootstrap` 解析到 `group=4,file=65535`；
+- 当前 `file.dict` 无法映射该 HUGE 存储入口，未生成可导出表字典；
+- 该场景暂列为遗留问题，不能作为第一阶段通过项。
+
+通过标准：
+
+- 在实现 HUGE 存储入口解析前，本场景应稳定输出明确诊断，不得把空导出视为成功；
+- 后续实现后，必须按完整链路重新验证：导出、导入目标用户、源目标双向 `MINUS=0/0`。
 
 通过标准：
 
@@ -556,7 +568,6 @@ PYTHONPATH=src python3 tests/e2e/run_dm8_e2e.py --run-id <run_id>
 - `DMDUL_E2E_BIG`：50,000 行，多 extent，row 格式导出导入比对。
 - `DMDUL_E2E_LOB`：CLOB/BLOB 附件导出导入和 sha256 比对。
 - `DMDUL_E2E_PART_RANGE_HASH`：全表导出、指定分区导出、parts 并发导出。
-- `DMDUL_E2E_HUGE_COMP`：压缩 HUGE 表 `$RAUX` 路径。
 - `DMDUL_E2E_TRUNC`：普通表和分区表 truncate 恢复。
 - `DMDUL_E2E_DROP`：有字段列表 orphan 恢复。
 - `DMDUL_E2E_PROC_SUMMARY`：过程导出、重建、执行输出比对。
@@ -568,4 +579,5 @@ PYTHONPATH=src python3 tests/e2e/run_dm8_e2e.py --run-id <run_id>
 - ASM 磁盘组。
 - 加密表。
 - 所有复杂索引类型重建。
+- 压缩 `HUGE TABLE` 存储入口解析，包括当前暴露的 `group=4,file=65535` 场景。
 - 所有未知压缩形态。

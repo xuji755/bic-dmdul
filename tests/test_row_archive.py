@@ -282,8 +282,8 @@ class RowArchiveTest(unittest.TestCase):
             sql = sql_path.read_text(encoding="utf-8")
 
         self.assertIn("DECLARE\n  V_C1 VARCHAR(32767);\nBEGIN\n", sql)
-        self.assertIn("  V_C1 := '{}';\n".format("A" * 500), sql)
-        self.assertIn("  V_C1 := V_C1 || '{}';\n".format("A" * 5), sql)
+        self.assertIn("  V_C1 := '{}';\n".format("A" * 200), sql)
+        self.assertIn("  V_C1 := V_C1 || '{}';\n".format("A" * 105), sql)
         self.assertIn("INSERT INTO SYSDBA.DMDUL_LONG (PAD) VALUES (V_C1);", sql)
         self.assertNotIn("'" + long_value + "'", sql)
 
@@ -308,6 +308,6 @@ class RowArchiveTest(unittest.TestCase):
 
         self.assertIn("DECLARE\n  V_C1 BLOB;\nBEGIN\n", sql)
         self.assertIn("DBMS_LOB.CREATETEMPORARY(V_C1, TRUE);", sql)
-        self.assertIn("DBMS_LOB.WRITEAPPEND(V_C1, 500, HEXTORAW('", sql)
+        self.assertIn("DBMS_LOB.WRITEAPPEND(V_C1, 200, HEXTORAW('", sql)
         self.assertIn("INSERT INTO SYSDBA.DMDUL_BLOB (BIN) VALUES (V_C1);", sql)
         self.assertIn("DBMS_LOB.FREETEMPORARY(V_C1);", sql)

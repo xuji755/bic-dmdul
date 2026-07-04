@@ -4,17 +4,27 @@
 
 `bic-dmdul` is a DM8 offline data extraction tool developed by Baisheng Intelligent Computing (Shenzhen) Co., Ltd. Its role is similar to Oracle DUL.
 
+官方网站 / Website: [www.dbaiops.com](https://www.dbaiops.com)
+
 当 DM 数据库实例无法启动、但数据文件或 ASM 磁盘组仍可读取时，`bic-dmdul` 的目标是直接从底层存储中恢复系统字典、定位用户表存储对象，并导出表数据、LOB 附件和可重装载 SQL。
 
 When a DM database instance cannot start but the data files or ASM disk groups are still readable, `bic-dmdul` is designed to recover dictionary metadata, locate table storage objects, and export table rows, LOB attachments, and reloadable SQL directly from storage.
 
 ## License
 
-版权所有 (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.
+项目名称：`bic-dmdul`
 
-本项目采用 GNU General Public License v3.0 or later，详见 [LICENSE](LICENSE)。开源版权声明见 [NOTICE.md](NOTICE.md)。
+版权所有 (C) 2026 佰晟智算（深圳）技术有限公司。
+
+开发者：佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.
+
+官方网站：[www.dbaiops.com](https://www.dbaiops.com)
+
+本项目采用 GNU General Public License 第 3 版或后续版本（`GPL-3.0-or-later`）开源。你可以依照 GPL 协议的条款重新发布和/或修改本程序，完整协议文本见 [LICENSE](LICENSE)。
 
 `bic-dmdul` 是数据库灾难拯救工具，故障场景可能导致无法无损恢复；关于数据损失、恢复不完整或恢复错误的免责说明见 [NOTICE.md](NOTICE.md)。
+
+本程序按“原样”发布，不提供任何担保，包括但不限于适销性或特定用途适用性的默示担保。完整开源版权声明见 [NOTICE.md](NOTICE.md)。
 
 ## Command
 

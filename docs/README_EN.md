@@ -2,6 +2,8 @@
 
 This page organizes the full `bic-dmdul` documentation set for English readers. Some operator-facing and summary documents are written in Chinese because the project is driven by a Chinese DM8 recovery workflow; this index provides English reading guidance for every document and keeps original filenames stable for evidence traceability.
 
+Website: [www.dbaiops.com](https://www.dbaiops.com)
+
 ## Quick Start
 
 - [Documentation home](README.md): bilingual documentation hub.

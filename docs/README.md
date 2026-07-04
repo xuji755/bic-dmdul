@@ -4,6 +4,8 @@ This page is the documentation hub for `bic-dmdul`. It keeps the original resear
 
 本页是 `bic-dmdul` 的文档中心。现有探索笔记保留原文件名和原始证据上下文，同时通过双语索引覆盖仓库内全部技术文档，便于中英文阅读。
 
+Website / 官方网站: [www.dbaiops.com](https://www.dbaiops.com)
+
 ## Language Entry / 语言入口
 
 - [中文文档索引](README_CN.md)
@@ -58,5 +60,7 @@ This page is the documentation hub for `bic-dmdul`. It keeps the original resear
 ---
 
 Copyright (C) 2026 佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.
+
+Website: https://www.dbaiops.com
 
 License: GPL-3.0-or-later.

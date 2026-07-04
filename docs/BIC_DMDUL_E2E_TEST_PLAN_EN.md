@@ -23,7 +23,7 @@ The test plan verifies the full recovery chain:
 - Large multi-extent table.
 - CLOB/BLOB table with inline, out-of-line, updated, and NULL LOBs.
 - Range, list, and range-hash partitioned tables.
-- Compressed `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'`.
+- Compressed `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` as a known limitation scenario until HUGE storage-entry mapping is implemented.
 - TRUNCATE recovery.
 - DROP/orphan storage recovery.
 - Stored procedure DDL extraction and rebuild.
@@ -33,5 +33,9 @@ The test plan verifies the full recovery chain:
 ## Primary Acceptance Rule
 
 A scenario is not considered passed merely because export completed. It passes only when the exported data is imported into a target user and compared back to the source or the saved pre-incident snapshot.
+
+## Current Known Limitation
+
+The July 4, 2026 full test run did not pass the compressed HUGE table scenario. `SYSDBA.DMDUL_HUGE_COMP_T` was readable online with 5000 rows, but offline bootstrap resolved its storage as `group=4,file=65535`; the current `file.dict` mapping cannot resolve that HUGE storage entry, so no exportable table dictionary was produced. This remains a known issue and must not be reported as supported until the HUGE storage mapping is implemented and retested through export, import, and bidirectional comparison.
 
 For details, use [BIC_DMDUL_E2E_TEST_PLAN_CN.md](BIC_DMDUL_E2E_TEST_PLAN_CN.md).

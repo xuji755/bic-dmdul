@@ -95,7 +95,7 @@ Later versions should handle:
 - partitioned tables;
 - secondary index assisted lookup;
 - LOB and long row storage;
-- compressed tables beyond the verified HUGE TABLE `$RAUX` storage mapping;
+- compressed and HUGE tables, including the current unresolved `group=4,file=65535` HUGE storage-entry mapping;
 - encrypted tablespaces;
 - damaged but partially readable data files;
 - dictionary bootstrap without any hard-coded system table root pages.

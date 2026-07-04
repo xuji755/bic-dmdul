@@ -30,6 +30,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(json.loads(stdout.getvalue()), [])
         self.assertIn("bic-dmdul 0.1.0", stderr.getvalue())
         self.assertIn("Copyright (C) 2026 佰晟智算（深圳）技术有限公司", stderr.getvalue())
+        self.assertIn("Website: https://www.dbaiops.com", stderr.getvalue())
         self.assertIn("License: GPL-3.0-or-later", stderr.getvalue())
 
     def test_summarize_control_file_writes_json(self) -> None:
@@ -608,6 +609,7 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn("Copyright (C) 2026 佰晟智算（深圳）技术有限公司", stderr.getvalue())
+        self.assertIn("Website: https://www.dbaiops.com", stderr.getvalue())
         self.assertEqual(manifest["database_dir"], str(root))
         self.assertEqual(manifest["rows"]["tab.dict"], 2)
         self.assertEqual(manifest["rows"]["col.dict"], 1)
@@ -1401,6 +1403,8 @@ class CliTest(unittest.TestCase):
                     "import-data",
                     "--input",
                     str(parts_manifest),
+                    "--input-format",
+                    "row",
                     "--output-sql",
                     str(import_sql),
                     "--json",

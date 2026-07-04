@@ -216,16 +216,26 @@ def extract_csv_with_calibrated_metadata(
                 table=table,
                 partition_names=partition_names,
             )
+            selected_plan = _walk_leaf_chain(
+                data_files=data_files,
+                start_pages=selected_refs,
+                mode="segment-manifest-page-ref-walk",
+            )
             page_plan = PagePlan(
-                pages=selected_refs,
+                pages=selected_plan.pages,
                 diagnostics=page_plan.diagnostics
+                + selected_plan.diagnostics
                 + (
                     {
                         "level": "info",
                         "code": "page-plan-partition-filter",
                         "message": "planned pages were filtered by requested partition names",
                         "partition_names": list(partition_names),
-                        "pages_planned": len(selected_refs),
+                        "partition_roots": [
+                            {"file_no": item.file_no, "page_no": item.page_no}
+                            for item in selected_refs
+                        ],
+                        "pages_planned": len(selected_plan.pages),
                     },
                 ),
                 mode=f"{page_plan.mode}-partition-filter",
@@ -460,16 +470,26 @@ def extract_split_parts_with_calibrated_metadata(
             table=table,
             partition_names=partition_names,
         )
+        selected_plan = _walk_leaf_chain(
+            data_files=data_files,
+            start_pages=selected_refs,
+            mode="segment-manifest-page-ref-walk",
+        )
         page_plan = PagePlan(
-            pages=selected_refs,
+            pages=selected_plan.pages,
             diagnostics=page_plan.diagnostics
+            + selected_plan.diagnostics
             + (
                 {
                     "level": "info",
                     "code": "page-plan-partition-filter",
                     "message": "planned pages were filtered by requested partition names",
                     "partition_names": list(partition_names),
-                    "pages_planned": len(selected_refs),
+                    "partition_roots": [
+                        {"file_no": item.file_no, "page_no": item.page_no}
+                        for item in selected_refs
+                    ],
+                    "pages_planned": len(selected_plan.pages),
                 },
             ),
             mode=f"{page_plan.mode}-partition-filter",

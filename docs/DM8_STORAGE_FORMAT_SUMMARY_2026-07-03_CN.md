@@ -132,7 +132,7 @@ SYSINDEXES:  storage id, group id, root file, root page
 
 `bootstrap` 会把分区表所有叶子 root 写入 `tab.dict.page_refs`，后续 `dump-data` 直接按这些 page refs 导出。
 
-### 4.1 压缩 HUGE 表定位
+### 4.1 压缩 HUGE 表定位遗留问题
 
 已验证达梦压缩 `HUGE TABLE` 与普通 BTREE 表段不同。测试语法：
 
@@ -156,23 +156,24 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
   - `DMDUL_HUGE_COMP_T$DAUX`
   - `DMDUL_HUGE_COMP_T$UAUX`
 
-当前验证结论：
+当前结构观察：
 
 - 主表对象保存逻辑列定义；
-- `$RAUX` 辅助表保存真实逻辑行，列结构与主表一致；
-- `$RAUX` 有普通 BTREE storage root，可按现有 page plan 导出；
-- `bic-dmdul` 离线装配元数据时，如果主表没有普通 storage、同 owner 存在 `主表名$RAUX` 且主表有列定义，会使用主表列定义 + `$RAUX` storage 作为主表导出入口。
+- 可能存在 `$AUX`、`$RAUX`、`$DAUX`、`$UAUX` 等内部辅助对象；
+- 主表不呈现普通 BTREE storage；
+- HUGE 存储入口可能不使用普通数据文件编号。
 
-验证结果：
+2026-07-04 全面测试结果：
 
-| 表 | 类型 | 行数 | 导出结果 | 导入比对 |
+| 表 | 类型 | 在线行数 | 离线结果 | 结论 |
 | --- | --- | ---: | --- | --- |
-| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `rows_written=5000`, `decode_error=0` | 导入 `DMTEST.DMDUL_HUGE_COMP_T_RT` 后双向 `MINUS=0` |
+| `SYSDBA.DMDUL_HUGE_COMP_T` | `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` | 5000 | `bootstrap` 解析到 `group=4,file=65535`，当前 `file.dict` 无对应文件，未生成可导出表字典 | 遗留问题，暂不支持 |
 
 边界：
 
 - 普通 `CREATE TABLE ... COMPRESS` 在当前测试库中没有让 `DBA_TABLES.COMPRESSION` 变为 `ENABLED`；
 - `COMPRESS_MODE=1` 能设置参数值，但普通表仍显示 `COMPRESSION=DISABLED`；
+- HUGE 表 `file=65535` 存储入口映射尚未解析；
 - `QUERY HIGH`、列级压缩、带分区或 LOB 的压缩 HUGE 表尚未验证。
 
 ## 5. BTREE 表页与 page plan
@@ -633,4 +634,5 @@ row 归档可以脱离原始 DBF 复制到另一台服务器。`import-data` 默
 - ASM 磁盘组读取尚未实现。
 - 未提交事务、异常崩溃中间态、回滚未清理版本仍需单独实验。
 - row tail/control 与完整 MVCC/undo 可见性尚未完全解析。
-- 已验证压缩 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 可通过 `$RAUX` storage 导出；其他压缩形态、加密、特殊迁移行、跨文件 LOB 链尚未覆盖。
+- 压缩 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 当前未通过全面测试：`SYSDBA.DMDUL_HUGE_COMP_T` 在线 5000 行，但离线 bootstrap 解析到 `group=4,file=65535` 且无法映射到普通 file.dict，未生成可导出表字典。HUGE/压缩表作为遗留问题，不应宣称已支持。
+- 其他压缩形态、加密、特殊迁移行、跨文件 LOB 链尚未覆盖。

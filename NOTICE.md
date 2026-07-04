@@ -6,9 +6,11 @@ Project: `bic-dmdul`
 
 Copyright (C) 2026 Baisheng Intelligent Computing (Shenzhen) Co., Ltd.
 
-Developer: Baisheng Intelligent Computing (Shenzhen) Co., Ltd.
+Developer: Baisheng Intelligent Computing (Shenzhen) Co., Ltd. / 佰晟智算（深圳）技术有限公司
 
-This project is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`). You may redistribute and/or modify this program under the terms of the GPL.
+Website: [www.dbaiops.com](https://www.dbaiops.com)
+
+This project is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`). You may redistribute and/or modify this program under the terms of the GPL. See [LICENSE](LICENSE) for the full license text.
 
 `bic-dmdul` is a disaster recovery and rescue tool for Dameng/DM database files. Database failure scenarios are often complex and may involve media damage, partial writes, missing files, inconsistent checkpoints, corrupted dictionary metadata, overwritten pages, incomplete LOB chains, transaction-state ambiguity, or other conditions that cannot be fully reconstructed from the available files.
 
@@ -22,9 +24,11 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY 
 
 版权所有 (C) 2026 佰晟智算（深圳）技术有限公司。
 
-开发者：佰晟智算（深圳）技术有限公司。
+开发者：佰晟智算（深圳）技术有限公司 / Baisheng Intelligent Computing (Shenzhen) Co., Ltd.
 
-本项目采用 GNU General Public License 第 3 版或后续版本（`GPL-3.0-or-later`）开源。你可以依照 GPL 协议的条款重新发布和/或修改本程序。
+官方网站：[www.dbaiops.com](https://www.dbaiops.com)
+
+本项目采用 GNU General Public License 第 3 版或后续版本（`GPL-3.0-or-later`）开源。你可以依照 GPL 协议的条款重新发布和/或修改本程序，完整协议文本见 [LICENSE](LICENSE)。
 
 `bic-dmdul` 是面向达梦数据库文件的灾难拯救和离线恢复工具。数据库故障场景十分复杂，可能包含介质损坏、部分写入、文件缺失、检查点不一致、系统字典损坏、页面被覆盖、LOB 链不完整、事务状态无法判定等情况，这些情况不一定能够仅凭现有文件完整重建。
 
