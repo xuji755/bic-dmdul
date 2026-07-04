@@ -368,14 +368,16 @@ scan all DBF files
   -> group pages by u32le(page[0x3a:0x3e])
   -> classify root/header, internal, leaf/data, empty, and metadata pages
   -> follow same-storage next-page links where available
-  -> emit UNKNOWN_STORAGE_<storage_id> physical recovery candidates
+  -> emit storage_scan.dict and SCAN.TAB_<storage_id> physical recovery candidates
 ```
 
-This fallback can recover page ownership, root/header candidates, linked leaf
-chains, approximate row counts, and raw row samples for each storage object. It
-cannot by itself recover schema/table names, column names, exact types, or full
-transaction visibility semantics. Treat it as a second recovery route and a
-cross-check for dictionary-driven recovery.
+This fallback is now implemented as
+`bootstrap --scan-storages-without-system-dicts` and
+`dump-data --scan-storage-dict`. It can recover page ownership, root/header
+candidates, linked leaf chains, approximate row counts, and raw row samples for
+each storage object. It cannot by itself recover schema/table names, column
+names, exact types, or full transaction visibility semantics. Treat it as a
+second recovery route and a cross-check for dictionary-driven recovery.
 
 ## Row Format Observations
 
@@ -936,8 +938,8 @@ C_TINY  TINYINT   length 1
 C_SMALL SMALLINT  length 2
 C_INT   INT       length 4
 C_BIG   BIGINT    length 8
-C_NUM   NUMBER    length 30 scale not yet emitted
-C_DEC   DECIMAL   length 18 scale not yet emitted
+C_NUM   NUMBER    length 30 scale preserved in col.dict/DDL when decoded
+C_DEC   DECIMAL   length 18 scale preserved in col.dict/DDL when decoded
 C_FLOAT FLOAT     length 8
 C_DATE  DATE      length 3
 C_TIME  TIME      length 5
@@ -1113,11 +1115,13 @@ the accepted page plan is otherwise valid. It comes from a broad sliding-window
 candidate scan over root bytes, not from the final set of pages decoded into the
 CSV.
 
-This proves the first practical offline chain for controlled ordinary tables:
+This proved the first practical offline chain for controlled ordinary tables:
 SYSTEM dictionary scans -> table object id -> column metadata -> child storage
-index -> `SYSINDEXES` root -> data pages -> decoded CSV. It does not yet prove
-complete support for MVCC visibility, all scalar types, chained/overflow rows,
-LOB following, or arbitrary production file sets.
+index -> `SYSINDEXES` root -> data pages -> decoded CSV. Later work added
+fuller scalar coverage, inline/out-of-line LOB following for the verified
+locator shape, row archive output, and row-archive import validation. It still
+does not prove complete MVCC visibility, chained/overflow rows, encrypted
+objects, ASM, or arbitrary production file sets.
 
 Additional remote validation compared offline CSV output with online `SELECT`
 for controlled fixtures:
@@ -1492,9 +1496,18 @@ The range-hash output rows matched the inserted values:
 Bootstrap/dump split:
 
 - `bootstrap` is responsible for scanning SYSTEM dictionary tables and writing
-  table metadata to dict files.
+  table metadata to dict files in the normal path.
+- If SYSTEM dictionaries are missing or unreadable, normal `bootstrap -b` must
+  fail with error diagnostics instead of treating empty dictionaries as valid.
+- `bootstrap --scan-storages-without-system-dicts` is a separate disaster
+  recovery path. It scans all DBF page headers, groups `page_kind=0x14` pages by
+  `(group_id, file_no, storage_id)`, writes `storage_scan.dict`, and creates
+  `SCAN.TAB_<storage_id>` placeholders for raw-row export.
 - `dump-data --dict-dir` must consume only `file.dict`, `tab.dict`, and
   `col.dict`; it must not rescan `SYSOBJECTS`, `SYSCOLUMNS`, or `SYSINDEXES`.
+- `dump-data --scan-storage-dict` consumes the scan dictionary placeholders and
+  writes `raw_row VARBINARY` DUL output. It does not infer owner, table name, or
+  columns.
 - For partitioned tables, `tab.dict.page_refs` stores all leaf partition root
   pages as `file_no:page_no` entries separated by semicolons, and
   `storage_index_ids` stores the corresponding leaf storage ids.
@@ -1519,3 +1532,18 @@ formats is maintained in
 `docs/DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md`. Treat that document as the
 quick implementation reference, and this architecture note as the longer
 evidence log.
+
+Latest implementation notes added after the original exploration:
+
+- On-demand procedure DDL export reads `SYS.SYSTEXTS` only when
+  `dump-procedures` runs. It supports inline and out-of-line CLOB source text.
+- On-demand ordinary BTree index DDL export parses `SYSINDEXES.KEYNUM` and
+  variable-length `KEYINFO`, using `col.dict` for column names.
+- Row archive import now preserves legal temporal precision for
+  `TIME/TIMESTAMP/DATETIME WITH TIME ZONE`; invalid dictionary scale values such
+  as observed `4102` for `TIMESTAMP WITH LOCAL TIME ZONE` are not emitted as SQL
+  precision.
+- Remote end-to-end validation imported five row-archive exports into `DMTEST`.
+  `DMDUL_MANY`, `BMSQL_DISTRICT`, `BMSQL_WAREHOUSE`, and
+  `DMDUL_TIME_TYPES` matched source tables with bidirectional `MINUS=0/0`;
+  `DMDUL_DUMP_TYPES` matched on non-LOB scalar columns.

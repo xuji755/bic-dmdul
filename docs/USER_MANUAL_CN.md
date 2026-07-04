@@ -1325,7 +1325,24 @@ LOB 导入规则：
 - `BLOB` 输出为 `HEXTORAW('<hex>')`；
 - `CLOB/TEXT` 输出为字符串字面量，当前按 UTF-8 文本写入 SQL。
 
+时间类型 DDL 规则：
+
+- `TIME/TIMESTAMP/DATETIME` 的合法 scale 为 `1..6` 时，建表脚本写成 `TYPE(scale)`；
+- 带时区类型使用达梦可接受语法，例如 `TIME(6) WITH TIME ZONE`、`DATETIME(6) WITH TIME ZONE`、`TIMESTAMP(6) WITH LOCAL TIME ZONE`；
+- 如果字典 scale 超出 `1..6`，不把它写成 SQL 精度。例如 `TIMESTAMP WITH LOCAL TIME ZONE` 在测试库中观察到过 `scale=4102`，导入建表脚本应写为 `TIMESTAMP WITH LOCAL TIME ZONE`；
+- 不能丢失 `TIME WITH TIME ZONE` 的合法精度。远端验证表明，如果把 `TIME(6) WITH TIME ZONE` 建成无精度列，导入时小数秒会被四舍五入。
+
 注意：对于超大 LOB，单条 SQL 字面量可能受目标数据库 SQL 长度限制。当前工具先保证导出结构完整和可审计；后续直接入库执行器应使用分块绑定或批量装载方式处理超大 LOB。
+
+当前已完成的 row 导出、SQL 生成、导入和源目标比对：
+
+| 源表 | row 导出行数 | 导入目标 | 比对结果 |
+| --- | ---: | --- | --- |
+| `SYSDBA.DMDUL_MANY` | 80 | `DMTEST.RT_DMDUL_MANY` | 双向 `MINUS=0/0` |
+| `SYSDBA.BMSQL_DISTRICT` | 100 | `DMTEST.RT_BMSQL_DISTRICT` | 双向 `MINUS=0/0` |
+| `SYSDBA.BMSQL_WAREHOUSE` | 10 | `DMTEST.RT_BMSQL_WAREHOUSE` | 双向 `MINUS=0/0` |
+| `SYSDBA.DMDUL_TIME_TYPES` | 2 | `DMTEST.RT_DMDUL_TIME_TYPES_FIX2` | 修复带时区时间精度后双向 `MINUS=0/0` |
+| `SYSDBA.DMDUL_DUMP_TYPES` | 3 | `DMTEST.RT_DMDUL_DUMP_TYPES` | 非 LOB 标量列双向 `MINUS=0/0` |
 
 ### 7.11 dump-data 参数组合规则
 

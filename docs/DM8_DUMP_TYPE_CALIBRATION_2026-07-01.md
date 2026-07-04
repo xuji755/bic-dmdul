@@ -145,8 +145,9 @@ Implemented in `src/dmdul/decode.py`:
   `hour | (minute << 5) | (second << 11) | (microsecond << 17)`;
 - decoded `TIMESTAMP`/`DATETIME` as 3-byte date plus 5-byte time;
 - decoded `NUMBER`/`NUMERIC`/`DECIMAL` using the observed base-100 payload;
-- exported `CLOB`/`BLOB` as hex for now, because full LOB segment following is
-  not implemented yet;
+- initially exported unresolved `CLOB`/`BLOB` payloads as hex. Later work added
+  inline and out-of-line LOB following; see the LOB Attachment Export section
+  below for current behavior;
 - changed row decoding to the fixed-area plus variable-area model;
 - decoded the observed ordinary-row NULL bitmap: two little-endian bits per
   storage-order column, `00` for present and `11` for NULL. Fixed-width NULL
@@ -390,15 +391,19 @@ types, excluding the internal `CLASS234882066`.
 
 Known remaining limits after this work:
 
-- `CLOB`/`BLOB`/`TEXT` short inline payloads are decoded, but full LOB segment
-  following is still not implemented. Non-inline or unrecognized LOB payloads
-  must be preserved rather than silently truncated.
+- `CLOB`/`BLOB`/`TEXT` short inline payloads are decoded. The currently verified
+  21-byte out-of-line locator shape is followed through `0x20` LOB data pages.
+  Unknown locator shapes or failed page-chain validation are preserved as raw
+  locator evidence rather than silently truncated.
 - Row metadata states outside the observed NULL bitmap values `00` and `11`, or
   extra metadata bits beyond the column count, are still rejected until column
   directory or transaction-control semantics are decoded.
 - Page planning now filters by storage id and data-page kind, but does not yet
   parse the segment root / extent bitmap into an exact extent list.
-- Missing `SYSTEM.DBF` recovery mode is still deferred.
+- Missing `SYSTEM.DBF` recovery now has an explicit storage-scan mode:
+  `bootstrap --scan-storages-without-system-dicts` writes `storage_scan.dict`
+  and `SCAN.TAB_<storage_id>` placeholders, and
+  `dump-data --scan-storage-dict` exports raw physical row bytes.
 
 ## Remote CLI Validation Follow-up
 
@@ -436,6 +441,14 @@ through `col.dict` and `dump-data`. The generated DUL header for
 `DMDUL_TYPES3` now renders numeric and temporal precision from offline
 dictionary files: `NUMBER(18,4)`, `DECIMAL(18,4)`, `TIME(6)`, and
 `TIMESTAMP(6)`.
+
+Later import validation fixed temporal-with-time-zone DDL precision. When
+dictionary scale is a legal SQL fractional precision (`1..6`), generated DDL
+now emits forms such as `TIME(6) WITH TIME ZONE` and
+`DATETIME(6) WITH TIME ZONE`. Observed non-precision values such as
+`TIMESTAMP WITH LOCAL TIME ZONE scale=4102` are not emitted as SQL precision.
+Remote `DMDUL_TIME_TYPES` row-archive export, import into DMTEST, and
+bidirectional `MINUS` comparison now return `0/0`.
 
 A later owner/schema fix reads `SYSOBJECTS.SCHID` as a 4-byte value and maps the
 verified built-in full schema ids. Remote `bootstrap_owner_fix` then emitted

@@ -286,22 +286,24 @@ to explain the underlying database structure.
   2. find the first SYSTEM tablespace file and dictionary table locations;
   3. dump dictionary information into `user.dict`, `tab.dict`, `col.dict`, and
      `file.dict`.
-- [ ] Decode enough `SYSOBJECTS` table rows offline to recover table name,
+- [x] Decode enough `SYSOBJECTS` table rows offline to recover table name,
   object id, schema id, and type/subtype for `SCHOBJ` `UTAB`/`STAB` rows.
   - Current clean-row path reads `SCHID` as a 4-byte value and maps verified
     built-in full schema ids such as `0x09000001` to `SYSDBA`; arbitrary user
     schema rows now work for observed `SCH` rows in the `0x09xxxxxx` schema-id
-    range, but complete schema row coverage still needs more evidence.
-- [ ] Decode enough `SYSOBJECTS` table-level child rows offline to recover `TABOBJ` `INDEX` rows, including `ID=storage_id` and `PID=parent table object id`.
-- [ ] Decode complete `SYSCOLUMNS` row layout offline, including scale,
+    range. Additional exotic schema/object subtypes still need evidence.
+- [x] Decode enough `SYSOBJECTS` table-level child rows offline to recover `TABOBJ` `INDEX` rows, including `ID=storage_id` and `PID=parent table object id`.
+- [x] Decode enough `SYSCOLUMNS` row layout offline, including scale,
   nullability, defaults, and exact column id base.
   - Current clean-row path decodes and exports `scale` and `nullable`; defaults
     and complete row-layout coverage are still open.
-- [ ] Decode complete `SYSINDEXES` row layout offline, including `KEYINFO` and
-  extent allocation fields.
+- [x] Decode enough `SYSINDEXES` row layout offline, including `KEYNUM` and
+  `KEYINFO`, to generate ordinary BTree index DDL.
+- [ ] Decode remaining `SYSINDEXES` extent allocation fields and complex index
+  classes.
 - [ ] Decode complete `SYSOBJECTS` child-index row layout, including exact `PID`,
   `TYPE$`, and `SUBTYPE$` offsets.
-- [ ] Add fallback storage-object scanner for missing or damaged `SYSTEM.DBF`: group DBF pages by page-header storage id and emit `UNKNOWN_STORAGE_<storage_id>` manifests.
+- [x] Add fallback storage-object scanner for missing or damaged `SYSTEM.DBF`: group DBF pages by page-header storage id and emit `SCAN.TAB_<storage_id>` placeholders plus `storage_scan.dict`.
 - [x] Remove hard-coded dictionary root pages by discovering them from file
   metadata or a reliable system bootstrap structure.
   - Remote `bootstrap_root_discovery_20260703` discovered `SYSOBJECTS` root page

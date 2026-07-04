@@ -43,6 +43,7 @@ storage_id = 33573582
    - 直到找到 0x14 数据页，再沿 0x14 next 链读取。
 3. 只有上述入口结构解析失败，才允许进入 root 附近局部扫描。
 4. 全文件 storage_id scan 只能作为最后兜底，主要用于损坏或未知结构场景，不应作为正常路径。
+5. 如果用户显式指定 `bootstrap --scan-storages-without-system-dicts`，则进入独立的无系统字典扫描模式：不尝试解析 owner/table/column 字典，只按页头 `storage_id` 聚合数据页并生成 `storage_scan.dict`。
 
 ## Bootstrap 优化方向
 
@@ -65,6 +66,22 @@ id 都降级为兜底。DM7/DM8 对比确认 SYSTEM.DBF page 0 存在 bootstrap-
 storage id，并按标准 BTREE 路径下载字典行。`SYSCOLUMNS` root 由离线解码
 后的 `SYSINDEXES` 行给出。
 
+如果 `SYSTEM.DBF` 丢失或上述 SYS 字典入口无法读取，普通 `bootstrap -b`
+必须返回错误并写入 diagnostics，例如 `bootstrap-system-file-not-found`。
+此时不能继续把空的 `tab.dict/col.dict` 当作正常字典使用。
+
+显式降级路径为：
+
+```text
+bootstrap --scan-storages-without-system-dicts
+  -> 扫描 file.dict 中所有 DBF 页头
+  -> 按 (group_id, file_no, storage_id) 聚合 page_kind=0x14 数据页
+  -> 写 storage_scan.dict
+  -> 在 tab.dict 中写 SCAN.TAB_<storage_id> 占位对象
+  -> dump-data --scan-storage-dict 按 raw_row VARBINARY 导出完整物理行 bytes
+```
+
+这个模式不恢复真实 owner、表名、列名和字段类型。它只用于 SYSTEM 字典不可用时先保全物理行和样本，后续再靠字段列表或 raw 字典残留做结构化恢复。
 
 ## 已确认的核心字典对象入口证据
 
@@ -113,3 +130,5 @@ SYSTEM.DBF 字符串 marker 作为主路径。
 ```
 
 这些只能作为最后 fallback，用于 SYSTEM 损坏、入口页损坏、字典不完整等异常场景。
+
+例外：`--scan-storages-without-system-dicts` 是用户显式请求的灾难恢复路径，不属于正常 bootstrap/dump-data 主路径。该模式的输出文件为 `storage_scan.dict` 和 `SCAN.TAB_<storage_id>` raw 导出入口。

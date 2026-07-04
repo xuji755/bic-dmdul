@@ -131,7 +131,8 @@ MARKER        8e 54 59 50 45 5f 53 54 4f 52 45 5f 50 4f 53
 tail          03 00 00 00 00 00 ff ff ff ff 7f ff ff b9 41 35 04 00 00
 ```
 
-Open points before this becomes a complete row decoder:
+Open points recorded at this exploration stage before it became the current row
+decoder:
 
 - identify exact row-head bits beyond length/delete status;
 - decode nonzero row metadata for NULL columns;
@@ -139,6 +140,11 @@ Open points before this becomes a complete row decoder:
 - confirm whether fixed and variable partitioning changes for nullable,
   updated, compressed, or chained rows;
 - decode LOB locator fields rather than treating them as opaque variable values.
+
+Current status: later implementation decodes short inline LOB payloads and
+follows the verified 21-byte out-of-line LOB locator through `0x20` LOB data
+pages. Unknown locator shapes are preserved as raw locator evidence instead of
+being silently decoded.
 
 ## Row Slot Directory
 
@@ -338,8 +344,10 @@ DBF rows.
 numbers use a high first byte, zero is `0x80`, and negative numbers use a low
 first byte with `0x66` terminator in the observed evidence.
 - CLOB/BLOB values in this short-row fixture are not plain text/raw bytes only;
-they include a locator/control prefix. The current offline decoder should treat
-LOB payloads as raw hex until LOB segment following is implemented.
+they include a locator/control prefix. The early decoder treated unresolved LOB
+payloads as raw hex. Current `dump-data` removes verified short inline LOB
+prefixes and follows verified out-of-line LOB page chains; unresolved locator
+shapes are still preserved rather than guessed.
 
 Dictionary metadata for the fixture confirmed official type names and lengths:
 
@@ -353,4 +361,3 @@ TIMESTAMP(6)     DATA_LENGTH=8, DATA_SCALE=6
 DATETIME(6)      DATA_LENGTH=8, DATA_SCALE=6
 CLOB/BLOB        DATA_LENGTH=2147483647
 ```
-

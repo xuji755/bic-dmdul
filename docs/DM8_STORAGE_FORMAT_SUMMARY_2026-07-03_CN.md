@@ -1,12 +1,15 @@
-# DM8 存储格式阶段性总结 - 2026-07-03
+# DM8 存储格式阶段性总结 - 2026-07-04
 
-本文汇总最近两天在 `dmdul` 项目中已经验证的达梦 DM8 离线抽取相关结论。目标是给后续实现和排错提供一份高密度参考。这里的结论以 DBF 原始字节、离线抽取结果、在线 SQL 校准三方一致为准；未完全证明的字段仍按“工作命名”记录。
+本文汇总 `dmdul` 项目中已经验证的达梦 DM8 离线抽取相关结论。目标是给后续实现和排错提供一份高密度参考。这里的结论以 DBF 原始字节、离线抽取结果、在线 SQL 校准和导入后比对为准；未完全证明的字段仍按“工作命名”记录。
 
 ## 1. 总体原则
 
 - 最终工具不能依赖 `DBA_*` 视图；视图只用于在线校准。
-- `bootstrap` 负责扫描 `SYSTEM.DBF` 并下载字典，生成 `file.dict`、`tab.dict`、`col.dict`。
+- 正常 `bootstrap -b` 负责从 `SYSTEM.DBF` 下载字典，生成 `file.dict`、`user.dict`、`tab.dict`、`col.dict` 和空的 `storage_scan.dict`。
+- 如果 `SYSTEM.DBF` 或关键 SYS 字典不可用，普通 `bootstrap -b` 必须报错并返回非 0；不能把空字典当成正常恢复字典。
+- 显式 `bootstrap --scan-storages-without-system-dicts` 是降级恢复模式，不访问 SYS 字典，扫描所有 DBF 页头并生成 `storage_scan.dict` 与 `SCAN.TAB_<storage_id>` 占位对象。
 - `dump-data --dict-dir` 只能使用已经下载的 dict 文件，不应反复扫描 `SYSOBJECTS`、`SYSCOLUMNS`、`SYSINDEXES`。
+- `dump-data --scan-storage-dict` 只用于无 SYS 字典扫描模式，按 `SCAN.TAB_<storage_id>` 导出完整物理行 bytes 到 `raw_row`，不伪造列定义。
 - 表数据抽取必须从当前活动行出发。特别是 LOB：旧 LOB 页可能残留在 DBF 中，不能靠扫描全部 LOB 页导出。
 
 ## 2. 数据文件与页头
@@ -46,6 +49,20 @@
 
 因此 `file.dict.tablespace_name` 应来自控制文件解析。`scan-orphan-storages --tablespace` 使用这个字段过滤数据文件；如果旧 dict 没有该字段，应重新 bootstrap 或退回使用 `--group-id`。
 
+无系统字典扫描模式下，`storage_scan.dict` 记录：
+
+| 字段 | 含义 |
+| --- | --- |
+| `storage_id` | 页头 `0x3a` 处的 storage id |
+| `group_id/file_no/path/page_size` | 数据文件定位 |
+| `pages` | 命中的 `page_kind_raw=0x14` 数据页数 |
+| `page_refs` | 完整 `file_no:page_no` 页清单 |
+| `first_pages` | 前若干候选页，便于人工检查 |
+| `row_samples` | 样本行 raw hex、offset、长度、ASCII hint |
+| `kind_counts` | 同一 storage id 观察到的页类型计数 |
+
+该模式不能恢复 owner、真实表名、列名和字段类型；它的目标是先聚合 storage 并保留物理行，为后续人工确认或 `recover-orphan-table --column ...` 结构化导出提供入口。
+
 ## 3. 字典与段定位
 
 核心字典表：
@@ -55,6 +72,7 @@
 | `SYS.SYSOBJECTS` | 对象名、对象 id、schema id、类型、父对象 |
 | `SYS.SYSCOLUMNS` | 列名、列序号、类型、长度、scale、nullable |
 | `SYS.SYSINDEXES` | 表 storage object 的 group/file/root page 等 |
+| `SYS.SYSTEXTS` | 存储过程/函数等对象源码，按需导出过程 DDL 时读取 |
 
 当前 DM8 测试库已能从 `SYSTEM.DBF` 发现并下载这些字典：
 
@@ -76,6 +94,12 @@ variable area    NAME, TYPE$, SUBTYPE$
 对象类型必须使用 `TYPE$` / `SUBTYPE$` 判断，不能靠对象名猜测。普通用户表为 `SCHOBJ/UTAB`。表的内部 storage object 为 `TABOBJ/INDEX`，其 `PID` 指向表对象或分区叶子对象。
 
 同名表必须按 owner/schema 区分，判断重复不能只看表名。
+
+当前按需 DDL 支持：
+
+- `dump-procedures`：执行时离线扫描 `SYSOBJECTS` 和 `SYSTEXTS`，按 owner 输出过程源码，`SYSTEXTS.TXT` 的 CLOB 支持内联和 out-of-line LOB，中文源码按 ASCII/GB18030/UTF-8 路径解码。
+- `dump-indexes`：执行时离线扫描 `SYSOBJECTS`、`SYSINDEXES`，优先使用已有 `col.dict` 映射列名；已支持普通 BTree 索引和唯一索引 DDL。`SYSINDEXES.KEYNUM` 当前按 `u16 context[23:25]` 解析，`KEYINFO` 按变长字段定位，普通组合索引每列 3 字节条目：`u16 column_id + order_marker`。
+- 未验证的 cluster、virtual、bitmap、function-based 等复杂索引只报告 skipped，不输出伪造 DDL。
 
 ## 4. 表与分区定位
 
@@ -163,6 +187,25 @@ CREATE HUGE TABLE SYSDBA.DMDUL_HUGE_COMP_T (
 6. 对多 extent 表，不假设 extent 连续；按 BTREE leaf 链或 storage-id 页计划处理。
 
 已验证 `DMDUL_EXT2` 超过 1 个 extent，25,000 行严格导出成功。`DBA_EXTENTS` 在当前实例对该段只返回一行，不能作为完整 leaf 页计划依赖。
+
+无 `SYSTEM.DBF` 或 SYS 字典损坏时，不能执行标准表名导出；此时可用：
+
+```sh
+dmdul bootstrap /recovery/dmcopy \
+  --output-dir /recovery/work/scan_dict \
+  --scan-storages-without-system-dicts \
+  --sample-limit 8 \
+  --json
+
+dmdul dump-data \
+  --dict-dir /recovery/work/scan_dict \
+  --output-dir /recovery/work/scan_out \
+  --scan-storage-dict \
+  --table SCAN.TAB_33596007 \
+  --json
+```
+
+输出表只有一列 `raw_row VARBINARY`，内容是完整物理行 bytes。后续如果能提供字段列表，可再使用 orphan recovery 的字段适配导出。
 
 ### 5.1 TRUNCATE 后表数据残留与恢复特征
 
@@ -435,11 +478,18 @@ TIMESTAMP WITH TIME ZONE, TINYINT, VARBINARY, VARCHAR, VARCHAR2
 | `TIMESTAMP/DATETIME` | 8 字节，`DATE(3)+TIME(5)` |
 | `TIME WITH TIME ZONE` | 7 字节，`TIME(5)+tz offset(2)` |
 | `TIMESTAMP/DATETIME WITH TIME ZONE` | 10 字节，`TIMESTAMP(8)+tz offset(2)` |
-| `TIMESTAMP WITH LOCAL TIME ZONE` | 8 字节 timestamp |
+| `TIMESTAMP WITH LOCAL TIME ZONE` | 8 字节 timestamp；当前字典 scale 曾观察到 `4102`，这不是 SQL 小数秒精度 |
 | `INTERVAL DAY TO SECOND` | 24 字节，前 5 个 int32 为 day/hour/min/sec/usec |
 | `ROWID` | 12 字节，DM 显示为三段 4 字节 big-endian 的 base64 风格编码 |
 
 DM8 测试库非 ASCII 字符当前按 GB18030 家族存储。解码策略是 ASCII fast path，其次 GB18030，再 UTF-8 fallback。
+
+导入端 DDL 生成规则：
+
+- `TIME/TIMESTAMP/DATETIME` 的合法 scale 为 `1..6` 时写为 `TYPE(scale)`。
+- 带时区类型写为 DM 可接受语法，例如 `TIME(6) WITH TIME ZONE`、`DATETIME(6) WITH TIME ZONE`、`TIMESTAMP(6) WITH LOCAL TIME ZONE`。
+- 如果字典 scale 超出 `1..6`，不把它写成 SQL 精度；例如 `TIMESTAMP WITH LOCAL TIME ZONE` 曾出现 `scale=4102`，DDL 应写为 `TIMESTAMP WITH LOCAL TIME ZONE`。
+- 远端端到端验证发现，`TIME WITH TIME ZONE` 若建表时丢失 `(6)`，导入后小数秒会被四舍五入。当前已修复并通过 `DMDUL_TIME_TYPES` 双向 `MINUS=0/0` 验证。
 
 ## 9. LOB 存储
 
@@ -567,9 +617,19 @@ row 归档可以脱离原始 DBF 复制到另一台服务器。`import-data` 默
 
 `import-row` 保留为兼容别名，但后续文档和流程统一使用 `import-data`。
 
+2026-07-04 远端端到端导出、导入、比对结果：
+
+| 表 | row 导出行数 | 导入目标 | 比对 |
+| --- | ---: | --- | --- |
+| `SYSDBA.DMDUL_MANY` | 80 | `DMTEST.RT_DMDUL_MANY` | 双向 `MINUS=0/0` |
+| `SYSDBA.BMSQL_DISTRICT` | 100 | `DMTEST.RT_BMSQL_DISTRICT` | 双向 `MINUS=0/0` |
+| `SYSDBA.BMSQL_WAREHOUSE` | 10 | `DMTEST.RT_BMSQL_WAREHOUSE` | 双向 `MINUS=0/0` |
+| `SYSDBA.DMDUL_TIME_TYPES` | 2 | `DMTEST.RT_DMDUL_TIME_TYPES_FIX2` | 修复时间带时区精度后双向 `MINUS=0/0` |
+| `SYSDBA.DMDUL_DUMP_TYPES` | 3 | `DMTEST.RT_DMDUL_DUMP_TYPES` | 非 LOB 标量列双向 `MINUS=0/0` |
+
 ## 11. 当前边界
 
-- SYSTEM.DBF 缺失后的全文件扫描重组尚不是主流程。
+- `SYSTEM.DBF` 缺失后的 `storage_scan.dict` 已支持 storage 聚合和 raw 行导出，但不能自动恢复真实表名/列定义；完整结构化恢复仍需要列定义或进一步字典 raw 残留解析。
 - ASM 磁盘组读取尚未实现。
 - 未提交事务、异常崩溃中间态、回滚未清理版本仍需单独实验。
 - row tail/control 与完整 MVCC/undo 可见性尚未完全解析。

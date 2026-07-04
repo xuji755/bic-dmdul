@@ -279,11 +279,14 @@ scan all DBF files
   -> group pages by u32le(page[0x3a:0x3e])
   -> classify root/header, internal, leaf/data, empty, and metadata pages
   -> follow same-storage next-page links where available
-  -> emit UNKNOWN_STORAGE_<storage_id> physical recovery candidates
+  -> emit storage_scan.dict and SCAN.TAB_<storage_id> physical recovery candidates
 ```
 
-This can recover storage-object page sets and raw rows, but not reliable schema
-names, table names, column names, exact column types, or full MVCC visibility.
+Current implementation exposes this path as
+`bootstrap --scan-storages-without-system-dicts` plus
+`dump-data --scan-storage-dict`. It can recover storage-object page sets and raw
+rows, but not reliable schema names, table names, column names, exact column
+types, or full MVCC visibility.
 
 ## Open Questions
 
