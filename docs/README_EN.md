@@ -11,6 +11,7 @@ Website: [www.dbaiops.com](https://www.dbaiops.com)
 - [Storage architecture notes](DM8_STORAGE_ARCHITECTURE_NOTES.md): deep storage evidence.
 - [Page structure notes](DM8_PAGE_STRUCTURE_NOTES.md): page and row layout notes.
 - [AI coding development guide](AI_CODING_DEVELOPMENT_GUIDE.md): workflow for continuing development with Codex, Claude Code, Hermes, Trae, Qoder, or similar tools.
+- [Chinese open-source announcement draft](BLOG_BIC_DMDUL_OPEN_SOURCE_CN.md): blog draft for announcing `bic-dmdul`.
 - [Open source copyright notice](../NOTICE.md): GPL and developer notice.
 - [GPL license text](../LICENSE): full GPL-3.0 license.
 
@@ -19,6 +20,7 @@ Website: [www.dbaiops.com](https://www.dbaiops.com)
 | Document | English Reading Guide |
 | --- | --- |
 | [USER_MANUAL_CN.md](USER_MANUAL_CN.md) | Main operator manual. It covers `prepare`, `bootstrap`, `dump-data`, `import-data`, partition export, LOB attachments, TRUNCATE/DROP recovery, procedure DDL, and index DDL. Command examples are directly usable even if the prose is Chinese. |
+| [BLOG_BIC_DMDUL_OPEN_SOURCE_CN.md](BLOG_BIC_DMDUL_OPEN_SOURCE_CN.md) | Chinese blog draft announcing the open-source `bic-dmdul` tool, including purpose, capabilities, license, limitations, and community direction. |
 | [BIC_DMDUL_E2E_TEST_PLAN_EN.md](BIC_DMDUL_E2E_TEST_PLAN_EN.md) | English summary of the full E2E test plan. The detailed executable design is in [BIC_DMDUL_E2E_TEST_PLAN_CN.md](BIC_DMDUL_E2E_TEST_PLAN_CN.md). |
 | [TEST_ENVIRONMENT.md](TEST_ENVIRONMENT.md) | Test host, DM8 instance, data-file locations, and exploration environment. |
 

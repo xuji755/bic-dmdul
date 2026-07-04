@@ -10,6 +10,7 @@
 - [DM8 存储格式阶段性总结](DM8_STORAGE_FORMAT_SUMMARY_2026-07-03_CN.md)：当前最重要的存储结构总结。
 - [Bootstrap 与标准表下载优化设计](DM8_BOOTSTRAP_STANDARD_TABLE_DOWNLOAD.md)：离线字典与表下载主路径。
 - [AI Coding 二次开发指南](AI_CODING_DEVELOPMENT_GUIDE.md)：使用 Codex、Claude Code、Hermes、Trae、Qoder 等工具继续开发的操作规范。
+- [bic-dmdul 开源发布博客稿](BLOG_BIC_DMDUL_OPEN_SOURCE_CN.md)：介绍工具定位、功能、开源协议和社区方向。
 - [开源版权声明](../NOTICE.md)：GPL 和开发者声明。
 - [GPL 协议全文](../LICENSE)：GPL-3.0 完整协议文本。
 
@@ -18,6 +19,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [USER_MANUAL_CN.md](USER_MANUAL_CN.md) | `bic-dmdul` 中文使用手册，覆盖 `prepare`、`bootstrap`、`dump-data`、`import-data`、分区导出、LOB 附件、TRUNCATE/DROP 恢复、过程和索引 DDL。 |
+| [BLOG_BIC_DMDUL_OPEN_SOURCE_CN.md](BLOG_BIC_DMDUL_OPEN_SOURCE_CN.md) | 佰晟智算发布开源工具 `bic-dmdul` 的中文博客稿，可用于官网、公众号或社区发布。 |
 | [BIC_DMDUL_E2E_TEST_PLAN_CN.md](BIC_DMDUL_E2E_TEST_PLAN_CN.md) | 完整链路测试方案，要求导出、导入、目标用户重建和源目标比对，覆盖索引和存储过程。 |
 | [TEST_ENVIRONMENT.md](TEST_ENVIRONMENT.md) | 测试环境、DM8 实例、数据文件位置和研究背景。 |
 
