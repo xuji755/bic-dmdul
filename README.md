@@ -46,6 +46,7 @@ TMPDIR=/home/loop/dmdul/tmp PYTHONPATH=src python3 -m dmdul.cli --help
 
 当前版本：`0.1.0`，Git tag：`v0.1.0`。
 
+- GitHub Release: [v0.1.0](https://github.com/xuji755/bic-dmdul/releases/tag/v0.1.0)
 - [releases/bic-dmdul-0.1.0.tar.gz](releases/bic-dmdul-0.1.0.tar.gz)
 - [releases/bic-dmdul-0.1.0.tar.gz.sha256](releases/bic-dmdul-0.1.0.tar.gz.sha256)
 
