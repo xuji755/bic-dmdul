@@ -151,6 +151,11 @@ def scan_observed_row_chain(
     physical row chain still contains deleted and updated records. This scanner
     follows row lengths until it reaches zero-filled free space or an invalid
     row-length prefix.
+
+    This "row chain" is only the physical in-page row-length sequence. It is
+    not DM/Oracle-style row chaining where one logical row spans multiple data
+    blocks. Cross-block chained rows need a separate pointer decoder and row
+    reassembly path.
     """
 
     rows: list[ObservedRow] = []

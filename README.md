@@ -68,7 +68,7 @@ The documentation set is organized by audience:
 - 从离线 DM8 数据文件中解析控制文件、表空间、数据文件、页、段、BTREE 表和行数据。
 - 通过 `SYSTEM.DBF` 中的 SYS 字典表 bootstrap 出 `user.dict`、`tab.dict`、`col.dict`、`file.dict` 等离线字典。
 - 当 SYSTEM 或核心字典缺失时，可显式使用 storage scan 模式扫描数据文件，生成 `storage_scan.dict` 和 `SCAN.TAB_<storage_id>` 占位表。
-- 支持 DUL 文本、raw-safe row archive、LOB 附件、分区表、并发导出、TRUNCATE/DROP 后 storage 级恢复。
+- 支持 DUL 文本、raw-safe row archive、LOB 附件、`STORAGE(USING LONG ROW)` 超长变长列、分区表、并发导出、TRUNCATE/DROP 后 storage 级恢复。
 - 按需生成用户存储过程和索引创建脚本。
 - 已验证一种压缩 `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` 恢复路径：定向 bootstrap 可保留 `$AUX/$RAUX/$DAUX/$UAUX` 辅助对象，导出时通过 `$RAUX` BTREE storage 恢复逻辑行，并完成导入后双向 `MINUS=0/0` 比对。
 - 严格模式会传播不完整恢复风险，例如 `$RAUX` 代理映射会产生 `huge-raux-proxy-mapping`，`dump-data --strict` 会通过 `tables_strict_failed` 和非零退出码提示尚不能证明完整恢复。
@@ -79,6 +79,7 @@ The documentation set is organized by audience:
 - ASM 磁盘组读取尚未实现。
 - 缺失 `SYSTEM.DBF` 时，storage scan 可以保留 raw 行和候选 storage，但不能自动恢复真实 owner、表名、列名和完整字段类型。
 - `QUERY HIGH`、列级压缩、带分区或 LOB 的压缩 HUGE 表需要实现 `$AUX.CPR_FLAG='Y'` 列区解压和行重组后才能宣称完整恢复。
+- 真正跨块行链、active slot 指向专用行迁移指针的格式仍需更多样本验证；当前已支持 `STORAGE(USING LONG ROW)` 的 `0x22` out-of-line 变长列，并按 slot 目录跳过不活动旧物理行。
 - 未提交事务、异常崩溃中间态、完整 MVCC/UNDO 可见性仍需单独研究。
 - 直接连接目标 DM 库执行并发导入尚未实现；当前导入工具生成可审计 SQL。
 

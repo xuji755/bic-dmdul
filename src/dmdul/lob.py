@@ -3,11 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .page import ObservedPageHeader
+from .row import iter_observed_rows_by_slots, scan_observed_row_chain
 from .storage import DataFile
 
 
 LOB_DATA_PAGE_KIND = 0x20
 LOB_DATA_PAYLOAD_OFFSET = 0x38
+LONG_ROW_DATA_PAGE_KIND = 0x22
+LONG_ROW_DATA_PAYLOAD_OFFSET = 0x70
+LONG_ROW_RECORD_PAYLOAD_OFFSET = 0x0E
 
 
 class LobReadError(ValueError):
@@ -85,21 +89,32 @@ def read_out_of_line_lob(
             raise LobReadError(
                 f"LOB page header page number mismatch: expected={page_no}, observed={header.page_no}"
             )
-        if header.page_kind_raw != LOB_DATA_PAGE_KIND:
+        if header.page_kind_raw == LOB_DATA_PAGE_KIND:
+            observed_lob_id = int.from_bytes(page[0x24:0x28], "little", signed=False)
+            payload_length = int.from_bytes(page[0x2C:0x2E], "little", signed=False)
+            payload_offset = LOB_DATA_PAYLOAD_OFFSET
+        elif header.page_kind_raw == LONG_ROW_DATA_PAGE_KIND:
+            payload = _read_long_row_payload_from_page(
+                page=page,
+                lob_id=locator.lob_id,
+            )
+            chunks.append(payload)
+            page_numbers.append(page_no)
+            page_no = None if header.next_page.is_null else header.next_page.page_no
+            continue
+        else:
             raise LobReadError(
                 f"LOB page kind mismatch at page {page_no}: 0x{header.page_kind_raw:08x}"
             )
-        observed_lob_id = int.from_bytes(page[0x24:0x28], "little", signed=False)
         if observed_lob_id != locator.lob_id:
             raise LobReadError(
                 f"LOB id mismatch at page {page_no}: expected={locator.lob_id}, observed={observed_lob_id}"
             )
-        payload_length = int.from_bytes(page[0x2C:0x2E], "little", signed=False)
-        if payload_length > len(page) - LOB_DATA_PAYLOAD_OFFSET:
+        if payload_length > len(page) - payload_offset:
             raise LobReadError(
                 f"LOB page payload length is outside page boundary at page {page_no}: {payload_length}"
             )
-        chunks.append(page[LOB_DATA_PAYLOAD_OFFSET : LOB_DATA_PAYLOAD_OFFSET + payload_length])
+        chunks.append(page[payload_offset : payload_offset + payload_length])
         page_numbers.append(page_no)
         page_no = None if header.next_page.is_null else header.next_page.page_no
 
@@ -113,3 +128,24 @@ def read_out_of_line_lob(
         locator=locator,
         page_numbers=tuple(page_numbers),
     )
+
+
+def _read_long_row_payload_from_page(*, page: bytes, lob_id: int) -> bytes:
+    rows = iter_observed_rows_by_slots(page) or scan_observed_row_chain(page)
+    for row in rows:
+        data = row.data
+        if len(data) < LONG_ROW_RECORD_PAYLOAD_OFFSET:
+            continue
+        observed_lob_id = int.from_bytes(data[2:6], "little", signed=False)
+        if observed_lob_id != lob_id:
+            continue
+        payload_length = int.from_bytes(data[10:12], "little", signed=False)
+        if payload_length > len(data) - LONG_ROW_RECORD_PAYLOAD_OFFSET:
+            raise LobReadError(
+                "long row record payload length is outside record boundary: "
+                f"lob_id={lob_id}, payload_length={payload_length}, record_length={len(data)}"
+            )
+        return data[
+            LONG_ROW_RECORD_PAYLOAD_OFFSET : LONG_ROW_RECORD_PAYLOAD_OFFSET + payload_length
+        ]
+    raise LobReadError(f"long row payload record not found for lob_id={lob_id}")

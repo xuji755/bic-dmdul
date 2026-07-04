@@ -287,6 +287,31 @@ class RowArchiveTest(unittest.TestCase):
         self.assertIn("INSERT INTO SYSDBA.DMDUL_LONG (PAD) VALUES (V_C1);", sql)
         self.assertNotIn("'" + long_value + "'", sql)
 
+    def test_import_dul_text_chunks_medium_strings_to_avoid_long_insert_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dul_path = root / "SYSDBA.DMDUL_WIDE.dul"
+            dul_path.write_text(
+                "CREATE TABLE SYSDBA.DMDUL_WIDE (\n"
+                "  V1 VARCHAR(1000),\n"
+                "  V2 VARCHAR(1000),\n"
+                "  V3 VARCHAR(1000)\n"
+                ");\n"
+                "-- DATA\n"
+                "V1|V2|V3\n"
+                f"{'A' * 1000}|{'B' * 1000}|{'C' * 1000}\n",
+                encoding="utf-8",
+            )
+            sql_path = root / "import.sql"
+
+            import_data_to_sql(input_path=dul_path, output_sql=sql_path)
+            sql = sql_path.read_text(encoding="utf-8")
+
+        self.assertIn("DECLARE\n  V_C1 VARCHAR(32767);\n", sql)
+        self.assertIn("  V_C2 VARCHAR(32767);\n", sql)
+        self.assertIn("  V_C3 VARCHAR(32767);\n", sql)
+        self.assertIn("INSERT INTO SYSDBA.DMDUL_WIDE (V1, V2, V3) VALUES (V_C1, V_C2, V_C3);", sql)
+
     def test_import_dul_text_chunks_long_blob_literals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

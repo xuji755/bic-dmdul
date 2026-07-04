@@ -419,6 +419,42 @@ class ObservedRowDecodeTest(unittest.TestCase):
 
         self.assertEqual(cm.exception.code, "unsupported-row-metadata")
 
+    def test_decode_out_of_line_varchar_locator_state(self) -> None:
+        locator = (
+            b"\x02"
+            + (0x12345678).to_bytes(4, "little")
+            + b"\0" * 4
+            + (3500).to_bytes(4, "little")
+            + (6).to_bytes(4, "little")
+            + (12054).to_bytes(4, "little")
+        )
+        data = (
+            bytes.fromhex("00 1c 04")
+            + (7).to_bytes(4, "little", signed=True)
+            + bytes([0x80 + len(locator)])
+            + locator
+        )
+        row = ObservedRow(
+            page_offset=0x62,
+            data=data,
+            header=ObservedRowHeader.from_bytes(data),
+        )
+
+        values = decode_observed_row_values(
+            row,
+            (
+                ColumnMeta(name="ID", type_name="INT"),
+                ColumnMeta(name="V", type_name="VARCHAR"),
+            ),
+            external_lobs=True,
+        )
+
+        self.assertEqual(values[0], 7)
+        self.assertIsInstance(values[1], LobValue)
+        assert isinstance(values[1], LobValue)
+        self.assertEqual(values[1].type_name, "VARCHAR")
+        self.assertEqual(values[1].raw, locator)
+
 
 if __name__ == "__main__":
     unittest.main()

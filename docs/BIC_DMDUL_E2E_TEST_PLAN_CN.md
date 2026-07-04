@@ -12,6 +12,7 @@
 - 验证 `dump-procedures` 导出的存储过程脚本可以在目标用户重建并执行。
 - 验证 `dump-indexes` 导出的普通 BTree/唯一索引脚本可以在目标用户重建，索引列、唯一性、可用状态与源对象一致。
 - 验证异常场景不会伪造成功：复杂索引、未知 LOB locator、缺失文件、页损坏、无法解析字段必须报告诊断或跳过原因。
+- 验证特殊行结构不会误导导出：跨块行链未实现拼接前必须暴露风险；行迁移指针不能被当作真实业务行导出。
 
 ## 2. 测试环境
 
@@ -189,6 +190,50 @@
 - 单分区导入后仅包含该分区源数据。
 - 多分区 LIST 导入后仅包含指定分区集合。
 - parts manifest 中列出的 part 文件完整存在，导入工具可自动找到并导入。
+
+### 4.4.1 Long row 与行迁移表
+
+表名：`DMDUL_E2E_LONG_ROW`
+
+建表形态：
+
+```sql
+CREATE TABLE DMDUL_E2E_LONG_ROW (
+  ID INT,
+  V1 VARCHAR(4000),
+  V2 VARCHAR(4000),
+  V3 VARCHAR(4000)
+) STORAGE(USING LONG ROW);
+```
+
+数据覆盖：
+
+- 一行 `V1/V2/V3` 均为 3500 字符，触发 long-row out-of-line locator；
+- 一行 `V1/V2/V3` 均为 1000 字符，覆盖同表普通行内变长字段；
+- 导出 row archive，并执行 `import-data --input-format row` 导入到目标用户；
+- 校验重建 DDL 包含 `STORAGE(USING LONG ROW)`；
+- 校验导入 SQL 对较长文本使用 PL 块变量，避免 `disql` 单行过长。
+
+通过标准：
+
+- 离线导出 `rows_written=2`、`rows_skipped_decode_error=0`、`strict_ok=true`；
+- row archive 中 out-of-line payload block 长度正确，示例 `V1/V2` 各 3500 字节；
+- 导入目标表后，源表和目标表 `COUNT(*)` 一致，`SUM(LENGTH(V1/V2/V3))` 一致，`MAX(LENGTH(V1/V2/V3))` 一致；
+- 样本行前缀和长度一致。
+
+表名：`DMDUL_E2E_ROW_MIG`
+
+覆盖点：
+
+- 先插入大量短 `VARCHAR` 行填充数据页；
+- 再更新部分行到较长 `VARCHAR`；
+- 离线页探针记录 active slot 行数、physical row chain 行数，以及是否存在不在 slot 目录中的旧物理行。
+
+通过标准：
+
+- 离线导出行数、`SUM(LENGTH())`、`MIN/MAX(LENGTH())` 与在线源表一致；
+- 不在 slot 目录中的旧物理行不得被导出；
+- 如果发现 active slot 指向专用迁移指针，必须报告诊断或实现指针跳过，不能当作业务行。
 
 ### 4.5 压缩 HUGE 表
 
@@ -579,4 +624,6 @@ PYTHONPATH=src python3 tests/e2e/run_dm8_e2e.py --run-id <run_id>
 - 所有复杂索引类型重建。
 - `QUERY HIGH` 的完整列压缩区恢复；当前只验证到 `$AUX.CPR_FLAG='Y'` 场景会触发严格失败。
 - 列级压缩、带分区或 LOB 的 HUGE 压缩表。
+- 真正跨块行链完整恢复。当前已验证 `STORAGE(USING LONG ROW)` 的 `0x22` out-of-line 变长列，但尚未观察到普通行被拆成多个数据块的行片段样本。
+- active slot 指向专用行迁移指针的格式识别。当前已验证不在 slot 目录中的旧物理行会被跳过；如果后续出现 slot 指向迁移指针，需要专项实现。
 - 所有未知压缩形态。

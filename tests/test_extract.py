@@ -118,6 +118,23 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
         self.assertIn("  TSLTZ TIMESTAMP WITH LOCAL TIME ZONE,", sql)
         self.assertIn("  VC VARCHAR(40)", sql)
 
+    def test_create_table_sql_uses_long_row_for_wide_variable_row(self) -> None:
+        sql = _create_table_sql(
+            TableMeta(
+                owner="SYSDBA",
+                name="DMDUL_LONG_ROW_T",
+                columns=(
+                    ColumnMeta(name="ID", type_name="INT", length=4),
+                    ColumnMeta(name="V1", type_name="VARCHAR", length=4000),
+                    ColumnMeta(name="V2", type_name="VARCHAR", length=4000),
+                    ColumnMeta(name="V3", type_name="VARCHAR", length=4000),
+                ),
+                storage=StorageRoot(group_id=6, file_no=0, root_page=0),
+            )
+        )
+
+        self.assertTrue(sql.endswith(") STORAGE(USING LONG ROW);"))
+
     def test_writes_decoded_live_rows_from_root_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

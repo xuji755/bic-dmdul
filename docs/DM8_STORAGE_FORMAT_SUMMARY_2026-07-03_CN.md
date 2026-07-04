@@ -33,6 +33,7 @@
 | `0x14` | 普通表 BTREE leaf/data 页 |
 | `0x15` | BTREE root/internal 或 segment root 类页 |
 | `0x20` | LOB 数据页 |
+| `0x22` | `USING LONG ROW` 的 out-of-line 变长列数据页 |
 | `0x23` | 空间/LOB 相关元数据页，未完全解析 |
 | `0xffff00ff` | 已初始化空页 |
 | `0x1a1a001a` | 内部元数据页 |
@@ -440,6 +441,7 @@ NULL metadata：
 
 - 每个 storage-order 列占 2 bit，小端读取。
 - `00` 表示非 NULL。
+- `01` 表示该变长列使用 out-of-line locator。2026-07-04 已在 `STORAGE(USING LONG ROW)` 表中验证，行内仍按普通变长字段存 21 字节 locator。
 - `11` 表示 NULL。
 - fixed-width NULL 列仍占用其固定宽度字节。
 - variable-width NULL 列不写 length prefix 和 payload。
@@ -449,6 +451,14 @@ NULL metadata：
 - 页头 `0x2c` 处观察到 active row/slot count。
 - 页尾有 2 字节 row offset 数组，抽取时优先按 slot 找活动行。
 - physical row chain 可能包含 deleted/old row，因此不能只按物理连续行全部导出。
+
+行链与行迁移需要单独区分：
+
+- 当前代码中的 `scan_observed_row_chain` 只是“页内物理连续行扫描”，用于观察一个块内的 row-length 序列；它不是跨块行链。
+- 普通行存表插入 `VARCHAR(4000) * 3` 的超长行会报 `[-2665]:记录超长`；当前测试未观察到普通 BTREE 行自动拆成跨块行链。
+- `STORAGE(USING LONG ROW)` 已验证：过长变长列以 21 字节 locator 存在行内，payload 存在 `page_kind_raw=0x22` 的 long-row 数据页。该形态已经支持导出、row 归档内嵌 payload、生成带 `STORAGE(USING LONG ROW)` 的建表 SQL，并导入后比对一致。
+- 真正跨块行链是单条逻辑行过长、被拆分到多个数据块保存的形态。当前尚未观察到可验证样本；如果后续遇到，必须识别行片段指针、读取后续块并重新拼接字段 payload，不能只解码首片。
+- 行迁移是原块已很满时更新变长字段，更新后的完整行迁移到另一个块，原位置可能保留旧物理行或迁移指针。`DMDUL_ROW_MIG_T` 测试中观察到一个不在页尾 slot 目录中的旧物理行；当前导出优先按 slot 目录取活动行，因此没有把旧物理行误导出。若后续遇到 active slot 指向的专用迁移指针，应识别后跳过或报告诊断，不能伪造业务行。
 
 row tail/control：
 
@@ -570,6 +580,42 @@ LOB 数据页 `page_kind_raw=0x20`。当前已验证字段：
 4. 读满 locator 中的 source byte length 后停止。
 5. `BLOB` 输出原始 bytes。
 6. `CLOB/TEXT` 按字符集解码后写 UTF-8 附件，manifest 记录 `source_bytes` 和输出 `bytes`。
+
+### 9.3.1 Long row out-of-line 数据页
+
+`STORAGE(USING LONG ROW)` 的超长 `VARCHAR` 使用与 out-of-line LOB 相同形状的 21 字节 locator：
+
+```text
+02 <lob_id:4> 00000000 <byte_length:4> <group_id:4> <start_page:4>
+```
+
+不同点是 payload 页类型为 `page_kind_raw=0x22`。`0x22` 页既可以只存一个较大的 long-row payload，也可以在同一页内存放多个较小 payload record。每个 record 自身以两字节 big-endian record length 开头，record 内已验证字段：
+
+| 偏移 | 长度 | 含义 |
+| ---: | ---: | --- |
+| record `+0x00` | 2 | record length，big-endian |
+| record `+0x02` | 4 | locator 中的 lob id |
+| record `+0x0a` | 2 | payload bytes |
+| record `+0x0c` | 2 | payload bytes，重复观察字段 |
+| record `+0x0e` | n | 字段 payload |
+
+样本 `SYSDBA.DMDUL_LONG_ROW_T`：
+
+- DDL：`CREATE TABLE ... (ID INT, V1 VARCHAR(4000), V2 VARCHAR(4000), V3 VARCHAR(4000)) STORAGE(USING LONG ROW)`；
+- 行 `ID=1`：`V1/V2/V3` 均为 3500 字符；
+- 行 metadata 为 `0x14`，表示 storage-order 中 `V1`、`V2` 为 out-of-line，`V3` 仍在当前行内；
+- `V1` locator 指向 page `12054`，`V2` locator 指向 page `12055`；
+- row archive 中嵌入 `V1/V2` 各 3500 字节 payload；导入到 `DMTEST.DMDUL_LONG_ROW_IMP` 后，源表和目标表 `count=2`，三个字段长度合计均为 `4500`，最大长度均为 `3500`。
+
+样本 `SYSDBA.DMDUL_VC20_300_LONG`：
+
+- DDL：`ID INT + V01..V20 VARCHAR(300) STORAGE(USING LONG ROW)`；
+- 普通同结构表插入 20 个 300 字符字段时报 `[-2665]:记录超长`；
+- `STORAGE(USING LONG ROW)` 表插入成功，总字符长度 `6000`；
+- 主行长度 `3831`，metadata 为 `545501000000`；
+- `V01..V08` 为 out-of-line locator，8 个 300 字节 payload record 共用同一个 `0x22` 页 `12150`；
+- `V09..V20` 仍在主行内；
+- row archive 导出 `rows_written=1`、`strict_ok=true`，导入 `DMTEST.DMDUL_VC20_300_LONG_IMP2` 后源/目标总长度均为 `6000`。
 
 ### 9.4 LOB 更新与旧版本
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
+from .lob import parse_out_of_line_lob_locator
 from .metadata import ColumnMeta
 from .row import ObservedRow, decode_observed_var_length, describe_observed_row_layout
 
@@ -24,6 +25,12 @@ class LobValue:
     @property
     def is_inline(self) -> bool:
         return self.inline_payload is not None
+
+
+@dataclass(frozen=True)
+class _ColumnStorageState:
+    is_null: bool = False
+    is_out_of_line: bool = False
 
 
 SUPPORTED_OBSERVED_TYPE_NAMES = frozenset(
@@ -96,20 +103,28 @@ def decode_observed_row_values(
             fixed_columns.append((index, column))
 
     storage_columns = fixed_columns + variable_columns
-    nulls_by_index = _decode_null_metadata(layout.metadata, storage_columns)
+    states_by_index = _decode_column_storage_metadata(layout.metadata, storage_columns)
 
     for index, column in fixed_columns:
         consumed = _fixed_width(column)
         if consumed is None:
             raise DecodeError(f"column is not fixed-width: {column.type_name.upper()}")
-        if nulls_by_index[index]:
+        state = states_by_index[index]
+        if state.is_out_of_line:
+            raise DecodeError(
+                "out-of-line row metadata state is not valid for fixed-width column: "
+                f"column={column.name}",
+                code="unsupported-row-metadata",
+            )
+        if state.is_null:
             _require(data, offset, consumed, column.name)
             values[index] = None
         else:
             values[index], consumed = _decode_fixed_value(data, offset, column)
         offset += consumed
     for index, column in variable_columns:
-        if nulls_by_index[index]:
+        state = states_by_index[index]
+        if state.is_null:
             values[index] = None
             continue
         values[index], consumed = _decode_variable_value(
@@ -117,6 +132,7 @@ def decode_observed_row_values(
             offset,
             column,
             external_lobs=external_lobs,
+            out_of_line=state.is_out_of_line,
         )
         offset += consumed
 
@@ -171,8 +187,34 @@ def _decode_variable_value(
     column: ColumnMeta,
     *,
     external_lobs: bool = False,
+    out_of_line: bool = False,
 ) -> tuple[object, int]:
     type_name = column.type_name.upper()
+    if out_of_line:
+        raw, consumed = _read_observed_var_bytes(data[offset:], column.name)
+        locator = parse_out_of_line_lob_locator(raw)
+        if locator is None:
+            raise DecodeError(
+                "out-of-line row column does not contain a supported locator: "
+                f"column={column.name}, raw_length={len(raw)}",
+                code="unsupported-row-metadata",
+            )
+        if type_name in {"VARCHAR", "VARCHAR2", "CHAR", "TEXT", "CLOB"}:
+            if external_lobs:
+                return (
+                    LobValue(type_name=type_name, raw=raw, inline_payload=None),
+                    consumed,
+                )
+            return raw.hex(), consumed
+        if type_name == "BLOB":
+            if external_lobs:
+                return LobValue(type_name=type_name, raw=raw, inline_payload=None), consumed
+            return raw.hex(), consumed
+        raise DecodeError(
+            "out-of-line row metadata state is not supported for column type: "
+            f"column={column.name}, type={type_name}",
+            code="unsupported-row-metadata",
+        )
     if type_name in {"NUMBER", "DEC", "DECIMAL", "NUMERIC"}:
         raw, consumed = _read_observed_var_bytes(data[offset:], column.name)
         return _decode_number(raw), consumed
@@ -420,18 +462,20 @@ def _decimal_from_base100(*, sign: int, exponent: int, pairs: list[int]) -> str:
     return text
 
 
-def _decode_null_metadata(
+def _decode_column_storage_metadata(
     metadata: bytes,
     storage_columns: list[tuple[int, ColumnMeta]],
-) -> dict[int, bool]:
+) -> dict[int, _ColumnStorageState]:
     value = int.from_bytes(metadata, "little")
-    nulls_by_index: dict[int, bool] = {}
+    states_by_index: dict[int, _ColumnStorageState] = {}
     for storage_position, (index, column) in enumerate(storage_columns):
         state = (value >> (storage_position * 2)) & 0x03
         if state == 0:
-            nulls_by_index[index] = False
+            states_by_index[index] = _ColumnStorageState()
+        elif state == 1:
+            states_by_index[index] = _ColumnStorageState(is_out_of_line=True)
         elif state == 3:
-            nulls_by_index[index] = True
+            states_by_index[index] = _ColumnStorageState(is_null=True)
         else:
             raise DecodeError(
                 "unsupported row metadata state before column payload; possible "
@@ -447,7 +491,7 @@ def _decode_null_metadata(
             f"metadata={metadata.hex()}",
             code="unsupported-row-metadata",
         )
-    return nulls_by_index
+    return states_by_index
 
 
 def _require(data: bytes, offset: int, length: int, column_name: str) -> None:

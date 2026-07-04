@@ -1019,7 +1019,53 @@ def _create_table_sql(table: TableMeta) -> str:
     for column in table.columns:
         column_lines.append(f"  {column.name} {_ddl_type(column)}")
     columns_sql = ",\n".join(column_lines)
-    return f"CREATE TABLE {owner_prefix}{table.name} (\n{columns_sql}\n);"
+    storage_clause = " STORAGE(USING LONG ROW)" if _needs_long_row_storage(table.columns) else ""
+    return f"CREATE TABLE {owner_prefix}{table.name} (\n{columns_sql}\n){storage_clause};"
+
+
+def _needs_long_row_storage(columns: tuple[ColumnMeta, ...]) -> bool:
+    potential_width = 2 + max(1, (len(columns) + 3) // 4)
+    for column in columns:
+        fixed_width = _fixed_width_for_ddl(column)
+        if fixed_width is not None:
+            potential_width += fixed_width
+            continue
+        if column.length is not None:
+            potential_width += column.length + 2
+    return potential_width > 4096
+
+
+def _fixed_width_for_ddl(column: ColumnMeta) -> int | None:
+    type_name = column.type_name.upper()
+    if type_name == "TINYINT":
+        return 1
+    if type_name == "SMALLINT":
+        return 2
+    if type_name in {"INT", "INTEGER"}:
+        return 4
+    if type_name == "BIGINT":
+        return 8
+    if type_name in {"REAL", "FLOAT"} and column.length == 4:
+        return 4
+    if type_name in {"FLOAT", "DOUBLE"}:
+        return 8
+    if type_name == "DATE":
+        return 3
+    if type_name == "TIME":
+        return 5
+    if type_name in {"TIMESTAMP", "DATETIME", "TIMESTAMP WITH LOCAL TIME ZONE"}:
+        return 8
+    if type_name == "TIME WITH TIME ZONE":
+        return 7
+    if type_name in {"TIMESTAMP WITH TIME ZONE", "DATETIME WITH TIME ZONE"}:
+        return 10
+    if type_name == "BYTE":
+        return 1
+    if type_name == "ROWID":
+        return 12
+    if type_name == "INTERVAL DAY TO SECOND":
+        return 24
+    return None
 
 
 def _ddl_type(column: ColumnMeta) -> str:

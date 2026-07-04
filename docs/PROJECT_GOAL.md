@@ -94,7 +94,9 @@ Later versions should handle:
 - ASM disk groups;
 - partitioned tables;
 - secondary index assisted lookup;
-- LOB and long row storage;
+- additional LOB variants and cross-file LOB chains;
+- chained rows that span multiple data blocks; `STORAGE(USING LONG ROW)` out-of-line variable columns are already supported through verified `0x22` pages;
+- active-slot migrated-row pointer detection and skip logic; old physical rows outside the slot directory are already skipped by the current active-row path;
 - compressed HUGE variants that require `$AUX.CPR_FLAG='Y'` column-section decompression, including `QUERY HIGH` and column-level compression;
 - encrypted tablespaces;
 - damaged but partially readable data files;

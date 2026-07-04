@@ -22,6 +22,8 @@ The test plan verifies the full recovery chain:
 - Scalar type coverage table.
 - Large multi-extent table.
 - CLOB/BLOB table with inline, out-of-line, updated, and NULL LOBs.
+- `STORAGE(USING LONG ROW)` table with long `VARCHAR` values, row archive export, SQL regeneration, import, and aggregate comparison.
+- Row-migration candidate table where old physical rows outside the page slot directory must not be exported as live rows.
 - Range, list, and range-hash partitioned tables.
 - Compressed `HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'` through the internal `$RAUX` row-storage mapping.
 - TRUNCATE recovery.

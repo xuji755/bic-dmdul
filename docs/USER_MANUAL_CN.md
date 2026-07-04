@@ -20,6 +20,7 @@
 - 支持 DUL 文本、二进制 row 归档、parts manifest 三种导出结构；
 - 支持从 DUL/row/parts 生成重装载 SQL；
 - 支持已验证的短内联 LOB 和 out-of-line LOB 页链读取；
+- 支持已验证的 `STORAGE(USING LONG ROW)` 超长变长列读取，能跟随 `0x22` long-row 数据页并在重建 DDL 中写入 `STORAGE(USING LONG ROW)`；
 - 支持按需导出指定用户的存储过程 DDL 和普通索引 DDL。
 - 已验证支持一种压缩 `HUGE TABLE` 主链路导出：`HUGE TABLE ... COMPRESS LEVEL 1 FOR 'QUERY LOW'`，通过内部 `$RAUX` BTREE storage 恢复主表逻辑行。
 - `dump-data --strict` 会把不完整恢复风险传播为严格失败；例如 `huge-raux-proxy-mapping` 会导致 `strict_ok=false` 和 `tables_strict_failed>0`。
@@ -31,6 +32,8 @@
 - 直接连接目标 DM 库并执行并发入库；
 - 复杂索引类型的完整还原，例如虚拟索引、函数索引、位图索引。
 - `QUERY HIGH`、列级压缩、带分区或 LOB 的压缩 HUGE 表完整恢复；当前已定位 `.dta` 列文件和 zlib 变长列结构，但尚未实现通用列区解码和行重组。
+- 真正跨块行链的完整拼接恢复；当前已支持达梦 `STORAGE(USING LONG ROW)` 的 out-of-line 变长列，但尚未观察并实现普通行被拆成多个数据块的行片段指针。
+- active slot 指向专用行迁移指针的格式识别；当前已验证按页尾 slot 目录导出可以跳过不在 slot 中的旧物理行，真实迁移后的完整行应在目标数据块中被正常扫描到。
 
 ## 1. 基本原则
 
@@ -1529,6 +1532,7 @@ rows_written = 80
 | `row-decode-error` | 行解码失败 | 查看 report 中 decode_errors |
 | `unsupported-row-metadata` | 行 metadata/NULL bitmap 等尚未完全支持 | 需要进一步分析行结构 |
 | `huge-raux-proxy-mapping` | HUGE 主表通过 `$RAUX` 辅助 BTREE 代理导出 | 严格模式下视为不完整性风险；必须导入后比对，或继续实现 `$AUX` 列区解码 |
+| 行链/行迁移相关 decode error | 可能遇到跨块行片段或迁移指针 | 行链需要后续跨块拼接；迁移指针应识别后跳过，不能当作真实行 |
 
 ## 10. 数据类型支持状态
 
@@ -1549,6 +1553,7 @@ rows_written = 80
 | `TIMESTAMP` / `DATETIME` | 支持当前观测到的 8 字节 payload |
 | `CHAR` / `VARCHAR` / `VARCHAR2` | 支持 |
 | `TEXT` / `CLOB` / `BLOB` | 支持短内联 LOB；支持当前已验证的 21 字节 out-of-line locator 和 `0x20` LOB 页链；默认外置到 `.lob/` 附件目录 |
+| `STORAGE(USING LONG ROW)` 超长变长列 | 支持 metadata state `01` + 21 字节 locator，读取 `0x22` long-row 数据页；row 归档会内嵌 payload，DUL external 会写附件 |
 | 带时区时间类型 | 支持当前观测到的 TZ offset 编码 |
 
 注意：如果某个类型包含未理解的 extra bytes，应优先 raw hex 保留，不得丢失。
@@ -1932,10 +1937,13 @@ TEST2.DMDUL_MANY.dul
 
 - 短内联 LOB：行内 13 字节前缀后跟真实 payload。
 - out-of-line LOB：行内 21 字节 locator 指向 `0x20` LOB 数据页，工具按 `next_page` 链读取完整 payload。
+- long-row out-of-line 变长列：`STORAGE(USING LONG ROW)` 表中，超长 `VARCHAR/CHAR/TEXT/CLOB` 可使用同形状 21 字节 locator 指向 `0x22` 数据页，工具按 locator 读取 payload。
 
 `BLOB` 附件按原始 bytes 写出；`CLOB/TEXT` 附件解码后写 UTF-8，manifest 中记录 `source_encoding`、`source_bytes`、输出 `bytes` 和 `sha256`。如果遇到不符合当前已验证格式的 locator，工具不会伪造成功，会写 `.locator.hex` 并报告 `lob-locator-not-followed`。
 
 使用 `--output-format row` 时，LOB payload 直接写入 `.row` 文件内的 LOB block，不再依赖外置 `.lob/` 附件目录。导入端只需要 `.row` 文件即可生成包含 LOB 值的 SQL。
+
+对于潜在行宽超过半页的表，导出的 `CREATE TABLE` 会自动追加 `STORAGE(USING LONG ROW)`。这可以避免导入多列大 `VARCHAR` 时触发达梦 `[-2665]:记录超长`。`import-data` 生成 SQL 时也会把较长文本拆成 PL 块变量，避免 `disql` 单行过长导致输入被忽略。
 
 ### 15.3 压缩表
 

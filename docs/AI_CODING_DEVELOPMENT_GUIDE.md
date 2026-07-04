@@ -193,15 +193,25 @@ When adding a type decoder:
 - Compare exported/imported values with the original table.
 - Include raw hex evidence for unclear encodings.
 
+Special row forms:
+
+特殊行形态：
+
+- In-code `scan_observed_row_chain` means the physical in-page row-length sequence. It does not mean cross-block row chaining.
+- `STORAGE(USING LONG ROW)` is supported for the verified DM8 shape: row metadata state `01`, a 21-byte locator in the variable-column payload, and `0x22` long-row data pages.
+- Row chaining means one logical row is too long for one block and is split across multiple data blocks. This is different from `USING LONG ROW`; it still requires pointer decoding and payload reassembly before claiming complete recovery.
+- Row migration means an updated row moved to another block while the original location keeps a pointer or old physical bytes. Rows outside the page slot directory must not be exported as live rows; if an active slot points to a migration pointer, report or implement pointer skip logic before claiming success.
+- AI agents must not treat a successful partial decode of the first row piece as complete data. Add diagnostics and strict-mode failures until the chained-row format is verified.
+
 ### 7.3 LOB / LOB 字段
 
 LOB recovery must preserve payload bytes.
 
 LOB 恢复必须保持 payload bytes。
 
-Current supported paths include short inline LOB and out-of-line LOB page chains. If a locator cannot be followed, write locator evidence and report a diagnostic instead of returning an invented value.
+Current supported paths include short inline LOB, out-of-line LOB page chains, and verified `USING LONG ROW` out-of-line variable-column payloads. If a locator cannot be followed, write locator evidence and report a diagnostic instead of returning an invented value.
 
-当前已支持短内联 LOB 和 out-of-line LOB 页链。无法解析 locator 时，应写出 locator 证据并报告诊断，不能伪造值。
+当前已支持短内联 LOB、out-of-line LOB 页链，以及已验证的 `USING LONG ROW` out-of-line 变长列 payload。无法解析 locator 时，应写出 locator 证据并报告诊断，不能伪造值。
 
 ### 7.4 Partitioned Tables / 分区表
 
