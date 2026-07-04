@@ -102,6 +102,9 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
                     ColumnMeta(name="ID", type_name="INT", length=4, scale=0),
                     ColumnMeta(name="AMOUNT", type_name="DECIMAL", length=18, scale=4),
                     ColumnMeta(name="TS", type_name="TIMESTAMP", length=8, scale=6),
+                    ColumnMeta(name="TMTZ", type_name="TIME WITH TIME ZONE", length=7, scale=6),
+                    ColumnMeta(name="TSTZ", type_name="DATETIME WITH TIME ZONE", length=10, scale=6),
+                    ColumnMeta(name="TSLTZ", type_name="TIMESTAMP WITH LOCAL TIME ZONE", length=8, scale=4102),
                     ColumnMeta(name="VC", type_name="VARCHAR", length=40),
                 ),
                 storage=StorageRoot(group_id=6, file_no=0, root_page=0),
@@ -110,6 +113,9 @@ class ExtractCsvScaffoldTest(unittest.TestCase):
 
         self.assertIn("  AMOUNT DECIMAL(18,4),", sql)
         self.assertIn("  TS TIMESTAMP(6),", sql)
+        self.assertIn("  TMTZ TIME(6) WITH TIME ZONE,", sql)
+        self.assertIn("  TSTZ DATETIME(6) WITH TIME ZONE,", sql)
+        self.assertIn("  TSLTZ TIMESTAMP WITH LOCAL TIME ZONE,", sql)
         self.assertIn("  VC VARCHAR(40)", sql)
 
     def test_writes_decoded_live_rows_from_root_page(self) -> None:

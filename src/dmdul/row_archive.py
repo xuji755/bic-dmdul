@@ -831,9 +831,26 @@ def _ddl_type(column: ColumnMeta) -> str:
         return f"{type_name}({column.length})"
     if (
         column.scale is not None
-        and column.scale > 0
-        and type_name in {"TIME", "TIMESTAMP", "DATETIME"}
+        and 0 < column.scale <= 6
+        and type_name
+        in {
+            "TIME",
+            "TIMESTAMP",
+            "DATETIME",
+            "TIME WITH TIME ZONE",
+            "TIMESTAMP WITH TIME ZONE",
+            "DATETIME WITH TIME ZONE",
+            "TIMESTAMP WITH LOCAL TIME ZONE",
+        }
     ):
+        if type_name == "TIME WITH TIME ZONE":
+            return f"TIME({column.scale}) WITH TIME ZONE"
+        if type_name == "TIMESTAMP WITH TIME ZONE":
+            return f"TIMESTAMP({column.scale}) WITH TIME ZONE"
+        if type_name == "DATETIME WITH TIME ZONE":
+            return f"DATETIME({column.scale}) WITH TIME ZONE"
+        if type_name == "TIMESTAMP WITH LOCAL TIME ZONE":
+            return f"TIMESTAMP({column.scale}) WITH LOCAL TIME ZONE"
         return f"{type_name}({column.scale})"
     if column.length is not None and type_name in {
         "CHAR",
